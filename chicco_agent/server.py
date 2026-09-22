@@ -17,6 +17,7 @@ Avvio:  python voice_assistant_server.py   ->  http://127.0.0.1:8123
 """
 
 import io
+import appindex
 import json
 import numpy as np
 import os
@@ -36,7 +37,7 @@ from pathlib import Path
 import laya
 import pyttsx3
 import send2trash
-from fastapi import FastAPI, Request, UploadFile
+from fastapi import FastAPI, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from vosk import KaldiRecognizer, Model as VoskModel
 
@@ -187,6 +188,9 @@ except Exception as exc:  # laya opzionale: senza, si usa solo il matching testu
     print(f"[laya] non disponibile ({exc}); uso solo regole testuali")
     laya_system = None
 
+print("[apps] scansione libreria applicazioni in background...")
+appindex.scan_async()  # lnk + Microsoft Store/AppX + portabili, all'avvio
+
 
 # ---------------------------------------------------------------------------
 # TTS (Elsa, italiano)
@@ -302,6 +306,8 @@ OLLAMA_SCHEMA = (
     'content holds the exact text to write. If nothing fits use unknown. '
     'Answer ONLY with the JSON object. '
     'Examples: '
+    'If the user wants to open an application, prefer the exact app name from this '
+    f'list of installed apps: {appindex.llm_context(limit=90)}. '
     'crea un file di testo chiamata spesa con dentro latte -> '
     '{"action":"create_file","name":"spesa.txt","content":"latte","location":"desktop"}; '
     'aggiungi al file spesa la riga uova -> '
@@ -608,17 +614,40 @@ def run_command(text: str, intent: str) -> str:
                     return f"Sto aprendo {alias}."
                 except Exception:
                     continue
-        # 1) collegamenti nel menu Start (Steam, Epic Games, qualsiasi app installata)
+        # 1) libreria indicizzata: .lnk, app Store/AppX e portabili
+        hits = appindex.search(rest, limit=3)
+        if hits:
+            app = hits[0]
+            try:
+                appindex.launch(app)
+                extra = " (Microsoft Store)" if app["kind"] == "appx" else ""
+                return f"Sto aprendo {app['name']}{extra}."
+            except Exception as exc:
+                print(f"[open_app] launch {app} fallito: {exc}")
+        # 2) vecchio percorso: scorciatoie Start via cache .lnk
         lnk = _find_shortcut(rest)
         if lnk is not None:
-            os.startfile(str(lnk))  # noqa: S606
-            return f"Sto aprendo {lnk.stem}."
-        # 2) eseguibile nel PATH (notepad, calc...)
+            try:
+                os.startfile(str(lnk))  # noqa: S606
+                return f"Sto aprendo {lnk.stem}."
+            except Exception as exc:
+                print(f"[open_app] startfile({lnk.name}) fallito: {exc}")
+                # fallback: prova l'eseguibile dichiarato nel collegamento
+                try:
+                    import win32com.client  # type: ignore
+                    sh = win32com.client.Dispatch("WScript.Shell")
+                    target = sh.CreateShortCut(str(lnk)).Targetpath
+                    if target:
+                        subprocess.Popen([target], shell=True)
+                        return f"Sto aprendo {lnk.stem}."
+                except Exception:
+                    pass
+        # 3) eseguibile nel PATH (notepad, calc...)
         exe = shutil.which(rest) or shutil.which(rest + ".exe")
         if exe:
             subprocess.Popen([exe])
             return f"Sto aprendo {rest}."
-        # 3) ultimo tentativo: ShellExecute risolve anche gli App Paths del registro
+        # 4) ultimo tentativo: ShellExecute risolve anche gli App Paths del registro
         try:
             os.startfile(rest)  # noqa: S606
             return f"Sto aprendo {rest}."
@@ -739,17 +768,14 @@ def run_command(text: str, intent: str) -> str:
 def process(text: str, source: str) -> dict:
     intent, src = detect_intent(text)
     t0 = time.time()
-    if intent == "unknown":
-        # nessuna regola e Laya non sicuri: prova il piccolo modello LLM
-        spec = ollama_parse(text)
-        if spec and spec.get("action") and spec["action"] != "unknown":
-            intent = f"llm:{spec['action']}"
-            src = f"ollama:{OLLAMA_MODEL}"
-            reply = execute_spec(spec, text)
-        else:
-            reply = run_command(text, intent)
-    else:
-        reply = run_command(text, intent)
+    try:
+        reply = _process_inner(text, intent, src)
+    except Exception as exc:
+        # rete di sicurezza: nessun errore deve uccidere la richiesta
+        print(f"[cmd] ERRORE su {text!r}: {type(exc).__name__}: {exc}")
+        reply = ("Ho avuto un problema tecnico nell'eseguire il comando "
+                 f"({type(exc).__name__}). Riprova o riformula.")
+        intent, src = f"error:{intent}", src
     dt = int((time.time() - t0) * 1000)
     entry = {
         "user": text, "assistant": reply, "intent": intent,
@@ -765,6 +791,15 @@ def process(text: str, source: str) -> dict:
     except Exception as exc:
         print(f"[tts] errore: {exc}")
     return entry
+
+
+def _process_inner(text: str, intent: str, src: str) -> str:
+    if intent == "unknown":
+        # nessuna regola e Laya non sicuri: prova il piccolo modello LLM
+        spec = ollama_parse(text)
+        if spec and spec.get("action") and spec["action"] != "unknown":
+            return execute_spec(spec, text)
+    return run_command(text, intent)
 
 
 # ---------------------------------------------------------------------------
@@ -841,6 +876,35 @@ async def api_text(payload: dict):
     if not text:
         return JSONResponse({"error": "testo vuoto"}, status_code=400)
     return process(text, "testo")
+
+
+@app.get("/api/apps")
+def api_apps(q: str | None = Query(default=None)):
+    """Libreria applicazioni indicizzate (lnk, Store/AppX, portabili)."""
+    apps = appindex.search(q) if q else appindex.get_apps()
+    return {"count": len(apps), "apps": apps[:100]}
+
+
+@app.post("/api/apps/rescan")
+def api_apps_rescan():
+    n = len(appindex.get_apps(force=True))
+    return {"ok": True, "count": n}
+
+
+@app.get("/api/stt")
+def api_stt():
+    """Quale trascrittore e' attivo (Whisper GPU o fallback Vosk)."""
+    if whisper_available():
+        device = "vulkan/gpu"
+        try:
+            import transcribe_cpp as tc
+            devs = [str(b).lower() for b in getattr(tc, "backends", [])]
+            if not any("vulkan" in d or "cuda" in d or "rocm" in d for d in devs):
+                device = "cpu"
+        except Exception:
+            pass
+        return {"engine": "whisper", "model": "large-v3-turbo Q8_0", "device": device}
+    return {"engine": "vosk", "model": "small-it-0.22", "device": "cpu"}
 
 
 @app.get("/_tts_reply.wav")
