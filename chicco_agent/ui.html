@@ -83,8 +83,12 @@
   .mitem .tx small { color:var(--mut); font-size:.7rem; }
   .mcat { display:flex; align-items:baseline; gap:8px; color:var(--acc); font-size:.72rem;
           font-weight:600; letter-spacing:.06em; text-transform:uppercase;
-          padding:14px 12px 6px; border-top:1px solid var(--border); margin-top:8px; }
+          padding:14px 12px 6px; border-top:1px solid var(--border); margin-top:8px;
+          cursor:pointer; user-select:none; }
   .mcat:first-child { border-top:none; margin-top:0; padding-top:4px; }
+  .mcat:hover { filter:brightness(1.25); }
+  .mcat .chev { display:inline-block; width:1em; transition:transform .15s; flex-shrink:0; }
+  .mcat.closed .chev { transform:rotate(-90deg); }
   .mcat span { color:var(--mut); font-weight:400; text-transform:none; letter-spacing:0; }
   .msearch { width:calc(100% - 24px); margin:0 12px 10px; background:var(--bg);
              border:1px solid var(--border); border-radius:10px; color:var(--txt);
@@ -170,7 +174,8 @@ function row(it) {
   tx.append(b, s); r.append(ic, tx); return r;
 }
 
-function renderItems(items) {
+const collapsed = new Set();
+function renderItems(items, forceOpen) {
   mlist.innerHTML = '';
   const GROUPS = [
     ['Giochi', k => ['steam','epic','gog','launcher'].includes(k)],
@@ -181,10 +186,21 @@ function renderItems(items) {
     const grp = rest.filter(it => test(it.kind));
     for (const it of grp) rest.splice(rest.indexOf(it), 1);
     if (!grp.length) continue;
-    const h = document.createElement('div'); h.className = 'mcat';
-    h.innerHTML = name + ' <span>· ' + grp.length + '</span>';
-    mlist.appendChild(h);
-    for (const it of grp) mlist.appendChild(row(it));
+    const isClosed = !forceOpen && collapsed.has(name);
+    const h = document.createElement('div'); h.className = 'mcat' + (isClosed ? ' closed' : '');
+    h.title = isClosed ? 'Espandi' : 'Comprimi';
+    h.innerHTML = '<span class="chev">▾</span>' + name + ' <span>· ' + grp.length + '</span>';
+    const box = document.createElement('div'); box.className = 'mgroup';
+    if (isClosed) box.style.display = 'none';
+    for (const it of grp) box.appendChild(row(it));
+    h.onclick = () => {
+      const nowClosed = !h.classList.contains('closed');
+      h.classList.toggle('closed', nowClosed);
+      h.title = nowClosed ? 'Espandi' : 'Comprimi';
+      box.style.display = nowClosed ? 'none' : '';
+      nowClosed ? collapsed.add(name) : collapsed.delete(name);
+    };
+    mlist.append(h, box);
   }
   for (const it of rest) mlist.appendChild(row(it));
 }
@@ -205,8 +221,9 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') ovl.classLis
 
 msearch.addEventListener('input', () => {
   const q = msearch.value.toLowerCase();
-  renderItems(currentItems.filter(it =>
-    (it.title + ' ' + (it.subtitle || '')).toLowerCase().includes(q)));
+  const filtered = currentItems.filter(it =>
+    (it.title + ' ' + (it.subtitle || '')).toLowerCase().includes(q));
+  renderItems(filtered, q.length > 0);
 });
 
 async function openApps() {
