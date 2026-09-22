@@ -49,6 +49,7 @@ import send2trash
 from fastapi import FastAPI, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from vosk import KaldiRecognizer, Model as VoskModel
+from faster_whisper import WhisperModel
 
 # ---------------------------------------------------------------------------
 # Configurazione
@@ -186,10 +187,12 @@ _stt = {"model": None, "recognizer": None}
 _laya_router = None
 
 # ---------------------------------------------------------------------------
-# Whisper large-v3-turbo (GGUF Q8_0) via transcribe.cpp + Vulkan (AMD 9070 XT).
+# Whisper large-v3-turbo via faster-whisper (CTranslate2): CUDA/CPU su Windows,
+# Metal/CPU su macOS, CUDA/CPU su Linux — stesso motore e stesso modello ovunque.
 # Se il modello non c'e' o WHISPER=0, si ricade su Vosk piccolo.
 # ---------------------------------------------------------------------------
-WHISPER_GGUF = os.path.expanduser("~/.cache/whisper/whisper-large-v3-turbo-Q8_0.gguf")
+WHISPER_MODEL = os.path.expanduser(
+    "~/.cache/whisper/faster-whisper-large-v3-turbo")
 _whisper = {"model": None}
 _whisper_lock = threading.Lock()
 
@@ -243,32 +246,39 @@ def get_stt():
 
 
 def get_whisper():
-    """Carica il modello Whisper una sola volta; resta sulla GPU via Vulkan."""
+    """Carica Whisper una sola volta: CUDA (NVIDIA) se presente, CPU altrimenti."""
     if _whisper["model"] is None:
         with _whisper_lock:
             if _whisper["model"] is None:
-                print("[whisper] caricamento large-v3-turbo Q8_0 (Vulkan)...")
-                import transcribe_cpp as tc
-                _whisper["model"] = tc.Model(WHISPER_GGUF)
+                dev = os.environ.get("WHISPER_DEVICE", "auto")
+                if dev == "auto":
+                    try:
+                        import ctranslate2 as ct
+                        dev = "cuda" if ct.get_cuda_device_count() > 0 else "cpu"
+                    except Exception:
+                        dev = "cpu"
+                print(f"[whisper] caricamento large-v3-turbo (faster-whisper, device={dev})...")
+                kw = {"compute_type": os.environ.get("WHISPER_COMPUTE", "default")}
+                if dev == "cpu":
+                    kw["cpu_threads"] = min(8, os.cpu_count() or 4)  # benchmark: ottimo su Zen4
+                _whisper["model"] = WhisperModel(WHISPER_MODEL, device=dev, **kw)
     return _whisper["model"]
 
 
 def whisper_available() -> bool:
-    if os.environ.get("WHISPER", "1") != "1" or not os.path.isfile(WHISPER_GGUF):
-        return False
-    if not pu.IS_WINDOWS:
-        # il wheel transcribe_cpp che usiamo e' Windows-only (DLL Vulkan):
-        # fuori da Windows Whisper resta disattivo e si usa Vosk
-        return False
-    return True
+    return (os.environ.get("WHISPER", "1") == "1"
+            and os.path.isdir(WHISPER_MODEL)
+            and os.path.isfile(os.path.join(WHISPER_MODEL, "model.bin")))
 
 
 def _whisper_transcribe(pcm16: bytes) -> str:
-    """PCM s16le 16k mono -> testo con Whisper turbo (float32, GPU)."""
+    """PCM s16le 16k mono -> testo con Whisper turbo."""
     a = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-    model = get_whisper()
-    with model.session() as s:
-        return (s.run(a).text or "").strip()
+    lang = os.environ.get("WHISPER_LANG", "it")  # "auto" per il rilevamento automatico
+    segments, _info = get_whisper().transcribe(
+        a, language=None if lang == "auto" else lang,
+        beam_size=1, vad_filter=True, condition_on_previous_text=False)
+    return " ".join(s.text for s in segments).strip()
 
 
 def _vosk_transcribe(pcm: bytes) -> str:
@@ -1310,17 +1320,15 @@ def api_list():
 
 @app.get("/api/stt")
 def api_stt():
-    """Quale trascrittore e' attivo (Whisper GPU o fallback Vosk)."""
+    """Quale trascrittore e' attivo (Whisper GPU/CPU o fallback Vosk)."""
     if whisper_available():
-        device = "vulkan/gpu"
         try:
-            import transcribe_cpp as tc
-            devs = [str(b).lower() for b in getattr(tc, "backends", [])]
-            if not any("vulkan" in d or "cuda" in d or "rocm" in d for d in devs):
-                device = "cpu"
+            import ctranslate2 as ct
+            gpu = ct.get_cuda_device_count() > 0
         except Exception:
-            pass
-        return {"engine": "whisper", "model": "large-v3-turbo Q8_0", "device": device}
+            gpu = False
+        return {"engine": "whisper", "model": "large-v3-turbo (CTranslate2)",
+                "device": "cuda/gpu" if gpu else "cpu"}
     return {"engine": "vosk", "model": "small-it-0.22", "device": "cpu"}
 
 

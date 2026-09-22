@@ -28,9 +28,12 @@ except ImportError:  # eseguito come script diretto
     from chicco_agent import platform_utils as pu
 
 DATA = pu.data_dir()
-WHISPER_GGUF = Path.home() / ".cache" / "whisper" / "whisper-large-v3-turbo-Q8_0.gguf"
-WHISPER_URL = ("https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/"
-               "resolve/main/whisper-large-v3-turbo-Q8_0.gguf")
+FW_DIR = Path.home() / ".cache" / "whisper" / "faster-whisper-large-v3-turbo"
+FW_REPO = "deepdml/faster-whisper-large-v3-turbo-ct2"
+FW_BASE = ("https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/"
+           "resolve/main/")
+FW_FILES = ("config.json", "model.bin", "preprocessor_config.json",
+            "tokenizer.json", "vocabulary.json")
 VOSK_DIR = Path.home() / ".cache" / "vosk" / "vosk-model-small-it-0.22"
 VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-it-0.22.zip"
 PKG = Path(__file__).resolve().parent
@@ -114,13 +117,16 @@ def py_import(mod: str) -> bool:
 # ---------------------------------------------------------------------------
 def install_pip_deps() -> None:
     _step("Dipendenze Python")
+    common = [("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
+              ("laya", "laya"), ("pyttsx3", "pyttsx3"),
+              ("vosk", "vosk"), ("soundcard", "soundcard"),
+              ("numpy", "numpy"), ("PIL", "pillow"),
+              ("send2trash", "send2trash"),
+              ("faster_whisper", "faster-whisper")]
+    if pu.IS_WINDOWS:
+        common += [("pycaw", "pycaw"), ("comtypes", "comtypes")]
     missing = []
-    for mod, pkg in [("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
-                     ("laya", "laya"), ("pyttsx3", "pyttsx3"),
-                     ("vosk", "vosk"), ("soundcard", "soundcard"),
-                     ("numpy", "numpy"), ("PIL", "pillow"),
-                     ("send2trash", "send2trash"), ("pycaw", "pycaw"),
-                     ("comtypes", "comtypes"), ("transcribe_cpp", "transcribe-cpp")]:
+    for mod, pkg in common:
         if not py_import(mod):
             missing.append(pkg)
     if missing:
@@ -186,17 +192,23 @@ def install_qwen() -> None:
         _ok(f"{tag} installato") if qwen_tag_ok(tag) else _fail(f"pull {tag} fallito")
 
 
+def _fw_file_present() -> bool:
+    return FW_DIR.is_dir() and (FW_DIR / "model.bin").is_file()
+
+
 def install_whisper() -> None:
-    _step("Whisper large-v3-turbo Q8_0 (~874 MB, STT su GPU)")
-    if WHISPER_GGUF.exists():
-        _ok(f"gia' presente: {WHISPER_GGUF}")
+    _step("Whisper large-v3-turbo CTranslate2 (~1.6 GB, tutti gli OS)")
+    if _fw_file_present():
+        _ok(f"gia' presente: {FW_DIR}")
         return
-    WHISPER_GGUF.parent.mkdir(parents=True, exist_ok=True)
-    tmp = WHISPER_GGUF.with_suffix(".part")
-    print("  download da Hugging Face...")
+    FW_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"  download da Hugging Face ({FW_REPO})...")
     try:
-        urllib.request.urlretrieve(WHISPER_URL, tmp)
-        tmp.rename(WHISPER_GGUF)
+        for name in FW_FILES:
+            print(f"    {name}...")
+            dest = FW_DIR / name
+            urllib.request.urlretrieve(FW_BASE + name, str(dest) + ".part")
+            Path(str(dest) + ".part").rename(dest)
         _ok("Whisper installato")
     except Exception as exc:
         _warn(f"download fallito ({exc}): si usera' Vosk (piu' semplice)")
@@ -238,7 +250,7 @@ def cmd_doctor() -> int:
     checks = [
         ("Dipendenze Python (fastapi)", py_import("fastapi") and py_import("uvicorn")),
         ("Laya (intent)", py_import("laya")),
-        ("Whisper GGUF", WHISPER_GGUF.exists()),
+        ("Whisper large-v3-turbo (CT2)", _fw_file_present()),
         ("Vosk it", VOSK_DIR.is_dir()),
         ("Ollama installato", OLLAMA_EXE.exists()),
         ("Ollama attivo", ollama_ok()),
@@ -262,7 +274,7 @@ def cmd_run(only: str | None = None) -> int:
     if not (ollama_ok() and qwen_ok()):
         install_ollama()
         install_qwen()
-    if not WHISPER_GGUF.exists() and os.environ.get("WHISPER", "1") == "1":
+    if not _fw_file_present() and os.environ.get("WHISPER", "1") == "1":
         install_whisper()
     if not VOSK_DIR.is_dir():
         install_vosk()

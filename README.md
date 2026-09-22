@@ -8,7 +8,7 @@ risponde a voce. Nessuna API key, nessun cloud, nessun costo per token.
 Il progetto nasce come dimostrazione di [Laya](https://pypi.org/project/laya/), un
 decision-engine non autoregressivo usato qui per la classificazione degli intent.
 
-![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![GPU](https://img.shields.io/badge/GPU-Vulkan%20 AMD-green)
+![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-faster--whisper%20%7C%20CTranslate2-purple)
 
 ---
 
@@ -64,9 +64,9 @@ normale.
  │  widget.py)     │ ◀────── │                           │
  └────────────────┘  testo  │ 1. STT: Whisper           │
       ▲   bolla             │    large-v3-turbo         │
-      │   TTS               │    GGUF Q8_0              │
-      │                     │    (transcribe.cpp,       │
- ┌──────────────┐           │     Vulkan → AMD GPU)     │
+      │   TTS               │    (faster-whisper,       │
+      │                     │    CTranslate2: CUDA o    │
+ ┌──────────────┐           │    CPU int8, tutti gli OS)│
  │ UI web       │           │    fallback: Vosk it      │
  │ (browser)    │           │ 2. Correzione STT:        │
  └──────────────┘           │    Qwen ripulisce la      │
@@ -85,7 +85,7 @@ normale.
 
 | Livello | Tecnologia | Ruolo |
 |---|---|---|
-| **STT** | [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) + `whisper-large-v3-turbo-Q8_0.gguf` su **Vulkan** (testato su AMD RX 9070 XT, ~6× realtime) | trascrizione it/qualunque lingua; fallback Vosk piccolo |
+| **STT** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) + `large-v3-turbo` CT2 (~1,6 GB): **CUDA** se hai NVIDIA, altrimenti **CPU int8** multi-thread — stesso motore su Windows, macOS e Linux. Benchmark su Ryzen 7800X3D: CPU int8 ~4 s per un comando vocale tipico (~2 s di audio). Fallback Vosk piccolo | trascrizione it/qualunque lingua (env `WHISPER_LANG=auto` per il rilevamento automatico); fallback Vosk |
 | **Intent** | regole testuali + [Laya](https://pypi.org/project/laya/) (ModernBERT, probabilità calibrate) | classificare il comando in ~20 ms, 3 livelli di fallback |
 | **LLM** | Qwen2.5 via [Ollama](https://ollama.com), dimensione **selezionabile** (0.5b / 1.5b / 3b — default 1.5b) | correzione della trascrizione (con guardie anti-danno: intent, luoghi, siti noti) + traduzione frasi libere in specifica JSON (`create_file{name,content}`…) + suggerimento 'Intendavi X?' per le app; fallback fuzzy `difflib` sui nomi d'app. Benchmark su Ryzen 7800X3D: 0.5b ~0,05 s/comando ma pasticcia le frasi corrette; 1.5b ~0,55 s e non tocca nulla di giusto; 3b uguale al 1.5b col doppio della RAM |
 | **Esecuzione** | Python (os, subprocess, send2trash, pycaw, webbrowser) | azioni reali: file system, app, siti, volume |
@@ -99,7 +99,7 @@ normale.
 
 - **Windows 10/11** (esperienza completa) oppure **macOS 13+** / **Linux** (vedi Compatibilità)
 - **Python 3.10+** con pip
-- **GPU**: opzionale ma consigliata su Windows (Vulkan per Whisper); funziona anche solo CPU
+- **GPU**: opzionale — con NVIDIA (CUDA) la trascrizione vola; su CPU pura int8 resta utilizzabile
 - ~3 GB di disco per i modelli
 
 ## 🌍 Compatibilità multipiattaforma
@@ -112,7 +112,7 @@ scansione indici su runner Windows, macOS e Linux a ogni push.
 | Funzione | Windows | macOS | Linux |
 |---|---|---|---|
 | Server, pipeline, intent, correzione STT, UI web | ✅ | ✅ | ✅ |
-| STT Whisper GPU (Vulkan) | ✅ | — (fallback **Vosk**) | — (fallback **Vosk**) |
+| STT Whisper (faster-whisper) | ✅ CUDA/CPU | ✅ CUDA/**Metal**/CPU | ✅ CUDA/CPU |
 | TTS italiano | ✅ SAPI (Elsa) | ✅ NSSpeech (Alice) | ✅ espeak-ng (`apt install espeak-ng`) |
 | Indice app | menu Start, Store/AppX, portabili | `/Applications` | `.desktop` (XDG) |
 | Librerie giochi | Steam, Epic, GOG, launcher | **Steam** (stesso formato `.acf`) | **Steam** (stesso formato) |
@@ -121,16 +121,16 @@ scansione indici su runner Windows, macOS e Linux a ogni push.
 | Cartelle dati | `%LOCALAPPDATA%\chicco` | `~/Library/Application Support/chicco` | `~/.local/share/chicco` |
 | Installazione Ollama (`chicco setup`) | winget | brew | script ufficiale |
 
-Nota: fuori da Windows Whisper GPU è disattivo (il wheel `transcribe_cpp` contiene DLL
-Windows) e la trascrizione usa automaticamente Vosk: meno precisa ma funzionante.
-Su Linux servono `espeak-ng` per la voce e `libportaudio2` per il microfono.
+Nota: la repo Systran ufficiale del modello è risultata inaccessibile, quindi si usa
+la conversione CT2 di riferimento della community (`deepdml/faster-whisper-large-v3-turbo-ct2`).
+Con GPU NVIDIA aggiungi i CUDA cuDNN (vedi sotto) per l'accelerazione; altrimenti CPU int8.
 
 ## 📦 Installazione — un solo comando
 
 `chicco run` fa **tutto in automatico**: installa le dipendenze mancanti, Ollama
 (via winget su Windows, brew su macOS, script ufficiale su Linux), i modelli Qwen
-(1.5b predefinito + 0.5b di riserva), Whisper large-v3-turbo Q8_0 (~874 MB, solo
-Windows) e Vosk di fallback, poi avvia server e widget.
+(1.5b predefinito + 0.5b di riserva), Whisper large-v3-turbo CTranslate2 (~1,6 GB,
+tutti gli OS) e Vosk di fallback, poi avvia server e widget.
 
 ### Windows
 
@@ -174,20 +174,23 @@ Comandi disponibili:
 
 ```bat
 :: 1. dipendenze Python
-pip install fastapi uvicorn laya pyttsx3 vosk soundcard numpy pillow send2trash pycaw comtypes transcribe_cpp
+pip install fastapi uvicorn laya pyttsx3 vosk soundcard numpy pillow send2trash faster-whisper pycaw comtypes
 
 :: 2. Ollama + modelli (1.5b e' il default, 0.5b la riserva)
 winget install Ollama.Ollama
 ollama pull qwen2.5:1.5b
 ollama pull qwen2.5:0.5b
 
-:: 3. Whisper large-v3-turbo GGUF (~874 MB)
-curl -L -o %USERPROFILE%\.cache\whisper\whisper-large-v3-turbo-Q8_0.gguf ^
-  https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/resolve/main/whisper-large-v3-turbo-Q8_0.gguf
+:: 3. Whisper large-v3-turbo CTranslate2 (~1,6 GB, tutti gli OS)
+:: scaricato automaticamente anche da `chicco setup`/`chicco run`
+huggingface-cli download deepdml/faster-whisper-large-v3-turbo-ct2 ^
+  --local-dir %USERPROFILE%\.cache\whisper\faster-whisper-large-v3-turbo
 ```
 
 > Vosk (fallback STT) scarica il modello `vosk-model-small-it-0.22` in
-> `~/.cache/vosk/` al primo avvio se assente; senza Whisper si usa solo Vosk.
+> `~/.cache/vosk/` al primo avvio se assente; senza il modello CT2 di Whisper si
+> usa solo Vosk. Con GPU NVIDIA installa i CUDA cuDNN per l'accelerazione:
+> `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*`
 
 ## 🚀 Avvio manuale (senza CLI)
 
@@ -246,7 +249,7 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 
 ```
 chicco_agent/
-├── server.py         # FastAPI: STT, intent, LLM, esecuzione, TTS, API
+├── server.py         # FastAPI: STT (faster-whisper/Vosk), intent, LLM, esecuzione, TTS, API
 ├── widget.py         # widget desktop Tkinter (trasparente, trascinabile)
 ├── ui.html           # UI web stile ChatGPT
 ├── cli.py            # comandi chicco run/setup/doctor/stop
@@ -260,10 +263,10 @@ File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows)
 
 ## 🍎 Note per piattaforma
 
-- **Windows**: esperienza completa — Whisper su GPU via Vulkan, widget trasparente
-  click-through, TTS SAPI con voci italiane, controllo volume pycaw.
-- **macOS**: trascrizione con **Vosk** (il wheel Whisper usato su Windows non ha
-  build Apple), TTS con la voce di sistema, widget semi-trasparente (Aqua non
+- **Windows**: esperienza completa — Whisper via faster-whisper (CUDA o CPU), widget
+  trasparente click-through, TTS SAPI con voci italiane, controllo volume pycaw.
+- **macOS**: **Whisper ora funziona anche qui**: faster-whisper gira su Metal
+  (configurabile) o CPU, TTS con la voce di sistema, widget semi-trasparente (Aqua non
   supporta il keying a colore), giochi letti dai manifest `.acf` di Steam
   (`~/Library/Application Support/Steam`). Al primo avvio concedere il microfono
   in Impostazioni → Privacy e sicurezza.
@@ -272,6 +275,10 @@ File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows)
   always-on-top del widget può dipendere dal compositor.
 - **Ovunque**: server, pipeline (intent + correzione + conferma vocale), UI web e
   tutti gli endpoint sono identici — cambia solo la "pelle" di sistema.
+- **Accelerazione Whisper**: `WHISPER_DEVICE=auto|cuda|cpu` (default: CUDA se
+  presente), `WHISPER_COMPUTE=default|int8|...`, `WHISPER_LANG=it|auto`.
+  Su macOS è possibile Metal via `pip install ctranslate2` con supporto Metal
+  (sperimentale) o `WHISPER_DEVICE=cpu`.
 
 ## 🛠️ Estendere
 
@@ -279,6 +286,7 @@ File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows)
 - **Nuovi comandi**: aggiungi parole chiave in `KEYWORDS` + un ramo in `run_command()`
 - **Altri launcher di gioco**: aggiungi un collector in `chicco_agent/games.py`
 - **Disattivare Whisper**: variabile d'ambiente `WHISPER=0` (usa solo Vosk)
+- **Dispositivo/compute Whisper**: env `WHISPER_DEVICE`, `WHISPER_COMPUTE`, `WHISPER_LANG` (vedi Note per piattaforma)
 - **Microfono/latenza**: il modello Whisper resta residente in RAM/VRAM; avvio a freddo ~1 s
 
 ## 📄 Licenza
