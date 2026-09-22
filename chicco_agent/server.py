@@ -373,6 +373,33 @@ def normalize_stt(text: str) -> str | None:
         return None
 
 
+SITI_NOTI = ("youtube", "google", "gmail", "maps", "amazon", "netflix", "twitch",
+             "github", "reddit", "facebook", "instagram", "whatsapp", "spotify",
+             "wikipedia", "chatgpt", "steam", "discord")
+LUOGHI = ("desktop", "scrivania", "documenti", "download")
+
+
+def safe_normalize(text: str) -> str | None:
+    """Correzione STT con guardie anti-danno: accetta il testo corretto da Qwen
+    solo se non fa perdere un intent keyword, un luogo o un sito noto.
+    Ritorna None quando la correzione non e' utilizzabile (o identica)."""
+    cand = normalize_stt(text)
+    if not cand or cand.lower() == text.strip().lower():
+        return None
+    if "->" in cand:
+        # il 0.5B a volte ricopia il formato degli esempi dello schema
+        print(f"[normalize] scartata (fuga di formato): {cand!r}")
+        return None
+    raw_l, cand_l = text.lower(), cand.lower()
+    kw_raw, kw_new = keyword_intent(raw_l), keyword_intent(cand_l)
+    lost_place = (any(p in raw_l for p in LUOGHI) and not any(p in cand_l for p in LUOGHI))
+    lost_site = any(s in raw_l and s not in cand_l for s in SITI_NOTI)
+    if (kw_raw and kw_raw != kw_new) or lost_place or lost_site:
+        print(f"[normalize] scartata (perdeva intent={kw_raw}, luogo o sito): {cand!r}")
+        return None
+    return cand
+
+
 def ollama_parse(text: str) -> dict | None:
     """Chiede al piccolo modello locale di tradurre il comando in JSON."""
     try:
@@ -878,24 +905,12 @@ def run_command(text: str, intent: str) -> str:
 def process(text: str, source: str) -> dict:
     raw_stt, corrected = text, None
     if source == "voce" and text:
-        # fase 0: Qwen corregge gli errori di trascrizione prima di tutto,
-        # MA solo se non fa perdere un intent gia' riconosciuto dalle keyword
-        # (il 0.5B a volte "corregge" frasi giuste in frasi peggiori)
-        cand = normalize_stt(text)
-        if cand and cand.lower() != raw_stt.strip().lower():
-            kw_raw, kw_new = keyword_intent(raw_stt), keyword_intent(cand)
-            raw_l, cand_l = raw_stt.lower(), cand.lower()
-            lost_place = (any(p in raw_l for p in ("desktop", "scrivania", "documenti", "download"))
-                          and not any(p in cand_l for p in ("desktop", "scrivania", "documenti", "download")))
-            SITI_NOTI = ("youtube", "google", "gmail", "maps", "amazon", "netflix", "twitch",
-                         "github", "reddit", "facebook", "instagram", "whatsapp", "spotify",
-                         "wikipedia", "chatgpt", "steam", "discord")
-            lost_site = any(s in raw_l and s not in cand_l for s in SITI_NOTI)
-            if not (kw_raw and kw_raw != kw_new) and not lost_place and not lost_site:
-                corrected, text = cand, cand
-                print(f"[normalize] {raw_stt!r} -> {cand!r}")
-            else:
-                print(f"[normalize] scartata (perdeva intent={kw_raw}, luogo o sito): {cand!r}")
+        # fase 0: Qwen corregge gli errori di trascrizione prima di tutto
+        # (con guardie anti-danno, vedi safe_normalize)
+        cand = safe_normalize(text)
+        if cand:
+            corrected, text = cand, cand
+            print(f"[normalize] {raw_stt!r} -> {cand!r}")
     intent, src = detect_intent(text)
     t0 = time.time()
     try:
@@ -1012,6 +1027,17 @@ async def api_text(payload: dict):
     if not text:
         return JSONResponse({"error": "testo vuoto"}, status_code=400)
     return process(text, "testo")
+
+
+@app.post("/api/normalize")
+def api_normalize(payload: dict):
+    """Corregge una trascrizione STT con Qwen (guardie incluse), SENZA eseguire
+    nulla: per mostrare nel widget 'cosa ho sentito vs cosa ho capito'."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "testo vuoto"}, status_code=400)
+    corrected = safe_normalize(text)
+    return {"raw": text, "text": corrected or text, "corrected": bool(corrected)}
 
 
 @app.get("/api/apps")

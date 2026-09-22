@@ -307,6 +307,7 @@ _families = set(tkfont.families(root))
 UI_FAMILY = next((f for f in ("Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI")
                   if f in _families), "TkDefaultFont")
 FONT_UI = (UI_FAMILY, 10)
+FONT_MUT = (UI_FAMILY, 8)
 
 prefs = _load_prefs()
 x, y = prefs.get("x"), prefs.get("y")
@@ -369,6 +370,8 @@ class Bubble:
         self.bg_item = self.cv.create_image(0, 0, anchor="nw")
         self.txt_item = self.cv.create_text(self.PADX, self.PADY, anchor="nw", fill=TXT,
                                             font=FONT_UI, width=self.MAXW)
+        self.raw_item = self.cv.create_text(self.PADX, self.PADY, anchor="nw", fill=MUT,
+                                            font=FONT_MUT, width=self.MAXW)
         self.cv.bind("<Button-1>", lambda e: self.hide())  # click sulla bolla = chiudi
         self.win.withdraw()
 
@@ -381,15 +384,23 @@ class Bubble:
                 _key(_rounded_panel(w, h, self.RADIUS, PILL_BG, PILL_EDGE)))
         return self._imgs[k]
 
-    def show(self, text, sticky=False):
+    def show(self, text, sticky=False, raw=None):
         if self.win is None:
             self._build()
         self._stop_dots()
         thinking = text.strip() == "…"
         self.cv.itemconfig(self.txt_item, text=("•••" if thinking else text))
         x0, y0, x1, y1 = self.cv.bbox(self.txt_item)
+        if raw:
+            # trascrizione originale corretta da Qwen (come nella UI web)
+            self.cv.coords(self.raw_item, self.PADX, y1 + 5)
+            self.cv.itemconfig(self.raw_item, text='\U0001F3A7 "' + raw + '"')
+            rb = self.cv.bbox(self.raw_item)
+            bh = (rb[3] - y0 + 2 * self.PADY) if rb else (y1 - y0 + 2 * self.PADY)
+        else:
+            self.cv.itemconfig(self.raw_item, text="")
+            bh = y1 - y0 + 2 * self.PADY
         bw = max(48, x1 - x0 + 2 * self.PADX)
-        bh = y1 - y0 + 2 * self.PADY
         if thinking:
             self.cv.itemconfig(self.txt_item, anchor="w", fill=MUT)
             self.cv.coords(self.txt_item, (bw - (x1 - x0)) / 2, bh / 2)
@@ -820,7 +831,7 @@ def stop_tts():
 
 
 def _show_entry(e):
-    bubble.show(e.get("assistant") or e.get("error") or "errore")
+    bubble.show(e.get("assistant") or e.get("error") or "errore", raw=e.get("raw"))
     if tts_muted["on"]:
         return  # muto: la risposta resta solo scritta nella bolla
     winsound.PlaySound(str(BASE / "_tts_reply.wav"),
