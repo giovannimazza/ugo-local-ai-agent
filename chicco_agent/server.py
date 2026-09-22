@@ -16,6 +16,7 @@ Comandi supportati:
 Avvio:  python voice_assistant_server.py   ->  http://127.0.0.1:8123
 """
 
+import games
 import io
 import appindex
 import json
@@ -171,6 +172,7 @@ app = FastAPI(title="Assistente Vocale Locale")
 _log_lock = threading.Lock()
 _tts_lock = threading.Lock()
 _history = []           # chat per la UI
+_last_items = []        # ultima lista giochi/app prodotta (per la modale UI)
 _stt = {"model": None, "recognizer": None}
 _laya_router = None
 
@@ -283,6 +285,7 @@ LAYA_QUESTIONS = {
             "date": "ask what day or date it is today",
             "volume": "turn volume up, down or mute the computer",
             "list_files": "list or show the files in a directory",
+            "list_apps": "ask which apps or games are installed (e.g. what games do I have on steam)",
             "unknown": "anything else: small talk, questions, other requests",
         },
     }
@@ -305,6 +308,7 @@ OLLAMA_SCHEMA = (
     'For create_file and append_file the name MUST end with .txt (text file). '
     'content holds the exact text to write. If nothing fits use unknown. '
     'Answer ONLY with the JSON object. '
+    'If the user asks what apps or games are installed use unknown (a rule handles it). '
     'Examples: '
     'If the user wants to open an application, prefer the exact app name from this '
     f'list of installed apps: {appindex.llm_context(limit=90)}. '
@@ -374,6 +378,10 @@ KEYWORDS = [
     ("date", ("che giorno", "data di oggi", "che data")),
     ("list_files", ("elenca i file", "mostra i file", "elenca i documenti",
                     "cosa c'e in", "lista file")),
+    ("list_apps", ("quali app ho", "che app ho", "quali giochi ho", "che giochi ho",
+                   "lista giochi", "lista app", "elenca i giochi", "elenca le app",
+                   "giochi installati", "app installate", "applicazioni installate",
+                   "mostra i giochi", "mostra le app", "cosa ho su", "cosa c'e su")),
 ]
 
 
@@ -558,9 +566,61 @@ def execute_spec(spec: dict, text: str) -> str:
             "regolare il volume o elencare i file.")
 
 
+def _extract_launcher(text: str) -> str | None:
+    """Dalla frase individua il launcher citato: steam, epic, gog, tutti..."""
+    t = text.lower()
+    if re.search(r"\bepic\b", t):
+        return "epic"
+    if re.search(r"\bgog\b", t):
+        return "gog"
+    if re.search(r"\bsteam\b", t):
+        return "steam"
+    for m in ("riot", "league of legends", "ubisoft", "battle.net", "battlenet",
+              "origin", "ea app", "ea games"):
+        if m in t:
+            return "launcher"
+    return None
+
+
+def _fmt_game_list(gl: list) -> str:
+    """Lista compatta leggibile ad alta voce: max 12 titoli + contatore."""
+    names = [g["name"] for g in gl]
+    if len(names) <= 12:
+        return ", ".join(names)
+    return ", ".join(names[:12]) + f"... e altri {len(names) - 12}."
+
+
+def _handle_list_apps(text: str) -> str:
+    """'quali giochi ho su steam' / 'quali app ho installato': prepara la lista
+    per la modale della UI (in _last_items) e una risposta parlata."""
+    global _last_items
+    launcher = _extract_launcher(text)
+    if launcher:
+        gl = games.by_launcher(launcher)
+        label = games.LAUNCHER_LABEL.get(launcher, launcher)
+        _last_items = [{"title": g["name"], "subtitle": label, "kind": g["launcher"]} for g in gl]
+        if not gl:
+            return f"Non mi risulta nessun gioco installato da {label}."
+        noun = "launcher" if launcher == "launcher" else "gioco" if len(gl) == 1 else "giochi"
+        verb = "Hai" if launcher != "launcher" else "Ho trovato"
+        return f"{verb} {len(gl)} {noun} da {label}: {_fmt_game_list(gl)}"
+    # senza launcher citato: tutto quello che ho trovato
+    gl = games.get_games()
+    apps = appindex.get_apps()
+    _last_items = ([{"title": g["name"], "subtitle": games.LAUNCHER_LABEL.get(g["launcher"], g["launcher"]),
+                     "kind": g["launcher"]} for g in gl] +
+                    [{"title": a["name"], "subtitle": "applicazione", "kind": a["kind"]} for a in apps])
+    return (f"Hai {len(apps)} applicazioni e {len(gl)} giochi indicizzati: "
+            "ti apro l'elenco completo a schermo.")
+
+
 def run_command(text: str, intent: str) -> str:
     """Esegue il comando e ritorna la frase da dire alla voce."""
     t = text.lower()
+
+    # 'quali app/giochi ho' -> lista indicizzata, mostrata in modale dalla UI
+    if intent == "list_apps":
+        return _handle_list_apps(text)
 
     # Note vocali: "appunta che ..." -> appende in Note.txt sul desktop
     if intent == "note":
@@ -777,10 +837,14 @@ def process(text: str, source: str) -> dict:
                  f"({type(exc).__name__}). Riprova o riformula.")
         intent, src = f"error:{intent}", src
     dt = int((time.time() - t0) * 1000)
+    with _log_lock:
+        items = list(_last_items) if intent == "list_apps" else []
     entry = {
         "user": text, "assistant": reply, "intent": intent,
         "detector": src, "input": source, "ms": dt, "ts": datetime.now().isoformat(timespec="seconds"),
     }
+    if items:
+        entry["show_list"] = True
     with _log_lock:
         _history.append(entry)
         if len(_history) > 200:
@@ -889,6 +953,14 @@ def api_apps(q: str | None = Query(default=None)):
 def api_apps_rescan():
     n = len(appindex.get_apps(force=True))
     return {"ok": True, "count": n}
+
+
+@app.get("/api/list")
+def api_list():
+    """Ultima lista giochi/app richiesta a voce ('quali giochi ho su steam')."""
+    with _log_lock:
+        items = list(_last_items)
+    return {"count": len(items), "items": items}
 
 
 @app.get("/api/stt")

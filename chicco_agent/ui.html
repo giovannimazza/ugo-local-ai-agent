@@ -2,146 +2,231 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<title>Assistente Widget</title>
+<title>Chicco — Assistente Locale</title>
 <style>
-  :root { --bg:#0f1220; --card:#181c2f; --acc:#7c6cff; --txt:#e8e9f3; --mut:#8b90ad; }
+  :root { --bg:#0f1220; --card:#181c2f; --acc:#7c6cff; --txt:#e8e9f3; --mut:#8b90ad;
+          --border:#262b47; }
   * { box-sizing:border-box; margin:0; }
   html, body { height:100%; }
-  body { background:radial-gradient(1200px 600px at 70% 20%, #171b31 0%, var(--bg) 60%);
-         color:var(--txt); font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; }
+  body { background:var(--bg); color:var(--txt); font-family:'Segoe UI',system-ui,sans-serif; }
+  .app { display:flex; height:100vh; }
 
-  /* ---- widget flottante ---- */
-  .widget { position:fixed; right:26px; bottom:26px; display:flex; flex-direction:column;
-            align-items:flex-end; gap:10px; z-index:50; }
+  /* ---- chat ---- */
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .chat { flex:1; overflow-y:auto; padding:28px 0 12px; }
+  .col { max-width:760px; margin:0 auto; padding:0 20px; display:flex;
+         flex-direction:column; gap:18px; }
+  .row { display:flex; gap:14px; align-items:flex-start; }
+  .row.you { flex-direction:row-reverse; }
+  .av { width:34px; height:34px; border-radius:50%; flex-shrink:0; display:flex;
+        align-items:center; justify-content:center; font-size:1.05rem; }
+  .av.y { background:var(--acc); }
+  .av.b { background:var(--card); border:1px solid var(--border); }
+  .bubble { max-width:76%; padding:12px 16px; border-radius:16px; line-height:1.55;
+            font-size:.95rem; white-space:pre-wrap; word-wrap:break-word; }
+  .you .bubble { background:var(--acc); color:#fff; border-top-right-radius:4px; }
+  .bot .bubble { background:var(--card); border:1px solid var(--border);
+                 border-top-left-radius:4px; }
+  .meta { display:block; margin-top:8px; font-size:.68rem; color:var(--mut); }
 
-  /* bolla risposta: appare sopra il widget e svanisce */
-  .bubble { max-width:320px; background:var(--card); border:1px solid #262b47;
-            padding:10px 14px; border-radius:14px; border-bottom-right-radius:4px;
-            font-size:.9rem; line-height:1.45; box-shadow:0 8px 30px #0007;
-            opacity:0; transform:translateY(8px); transition:opacity .25s, transform .25s;
-            pointer-events:none; }
-  .bubble.show { opacity:1; transform:none; }
-  .bubble .meta { display:block; margin-top:5px; font-size:.68rem; color:var(--mut); }
+  /* hero iniziale */
+  .hero { text-align:center; margin-top:10vh; }
+  .hero .logo { font-size:2.6rem; }
+  .hero h2 { font-size:1.5rem; margin:12px 0 8px; }
+  .hero p { color:var(--mut); font-size:.95rem; }
+  .sugg { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin-top:26px; }
+  .sugg button { background:var(--card); border:1px solid var(--border); color:var(--txt);
+                 padding:10px 14px; border-radius:12px; font-size:.85rem; cursor:pointer; }
+  .sugg button:hover { border-color:var(--acc); }
 
-  /* cerchio microfono */
-  .mic { width:64px; height:64px; border-radius:50%; border:none; cursor:pointer;
-         background:var(--acc); display:flex; align-items:center; justify-content:center;
-         box-shadow:0 6px 24px #7c6cff66; transition:transform .15s, background .2s; }
-  .mic:hover { transform:scale(1.06); }
-  .mic svg { width:28px; height:28px; fill:#fff; }
+  /* composer */
+  .composer { border-top:1px solid var(--border); padding:14px 20px 18px; }
+  .composer .inner { max-width:760px; margin:0 auto; display:flex; gap:10px;
+                     background:var(--card); border:1px solid var(--border);
+                     border-radius:16px; padding:10px; align-items:flex-end; }
+  .composer textarea { flex:1; background:transparent; border:none; outline:none;
+                       color:var(--txt); font-family:inherit; font-size:.95rem;
+                       resize:none; max-height:140px; padding:6px 8px; line-height:1.4; }
+  .iconbtn { width:38px; height:38px; border-radius:50%; border:none; cursor:pointer;
+             display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .mic { background:var(--acc); }
+  .mic svg { width:18px; height:18px; fill:#fff; }
   .mic.rec { background:#e5484d; animation:pulse 1.2s infinite; }
-  @keyframes pulse { 0%{box-shadow:0 0 0 0 #e5484d66} 70%{box-shadow:0 0 0 18px #e5484d00} 100%{box-shadow:0 0 0 0 #e5484d00} }
-  .mic:disabled { opacity:.55; cursor:wait; animation:none; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 #e5484d66} 70%{box-shadow:0 0 0 12px #e5484d00} 100%{box-shadow:0 0 0 0 #e5484d00} }
+  .send { background:var(--acc); }
+  .send svg { width:17px; height:17px; fill:#fff; }
+  .hint { text-align:center; color:var(--mut); font-size:.7rem; margin-top:8px; }
 
-  /* tasto textbox: pillola compatta che si espande */
-  .textzone { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
-  .chip { background:var(--card); border:1px solid #262b47; color:var(--mut);
-          font-size:.8rem; padding:8px 14px; border-radius:99px; cursor:pointer;
-          display:flex; align-items:center; gap:7px; transition:.2s; }
-  .chip:hover { color:var(--txt); border-color:var(--acc); }
-  .chip svg { width:14px; height:14px; fill:currentColor; }
-  .inputrow { display:none; gap:6px; }
-  .textzone.open .chip { display:none; }
-  .textzone.open .inputrow { display:flex; }
-  .inputrow input { width:240px; background:var(--card); border:1px solid #262b47; color:var(--txt);
-                    padding:10px 13px; border-radius:99px; font-size:.85rem; outline:none;
-                    box-shadow:0 8px 30px #0007; }
-  .inputrow input:focus { border-color:var(--acc); }
-  .inputrow button { width:38px; height:38px; border-radius:50%; border:none; background:var(--acc);
-                     color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center; }
-  .inputrow button svg { width:16px; height:16px; fill:#fff; }
+  /* modale lista app/giochi */
+  .overlay { position:fixed; inset:0; background:#000000aa; backdrop-filter:blur(3px);
+             display:none; align-items:center; justify-content:center; z-index:50; }
+  .overlay.open { display:flex; }
+  .modal { background:var(--bg); border:1px solid var(--border); border-radius:18px;
+           width:min(560px, 92vw); max-height:78vh; display:flex; flex-direction:column;
+           box-shadow:0 18px 60px #00000088; }
+  .modal header { display:flex; align-items:center; justify-content:space-between;
+                  padding:16px 20px 12px; border-bottom:1px solid var(--border); }
+  .modal header h3 { font-size:1rem; font-weight:600; }
+  .modal header span { color:var(--mut); font-size:.75rem; margin-left:10px; }
+  .modal header button { background:none; border:none; color:var(--mut); font-size:1.3rem;
+                         cursor:pointer; line-height:1; }
+  .modal header button:hover { color:var(--txt); }
+  .mlist { overflow-y:auto; padding:10px 12px 14px; }
+  .mitem { display:flex; align-items:center; gap:12px; padding:9px 12px; border-radius:12px; }
+  .mitem:hover { background:var(--card); }
+  .mitem .ic { width:34px; height:34px; border-radius:10px; background:var(--card);
+               border:1px solid var(--border); display:flex; align-items:center;
+               justify-content:center; font-size:.95rem; flex-shrink:0; }
+  .mitem .tx { min-width:0; }
+  .mitem .tx b { display:block; font-size:.9rem; font-weight:500; white-space:nowrap;
+                 overflow:hidden; text-overflow:ellipsis; }
+  .mitem .tx small { color:var(--mut); font-size:.7rem; }
 </style>
 </head>
 <body>
-<div class="widget">
-  <div class="bubble" id="bubble"></div>
-  <div class="textzone" id="textzone">
-    <div class="inputrow">
-      <input id="text" placeholder="Scrivi un comando…">
-      <button id="send" title="Invia">
-        <svg viewBox="0 0 24 24"><path d="M2 21 23 12 2 3l4 8 12 1-12 1z"/></svg>
-      </button>
+<div class="app">
+  <main class="main">
+    <div class="chat" id="chat">
+      <div class="col" id="col">
+        <div class="hero" id="hero">
+          <div class="logo">🎙️</div>
+          <h2>Ciao, sono Chicco</h2>
+          <p>Il tuo assistente locale. Parla col microfono o scrivi: creo cartelle e file,<br>
+             apro app e siti, faccio ricerche, regolo il volume.</p>
+          <div class="sugg">
+            <button data-q="crea una cartella chiamata Prova sul desktop">📁 Crea una cartella</button>
+            <button data-q="crea un file di testo chiamata spesa con dentro latte e pane">📝 Crea una nota</button>
+            <button data-q="apri youtube">▶️ Apri YouTube</button>
+            <button data-q="cerca notizie AI su google">🔎 Cerca su Google</button>
+            <button data-q="che ore sono?">🕐 Che ore sono?</button>
+          </div>
+        </div>
+      </div>
     </div>
-    <button class="chip" id="chip" title="Scrivi un comando">
-      <svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-6 4V6a2 2 0 0 1 2-2z"/></svg>
-      Scrivi…
-    </button>
+    <div class="composer">
+      <div class="inner">
+        <textarea id="text" rows="1" placeholder="Scrivi un messaggio a Chicco…"></textarea>
+        <button class="iconbtn mic" id="mic" title="Registra un comando vocale">
+          <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+        </button>
+        <button class="iconbtn send" id="send" title="Invia">
+          <svg viewBox="0 0 24 24"><path d="M2 21 23 12 2 3l4 8 12 1-12 1z"/></svg>
+        </button>
+      </div>
+      <div class="hint" id="status">Chicco può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.</div>
+    </div>
+  </main>
+</div>
+
+<div class="overlay" id="ovl">
+  <div class="modal">
+    <header>
+      <div><h3 id="mtitle">Elenco</h3><span id="mcount"></span></div>
+      <button id="mclose" title="Chiudi">&times;</button>
+    </header>
+    <div class="mlist" id="mlist"></div>
   </div>
-  <button class="mic" id="mic" title="Premi e parla">
-    <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-  </button>
 </div>
 <script>
-const micBtn = document.getElementById('mic'), bubble = document.getElementById('bubble');
-const textzone = document.getElementById('textzone'), textIn = document.getElementById('text');
-let bubbleTimer = null;
+const chat = document.getElementById('chat'), col = document.getElementById('col');
+const hero = document.getElementById('hero'), statusEl = document.getElementById('status');
+const textEl = document.getElementById('text'), micBtn = document.getElementById('mic');
+const ovl = document.getElementById('ovl'), mlist = document.getElementById('mlist');
+const mtitle = document.getElementById('mtitle'), mcount = document.getElementById('mcount');
 
-function show(text, meta, sticky) {
-  bubble.textContent = text;
-  if (meta) {
-    let m = document.createElement('span'); m.className = 'meta'; m.textContent = meta;
-    bubble.appendChild(m);
+const KIND_ICONS = {steam:'🎮', epic:'🟣', gog:'🟡', launcher:'🚀', appx:'🪟',
+                    lnk:'🪟', portable:'📦', shell:'⚙️'};
+function showList(title, items) {
+  mtitle.textContent = title;
+  mcount.textContent = items.length + ' voci';
+  mlist.innerHTML = '';
+  for (const it of items) {
+    const row = document.createElement('div'); row.className = 'mitem';
+    const ic = document.createElement('div'); ic.className = 'ic';
+    ic.textContent = KIND_ICONS[it.kind] || '📄';
+    const tx = document.createElement('div'); tx.className = 'tx';
+    const b = document.createElement('b'); b.textContent = it.title;
+    const s = document.createElement('small'); s.textContent = it.subtitle || '';
+    tx.append(b, s); row.append(ic, tx); mlist.appendChild(row);
   }
-  bubble.classList.add('show');
-  clearTimeout(bubbleTimer);
-  if (!sticky) bubbleTimer = setTimeout(() => bubble.classList.remove('show'), 7000);
+  ovl.classList.add('open');
+}
+document.getElementById('mclose').onclick = () => ovl.classList.remove('open');
+ovl.onclick = e => { if (e.target === ovl) ovl.classList.remove('open'); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') ovl.classList.remove('open'); });
+
+async function maybeShowList() {
+  try {
+    const r = await fetch('/api/list'); const d = await r.json();
+    if (d.count) showList(d.items.some(i => i.kind !== 'app' && ['steam','epic','gog','launcher'].includes(i.kind))
+                          ? 'Giochi e launcher installati' : 'Applicazioni installate', d.items);
+  } catch {}
 }
 
-function openInput()  { textzone.classList.add('open');  textIn.focus(); }
-function closeInput() { textzone.classList.remove('open'); textIn.value = ''; }
-document.getElementById('chip').onclick = openInput;
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeInput(); });
-document.addEventListener('click', e => {
-  if (textzone.classList.contains('open') && !textzone.contains(e.target)) closeInput();
-});
+function scroll() { chat.scrollTop = chat.scrollHeight; }
+function setStatus(s) { statusEl.textContent = s || 'Chicco può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.'; }
 
+function add(role, text, meta) {
+  hero && hero.remove();
+  const row = document.createElement('div');
+  row.className = 'row ' + (role === 'you' ? 'you' : 'bot');
+  const av = document.createElement('div');
+  av.className = 'av ' + (role === 'you' ? 'y' : 'b');
+  av.textContent = role === 'you' ? '🧑' : '🎙️';
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.textContent = text;
+  if (meta) { const m = document.createElement('span'); m.className = 'meta'; m.textContent = meta; b.appendChild(m); }
+  row.append(av, b); col.appendChild(row); scroll();
+}
+
+// ---- invio testo ----
 async function sendText() {
-  const t = textIn.value.trim(); if (!t) return;
-  closeInput();
-  show('…', '', true);
+  const t = textEl.value.trim(); if (!t) return;
+  textEl.value = ''; textEl.style.height = 'auto';
+  add('you', t); setStatus('Chicco sta elaborando…');
   try {
     const r = await fetch('/api/text', {method:'POST', headers:{'Content-Type':'application/json'},
                                         body:JSON.stringify({text:t})});
     const e = await r.json();
-    show(e.assistant || e.error || 'errore',
-         e.intent && e.intent !== '-' ? `${e.intent} · ${e.detector} · ${e.ms} ms` : '');
+    add('bot', e.assistant || e.error || 'errore',
+        e.intent && e.intent !== '-' ? `${e.intent} · ${e.detector} · ${e.ms} ms` : '');
     playReply();
-  } catch { show('Server non raggiungibile.'); }
+    if (e.show_list) maybeShowList();
+  } catch { add('bot', 'Server non raggiungibile.'); }
+  setStatus('');
 }
 document.getElementById('send').onclick = sendText;
-textIn.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
+textEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); } });
+textEl.addEventListener('input', () => { textEl.style.height = 'auto'; textEl.style.height = Math.min(140, textEl.scrollHeight) + 'px'; });
+document.querySelectorAll('.sugg button').forEach(b => b.onclick = () => { textEl.value = b.dataset.q; sendText(); });
 
-// ---- microfono ----
+// ---- microfono (come prima: webm -> /api/listen) ----
 let media, chunks = [], recording = false;
 micBtn.onclick = async () => {
   if (recording) { media.stop(); return; }
-  try {
-    media = new MediaRecorder(await navigator.mediaDevices.getUserMedia({audio:true}));
-  } catch { show('Permesso microfono negato'); return; }
-  chunks = []; recording = true; micBtn.classList.add('rec');
-  show('Sto ascoltando…', '', true);
+  try { media = new MediaRecorder(await navigator.mediaDevices.getUserMedia({audio:true})); }
+  catch { setStatus('Permesso microfono negato'); return; }
+  chunks = []; recording = true; micBtn.classList.add('rec'); setStatus('🔴 Sto ascoltando… clicca di nuovo per inviare');
   media.ondataavailable = e => chunks.push(e.data);
   media.onstop = async () => {
-    recording = false; micBtn.classList.remove('rec'); micBtn.disabled = true;
-    show('Trascrivo…', '', true);
+    recording = false; micBtn.classList.remove('rec'); setStatus('Trascrivo…');
     try {
       const fd = new FormData();
       fd.append('audio', new Blob(chunks, {type:'audio/webm'}), 'cmd.webm');
       const r = await fetch('/api/listen', {method:'POST', body:fd});
       const e = await r.json();
-      if (e.error) show(e.error);
-      else show(e.user ? `${e.user}` : '(non ho sentito nulla)',
-                e.intent && e.intent !== '-' ? `${e.intent} · ${e.detector} · ${e.ms} ms` : '');
-      playReply();
-    } catch { show('Server non raggiungibile.'); }
-    micBtn.disabled = false;
+      if (e.error) { setStatus(e.error); return; }
+      if (e.user) { add('you', e.user); }
+      add('bot', e.assistant, e.intent && e.intent !== '-' ? `${e.intent} · ${e.detector} · ${e.ms} ms` : '');
+      if (e.show_list) maybeShowList();
+    } catch { add('bot', 'Server non raggiungibile.'); }
+    setStatus(''); playReply();
   };
   media.start();
 };
 
-async function playReply() {
-  try { new Audio('/_tts_reply.wav?t=' + Date.now()).play(); } catch {}
-}
+async function playReply() { try { new Audio('/_tts_reply.wav?t=' + Date.now()).play(); } catch {} }
 </script>
 </body>
 </html>
