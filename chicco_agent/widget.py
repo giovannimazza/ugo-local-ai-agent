@@ -1,20 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-Widget desktop flottante dell'assistente vocale.
+Widget desktop flottante dell'assistente vocale (Chicco).
 
 Finestrella senza barra titolo, sempre in primo piano, TRASCINABILE ovunque:
   - cerchio microfono: 1 click = registra, 2o click = invia
-  - chip "Scrivi...": si espande in una casella di testo
-  - bolla di risposta che svanisce + voce TTS
+    (in hover si gonfia come una bollicina, alla pressione si schiaccia,
+     durante la registrazione pulsa un anello rosso)
+  - pillola "Scrivi a Chicco...": appare in hover, invio con Enter o col tasto
+  - bolla di risposta arrotondata che compare/svanisce in dissolvenza + voce TTS
+  - doppio click sul cerchio = info trascrittore
   - click destro sul cerchio = chiudi il widget
 
 Avvio consigliato (niente console):  pythonw assistant_widget.py
-Se il server non e' attivo, lo avvia da solo.
+Se il server non e' attivo, lo avvia da solo (in background, la UI appare subito).
+
+Nota tecnica: su Windows la trasparenza a colore-chiave (-transparentcolor)
+NON supporta l'alpha parziale. Tutti gli effetti "lucidi" (gradienti, riflessi,
+ombre dell'icona) sono quindi disegnati DENTRO le forme opache con Pillow;
+sul bordo esterno un anello scuro sottile maschera la scalettatura.
 """
 import io
 import json
-import subprocess
 import os
+import queue
+import subprocess
 import sys
 import threading
 import time
@@ -25,8 +34,9 @@ from pathlib import Path
 import numpy as np
 import soundcard as sc
 import tkinter as tk
+import tkinter.font as tkfont
 import winsound
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 
 PKG_DIR = Path(__file__).resolve().parent
 BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
@@ -34,17 +44,77 @@ BASE.mkdir(parents=True, exist_ok=True)
 PORT = 8123
 SR = 16000
 POS_FILE = BASE / "widget_pos.json"
-ACCENT, RED = "#7c6cff", "#e5484d"
+ROOT_URL = f"http://127.0.0.1:{PORT}"
+
+# ---------------------------------------------------------------------------
+# Palette
+# ---------------------------------------------------------------------------
+ACCENT, RED = "#7c6cff", "#e5484d"          # viola normale, rosso registrazione
 CARD, TXT, MUT = "#181c2f", "#e8e9f3", "#8b90ad"
-TRANSPARENT = "#010101"  # colore reso invisibile e click-through su Windows
+PILL_BG = "#1b1f33"      # riempimento pillola = sfondo della Entry (devono coincidere)
+PILL_EDGE = "#30365a"    # bordo sottile della pillola e della bolla
+SPK_BG = "#2a2f4a"       # pulsante altoparlante (voce attiva)
+TRANSPARENT = "#010101"  # colore-chiave: invisibile e click-through su Windows
+_KEY_RGB = (1, 1, 1)
+
+# ---------------------------------------------------------------------------
+# Layout (tutto in pixel, finestra a dimensione FISSA: le zone vuote sono
+# trasparenti e click-through, quindi non danno fastidio)
+# ---------------------------------------------------------------------------
+C = 100                  # lato del canvas del cerchio
+BD = 62                  # diametro del cerchio a riposo
+HOVER_SCALE = 1.10       # quanto si gonfia in hover
+PRESS_SCALE = 0.92       # quanto si schiaccia alla pressione
+DRAG_SCALE = 1.05        # "sollevato" mentre lo trascini
+S_MIN, S_MAX = 0.88, 1.18
+PULSE_N, PULSE_MS = 14, 1200   # fotogrammi e durata dell'anello di registrazione
+
+ENTRY_W, ENTRY_H = 190, 32     # pillola della textbox
+SEND_D, SEND_D_HOVER = 24, 27  # tasto invia a riposo / in hover
+SPK_D = 26
+GAP = 6
+
+# il cerchio e' centrato sopra il "tappo" destro della pillola
+WIN_W = GAP + SPK_D + GAP + ENTRY_W - ENTRY_H // 2 + C // 2
+CIRCLE_CX = WIN_W - C // 2
+PILL_X = CIRCLE_CX + ENTRY_H // 2 - ENTRY_W
+PILL_Y = C - 4
+SPK_X = PILL_X - GAP - SPK_D
+WIN_H = PILL_Y + ENTRY_H + 4
+
+SS = 4  # supersampling per l'anti-alias
 
 
 # ---------------------------------------------------------------------------
-# Server: assicura che sia attivo prima di aprire il widget
+# Preferenze (posizione + mute) — scrittura SEMPRE in merge
+# ---------------------------------------------------------------------------
+def _load_prefs() -> dict:
+    try:
+        return json.loads(POS_FILE.read_text()) if POS_FILE.exists() else {}
+    except Exception:
+        return {}
+
+
+def _save_prefs(**changes) -> None:
+    prefs = _load_prefs()
+    prefs.update(changes)
+    try:
+        prefs["x"], prefs["y"] = root.winfo_x(), root.winfo_y()
+    except Exception:
+        pass
+    prefs["v"] = 2
+    try:
+        POS_FILE.write_text(json.dumps(prefs))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Server
 # ---------------------------------------------------------------------------
 def server_up() -> bool:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=2):
+        with urllib.request.urlopen(f"{ROOT_URL}/", timeout=2):
             return True
     except Exception:
         return False
@@ -64,61 +134,286 @@ def ensure_server() -> None:
             return
 
 
-ensure_server()
-ROOT_URL = f"http://127.0.0.1:{PORT}"
+# ---------------------------------------------------------------------------
+# Rendering con Pillow
+# ---------------------------------------------------------------------------
+def _hex(c):
+    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) if isinstance(c, str) else c
+
+
+def _mix(a, b, t):
+    a, b = _hex(a), _hex(b)
+    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+
+
+def _lighter(c, t):
+    return _mix(c, (255, 255, 255), t)
+
+
+def _darker(c, t):
+    return _mix(c, (0, 0, 0), t)
+
+
+def _vgrad(w, h, top, bottom) -> Image.Image:
+    t = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None, None]
+    arr = np.array(top, np.float32) * (1 - t) + np.array(bottom, np.float32) * t
+    arr = np.broadcast_to(arr, (h, w, 3))
+    return Image.fromarray(arr.round().astype(np.uint8), "RGB")
+
+
+def _ramp(w, h, y0, y1, a0, a1) -> Image.Image:
+    """Maschera L verticale: a0 in y0 -> a1 in y1 (costante fuori)."""
+    y = np.arange(h, dtype=np.float32)
+    t = np.clip((y - y0) / max(1.0, y1 - y0), 0, 1)
+    col = a0 + (a1 - a0) * t
+    return Image.fromarray(np.broadcast_to(col[:, None], (h, w)).round().astype(np.uint8), "L")
+
+
+def _overlay(img, color, mask) -> None:
+    layer = Image.new("RGBA", img.size, tuple(color) + (0,))
+    layer.putalpha(mask)
+    img.alpha_composite(layer)
+
+
+def _key(img: Image.Image, thr: int = 110) -> Image.Image:
+    """RGBA -> RGB con colore-chiave: niente alpha parziale (limite di Windows)."""
+    a = np.asarray(img.convert("RGBA"))
+    out = a[..., :3].copy()
+    holes = a[..., 3] < thr
+    out[holes] = _KEY_RGB
+    # un pixel opaco che per caso coincide con la chiave diventerebbe un buco
+    clash = (~holes) & np.all(out == _KEY_RGB, axis=-1)
+    out[clash] = (2, 2, 2)
+    return Image.fromarray(out, "RGB")
+
+
+def _rline(d, pts, width, fill=255) -> None:
+    """Linea con estremi e giunti arrotondati."""
+    d.line(pts, fill=fill, width=int(width), joint="curve")
+    r = width / 2
+    for x, y in pts:
+        d.ellipse([x - r, y - r, x + r, y + r], fill=fill)
+
+
+def _glossy_ss(n: int, base, icon=None) -> Image.Image:
+    """Bottone tondo lucido, supersampled (lato n). icon(draw, n) disegna in una maschera L."""
+    b = _hex(base)
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    ImageDraw.Draw(img).ellipse([0, 0, n - 1, n - 1], fill=_darker(b, 0.45) + (255,))
+    e = SS  # 1 px di bordo scuro: definisce la forma su qualsiasi sfondo
+    body = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(body).ellipse([e, e, n - 1 - e, n - 1 - e], fill=255)
+    img.paste(_vgrad(n, n, _lighter(b, 0.24), _darker(b, 0.22)), (0, 0), body)
+    # leggera ombra interna in basso (volume)
+    low = ImageChops.multiply(body, _ramp(n, n, n * 0.55, n, 0, 55))
+    _overlay(img, (0, 0, 0), low)
+
+    if icon is not None:
+        mask = Image.new("L", (n, n), 0)
+        icon(ImageDraw.Draw(mask), n)
+        shadow = Image.new("L", (n, n), 0)
+        shadow.paste(mask, (0, int(SS * 1.2)))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(SS * 1.1)).point(lambda v: int(v * 0.45))
+        _overlay(img, (0, 0, 0), ImageChops.multiply(shadow, body))
+        _overlay(img, (255, 255, 255), mask)
+
+    # riflesso sul bordo superiore
+    rim = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(rim).ellipse([e, e, n - 1 - e, n - 1 - e], outline=255, width=max(1, int(SS * 1.2)))
+    _overlay(img, (255, 255, 255), ImageChops.multiply(rim, _ramp(n, n, 0, n * 0.55, 150, 0)))
+    # gloss "a lente" nella meta' alta
+    g = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(g).ellipse([n * 0.16, n * 0.05, n * 0.84, n * 0.52], fill=255)
+    _overlay(img, (255, 255, 255), ImageChops.multiply(g, _ramp(n, n, n * 0.05, n * 0.52, 88, 0)))
+    return img
+
+
+def _glossy(d: int, base, icon=None) -> Image.Image:
+    return _glossy_ss(d * SS, base, icon).resize((d, d), Image.LANCZOS)
+
+
+# --- icone (disegnate in bianco su maschera, proporzioni relative al cerchio) ---
+def _icon_mic(d, n):
+    cx = cy = n / 2
+    w, h = n * 0.25, n * 0.28
+    top = cy - n * 0.30
+    d.rounded_rectangle([cx - w / 2, top, cx + w / 2, top + h], radius=w / 2, fill=255)
+    lw = max(2, n * 0.045)
+    r = n * 0.20
+    acy = cy - n * 0.07
+    d.arc([cx - r, acy - r, cx + r, acy + r], start=-35, end=215, fill=255, width=int(lw))
+    for ang in (-35, 215):  # estremi dell'archetto arrotondati
+        a = np.radians(ang)
+        px, py = cx + r * np.cos(a) - lw / 2 * np.cos(a), acy + r * np.sin(a) - lw / 2 * np.sin(a)
+        d.ellipse([px - lw / 2, py - lw / 2, px + lw / 2, py + lw / 2], fill=255)
+    _rline(d, [(cx, acy + r - lw / 2), (cx, cy + n * 0.185)], lw)
+    _rline(d, [(cx - n * 0.105, cy + n * 0.185), (cx + n * 0.105, cy + n * 0.185)], lw)
+
+
+def _icon_send(d, n):
+    cx = cy = n / 2
+    lw = n * 0.115
+    _rline(d, [(cx, cy + n * 0.21), (cx, cy - n * 0.19)], lw)
+    _rline(d, [(cx - n * 0.17, cy - n * 0.02), (cx, cy - n * 0.19), (cx + n * 0.17, cy - n * 0.02)], lw)
+
+
+def _icon_speaker(muted):
+    def draw(d, n):
+        cx = cy = n / 2
+        bx = cx - n * 0.27
+        bw = n * 0.12
+        d.rounded_rectangle([bx, cy - n * 0.10, bx + bw, cy + n * 0.10], radius=n * 0.03, fill=255)
+        d.polygon([(bx + bw - 1, cy - n * 0.11), (bx + bw + n * 0.15, cy - n * 0.26),
+                   (bx + bw + n * 0.15, cy + n * 0.26), (bx + bw - 1, cy + n * 0.11)], fill=255)
+        if muted:
+            _rline(d, [(cx + n * 0.08, cy - n * 0.10), (cx + n * 0.28, cy + n * 0.10)], n * 0.075)
+            _rline(d, [(cx + n * 0.08, cy + n * 0.10), (cx + n * 0.28, cy - n * 0.10)], n * 0.075)
+        else:
+            wx = bx + bw + n * 0.17
+            for rr in (0.12, 0.21):
+                r = n * rr
+                d.arc([wx - r, cy - r, wx + r, cy + r], start=-50, end=50, fill=255, width=int(n * 0.065))
+    return draw
+
+
+def _rounded_panel(w, h, radius, fill, edge, send_d=None) -> Image.Image:
+    """Pillola/bolla scura con bordo sottile e riflesso in alto (+ tasto invia opzionale)."""
+    N, M, R = w * SS, h * SS, radius * SS
+    img = Image.new("RGBA", (N, M), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, N - 1, M - 1], radius=R, fill=_hex(edge) + (255,))
+    d.rounded_rectangle([SS, SS, N - 1 - SS, M - 1 - SS], radius=max(1, R - SS), fill=_hex(fill) + (255,))
+    rim = Image.new("L", (N, M), 0)
+    ImageDraw.Draw(rim).rounded_rectangle([SS, SS, N - 1 - SS, M - 1 - SS], radius=max(1, R - SS),
+                                          outline=255, width=SS)
+    _overlay(img, (255, 255, 255), ImageChops.multiply(rim, _ramp(N, M, 0, min(M * 0.5, 18 * SS), 70, 0)))
+    if send_d:
+        btn = _glossy_ss(send_d * SS, ACCENT, _icon_send)
+        cx, cy = N - M / 2, M / 2  # concentrico al tappo destro
+        img.alpha_composite(btn, (int(round(cx - btn.width / 2)), int(round(cy - btn.height / 2))))
+    return img.resize((w, h), Image.LANCZOS)
+
 
 # ---------------------------------------------------------------------------
-# Finestra widget
+# Finestra
 # ---------------------------------------------------------------------------
-W, H_CIRCLE, H_CHIP = 92, 88, 26
-
 root = tk.Tk()
-root.overrideredirect(True)          # niente barra titolo
-root.attributes("-topmost", True)    # sempre in primo piano
-root.attributes("-transparentcolor", TRANSPARENT)  # sfondo invisibile
+root.overrideredirect(True)
+root.attributes("-topmost", True)
+root.attributes("-transparentcolor", TRANSPARENT)
 root.configure(bg=TRANSPARENT)
 
-x, y = None, None
-if POS_FILE.exists():
-    try:
-        pos = json.loads(POS_FILE.read_text())
-        x, y = pos.get("x"), pos.get("y")
-    except Exception:
-        pass
-if x is None:
-    x = root.winfo_screenwidth() - 150
-    y = root.winfo_screenheight() - 260
-root.geometry(f"{W}x{H_CIRCLE + H_CHIP}+{x}+{y}")
+_families = set(tkfont.families(root))
+UI_FAMILY = next((f for f in ("Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI")
+                  if f in _families), "TkDefaultFont")
+FONT_UI = (UI_FAMILY, 10)
+
+prefs = _load_prefs()
+x, y = prefs.get("x"), prefs.get("y")
+if x is None or y is None:
+    # stesso punto di prima: cerchio in basso a destra
+    x, y = root.winfo_screenwidth() - 150, root.winfo_screenheight() - 260
+    prefs["v"] = 1
+if prefs.get("v") != 2:
+    # posizione salvata dalla versione vecchia (finestra 92px, cerchio in 14,10):
+    # la converto perche' il cerchio resti esattamente dov'era
+    x = x + 14 + 32 - CIRCLE_CX
+    y = y + 10 + 32 - C // 2
+root.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
+
+# code di aggiornamento UI: tkinter NON e' thread-safe, i thread di rete e
+# registrazione passano di qui invece di toccare i widget direttamente
+_uiq: "queue.Queue" = queue.Queue()
 
 
 def ui(fn):
-    root.after(0, fn)
+    _uiq.put(fn)
 
 
-# --- bolla di risposta (finestrella sopra il widget, svanisce) ---------------
+def _pump_ui():
+    try:
+        while True:
+            fn = _uiq.get_nowait()
+            try:
+                fn()
+            except Exception:
+                pass
+    except queue.Empty:
+        pass
+    root.after(30, _pump_ui)
+
+
+# --- bolla di risposta (arrotondata, dissolvenza) -----------------------------
 class Bubble:
+    MAXW, PADX, PADY, RADIUS = 260, 14, 10, 14
+
     def __init__(self):
         self.win = None
-        self.lbl = None
+        self.cv = None
         self.timer = None
+        self.fade_job = None
+        self.dots_job = None
+        self.alpha = 0.0
+        self.visible = False
+        self._imgs = {}
+
+    def _build(self):
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.attributes("-transparentcolor", TRANSPARENT)
+        self.win.attributes("-alpha", 0.0)
+        self.win.configure(bg=TRANSPARENT)
+        self.cv = tk.Canvas(self.win, bg=TRANSPARENT, highlightthickness=0, bd=0)
+        self.cv.pack()
+        self.bg_item = self.cv.create_image(0, 0, anchor="nw")
+        self.txt_item = self.cv.create_text(self.PADX, self.PADY, anchor="nw", fill=TXT,
+                                            font=FONT_UI, width=self.MAXW)
+        self.cv.bind("<Button-1>", lambda e: self.hide())  # click sulla bolla = chiudi
+        self.win.withdraw()
+
+    def _bg(self, w, h):
+        k = (w, h)
+        if k not in self._imgs:
+            if len(self._imgs) > 40:
+                self._imgs.clear()
+            self._imgs[k] = ImageTk.PhotoImage(
+                _key(_rounded_panel(w, h, self.RADIUS, PILL_BG, PILL_EDGE)))
+        return self._imgs[k]
 
     def show(self, text, sticky=False):
         if self.win is None:
-            self.win = tk.Toplevel(root)
-            self.win.overrideredirect(True)
-            self.win.attributes("-topmost", True)
-            self.lbl = tk.Label(self.win, text=text, bg=CARD, fg=TXT, justify="left",
-                                font=("Segoe UI", 10), wraplength=250, padx=12, pady=9)
-            self.lbl.pack()
+            self._build()
+        self._stop_dots()
+        thinking = text.strip() == "…"
+        self.cv.itemconfig(self.txt_item, text=("•••" if thinking else text))
+        x0, y0, x1, y1 = self.cv.bbox(self.txt_item)
+        bw = max(48, x1 - x0 + 2 * self.PADX)
+        bh = y1 - y0 + 2 * self.PADY
+        if thinking:
+            self.cv.itemconfig(self.txt_item, anchor="w", fill=MUT)
+            self.cv.coords(self.txt_item, (bw - (x1 - x0)) / 2, bh / 2)
         else:
-            self.lbl.config(text=text)
-        self.win.update_idletasks()
-        bx = max(0, root.winfo_x() + root.winfo_width() - self.win.winfo_reqwidth())
-        by = max(0, root.winfo_y() - self.win.winfo_reqheight() - 10)
-        self.win.geometry(f"+{bx}+{by}")
+            self.cv.itemconfig(self.txt_item, anchor="nw", fill=TXT)
+            self.cv.coords(self.txt_item, self.PADX, self.PADY)
+        self.cv.itemconfig(self.bg_item, image=self._bg(bw, bh))
+        self.cv.config(width=bw, height=bh)
+
+        # sopra il cerchio, allineata al suo bordo destro; sotto se non c'e' spazio
+        rx, ry = root.winfo_x(), root.winfo_y()
+        bx = max(0, rx + CIRCLE_CX + BD // 2 + 4 - bw)
+        by = ry + C // 2 - BD // 2 - bh - 6
+        if by < 0:
+            by = ry + WIN_H + 6
+        self.win.geometry(f"{bw}x{bh}+{bx}+{by}")
         self.win.deiconify()
-        # se la textbox era aperta, riporta il focus all'input (la bolla non deve
-        # rubare il focus ne' chiudere la textbox)
+        if not self.visible:
+            self.visible = True
+            self._fade(0.97)
+        elif self.fade_job:  # stava sparendo: torna su
+            self._fade(0.97)
+
+        # se la textbox era aperta, riporta il focus all'input
         if entry_frame.winfo_ismapped():
             try:
                 root.focus_force()
@@ -133,212 +428,270 @@ class Bubble:
             self.timer = None
         if not sticky:
             self.timer = root.after(7000, self.hide)
+        if thinking:
+            self._dots(0)
 
     def hide(self):
-        if self.win:
-            self.win.withdraw()
+        self._stop_dots()
+        if self.win and self.visible:
+            self.visible = False
+            self._fade(0.0, then=self.win.withdraw)
+
+    def _fade(self, target, then=None):
+        if self.fade_job:
+            root.after_cancel(self.fade_job)
+            self.fade_job = None
+
+        def step():
+            delta = target - self.alpha
+            self.alpha = target if abs(delta) < 0.12 else self.alpha + (0.14 if delta > 0 else -0.14)
+            try:
+                self.win.attributes("-alpha", self.alpha)
+            except Exception:
+                return
+            if self.alpha != target:
+                self.fade_job = root.after(16, step)
+            else:
+                self.fade_job = None
+                if then:
+                    then()
+        step()
+
+    def _dots(self, i):
+        self.cv.itemconfig(self.txt_item, text="•" * (i % 3 + 1))
+        self.dots_job = root.after(380, lambda: self._dots(i + 1))
+
+    def _stop_dots(self):
+        if self.dots_job:
+            root.after_cancel(self.dots_job)
+            self.dots_job = None
 
 
 bubble = Bubble()
 
-# --- canvas con cerchio microfono (PNG anti-aliasato, bordi lisci) ----------
-canvas = tk.Canvas(root, width=W, height=H_CIRCLE, bg=TRANSPARENT, highlightthickness=0)
-canvas.pack(fill="x")
+# --- cerchio microfono ---------------------------------------------------------
+canvas = tk.Canvas(root, width=C, height=C, bg=TRANSPARENT, highlightthickness=0, bd=0)
+canvas.place(x=WIN_W - C, y=0)
+
+# master grandi, poi ridotti a ogni scala: qualita' alta e avvio rapido
+_MASTER_D = int(BD * S_MAX) + 1
+_mic_master = {
+    "idle": _glossy_ss(_MASTER_D * SS, ACCENT, _icon_mic),
+    "rec": _glossy_ss(_MASTER_D * SS, RED, _icon_mic),
+}
+_disc_cache, _ring_cache, _photo_cache = {}, {}, {}
 
 
-def _make_mic_png(color_hex: str, path: Path) -> None:
-    """Cerchio + icona microfono, disegnati 4x e ridotti.
-
-    Il keying di trasparenza di Windows non ha alpha parziale: i pixel di bordo
-    semi-trasparenti diventerebbero un contorno nero. Quindi: alpha sotto soglia
-    -> colore trasparente esatto; fringe scuro sul bordo -> colore pieno del
-    cerchio; icona bianca -> anti-alias normale (interno, opaco).
-    """
-    D = 64
-    S = 4
-    img = Image.new("RGBA", (D * S, D * S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([0, 0, D * S - 1, D * S - 1], fill=color_hex)
-    cx = cy = D * S / 2
-    # microfono bianco, leggermente spostato in alto per bilanciare otticamente
-    w = D * S * 0.25
-    h = D * S * 0.28
-    top = cy - D * S * 0.30
-    d.rounded_rectangle([cx - w / 2, top, cx + w / 2, top + h], radius=w / 2, fill="white")
-    # archetto inferiore
-    r = D * S * 0.20
-    arc_cy = cy - D * S * 0.07
-    d.arc([cx - r, arc_cy - r, cx + r, arc_cy + r], start=-35, end=215,
-          fill="white", width=max(2, int(D * S * 0.045)))
-    # stelo e base
-    lw = max(2, int(D * S * 0.045))
-    d.line([cx, top + h + 1, cx, cy + D * S * 0.16], fill="white", width=lw)
-    d.line([cx - D * S * 0.105, cy + D * S * 0.185, cx + D * S * 0.105, cy + D * S * 0.185],
-           fill="white", width=lw)
-    img = img.resize((D, D), Image.LANCZOS)
-
-    acc = tuple(int(color_hex[i:i + 2], 16) for i in (1, 3, 5))
-    thr = 120
-    out = Image.new("RGB", (D, D), TRANSPARENT)  # niente canale alpha
-    op = out.load()
-    ip = img.load()
-    for yy in range(D):
-        for xx in range(D):
-            R, G, B, A = ip[xx, yy]
-            if A < thr:
-                op[xx, yy] = (1, 1, 1)  # esattamente il colore trasparente
-                continue
-            lum = (R * 0.299 + G * 0.587 + B * 0.114) / 255
-            if lum >= 0.55:
-                op[xx, yy] = (R, G, B)      # icona bianca: tieni l'anti-alias
-            else:
-                op[xx, yy] = acc            # bordo/fringe scuro: colore pieno
-    out.save(path)
+def _disc(state, s100):
+    k = (state, s100)
+    if k not in _disc_cache:
+        d = max(8, int(round(BD * s100 / 100)))
+        frame = Image.new("RGBA", (C, C), (0, 0, 0, 0))
+        frame.alpha_composite(_mic_master[state].resize((d, d), Image.LANCZOS),
+                              ((C - d) // 2, (C - d) // 2))
+        _disc_cache[k] = frame
+    return _disc_cache[k]
 
 
-_make_mic_png(ACCENT, BASE / "_mic_on.png")
-_make_mic_png(RED, BASE / "_mic_rec.png")
-MIC_IMG = tk.PhotoImage(file=str(BASE / "_mic_on.png"))   # noqa: E303
-MIC_IMG_RED = tk.PhotoImage(file=str(BASE / "_mic_rec.png"))
-img_item = canvas.create_image(14, 10, anchor="nw", image=MIC_IMG)
+def _ring(k):
+    """Anello della registrazione: si allarga e si assottiglia fino a sparire
+    (l'alpha non e' disponibile, quindi la 'dissolvenza' e' lo spessore)."""
+    if k not in _ring_cache:
+        t = k / PULSE_N
+        dia = BD * (1.02 + 0.36 * t) * SS
+        wid = 3.4 * (1 - t) ** 1.3 * SS
+        img = Image.new("RGBA", (C * SS, C * SS), (0, 0, 0, 0))
+        if wid >= 0.7 * SS:
+            c0 = C * SS / 2
+            ImageDraw.Draw(img).ellipse([c0 - dia / 2, c0 - dia / 2, c0 + dia / 2, c0 + dia / 2],
+                                        outline=_lighter(RED, 0.30) + (255,), width=int(wid))
+        _ring_cache[k] = img.resize((C, C), Image.LANCZOS)
+    return _ring_cache[k]
+
+
+mic_state = {"color": ACCENT}
+anim = {"s": 1.0, "v": 0.0, "target": 1.0, "phase": 0.0, "job": None}
+mic_hover = {"on": False}
+
+
+def _mic_frame():
+    rec = mic_state["color"] == RED
+    s100 = int(round(min(max(anim["s"], S_MIN), S_MAX) * 100))
+    k = int(anim["phase"] * PULSE_N) % PULSE_N if rec else -1
+    key = ("rec" if rec else "idle", s100, k)
+    ph = _photo_cache.get(key)
+    if ph is None:
+        if len(_photo_cache) > 400:
+            _photo_cache.clear()
+        frame = _disc(key[0], s100)
+        if rec:
+            frame = Image.alpha_composite(_ring(k), frame)
+        ph = _photo_cache[key] = ImageTk.PhotoImage(_key(frame))
+    return ph
+
+
+def _tick():
+    a = anim
+    # molla sotto-smorzata: gonfia con un piccolo rimbalzo, come una bollicina
+    a["v"] = (a["v"] + (a["target"] - a["s"]) * 0.20) * 0.70
+    a["s"] += a["v"]
+    rec = mic_state["color"] == RED
+    if rec:
+        a["phase"] = (a["phase"] + 16 / PULSE_MS) % 1.0
+    settled = abs(a["v"]) < 0.0008 and abs(a["target"] - a["s"]) < 0.003
+    if settled:
+        a["s"], a["v"] = a["target"], 0.0
+    canvas.itemconfig(img_item, image=_mic_frame())
+    if settled and not rec:
+        a["job"] = None
+        return
+    a["job"] = root.after(16, _tick)
+
+
+def _animate(target=None):
+    if target is not None:
+        anim["target"] = target
+    if anim["job"] is None:
+        anim["job"] = root.after(16, _tick)
+
+
+# pre-genera i fotogrammi dell'hover (cosi' il primo passaggio e' gia' fluido)
+for _s in range(int(S_MIN * 100), int(S_MAX * 100) + 1):
+    _photo_cache[("idle", _s, -1)] = ImageTk.PhotoImage(_key(_disc("idle", _s)))
+
+img_item = canvas.create_image(C // 2, C // 2, anchor="center", image=_mic_frame())
 
 
 def set_mic_color(color):
-    canvas.itemconfig(img_item, image=(MIC_IMG_RED if color == RED else MIC_IMG))
+    mic_state["color"] = color
+    if color == RED:
+        anim["phase"] = 0.0
+    canvas.itemconfig(img_item, image=_mic_frame())
+    _animate()
 
 
-# --- zona testo: chip compatta che si espande --------------------------------
-textbar = tk.Frame(root, bg=TRANSPARENT)
-textbar.pack(fill="x")
+# --- pillola con textbox + tasto invia -----------------------------------------
+# Un unico canvas: pillola e tasto invia sono la STESSA immagine, cosi' gli
+# angoli del tasto non "bucano" la pillola mostrando il desktop sotto.
+entry_frame = tk.Canvas(root, width=ENTRY_W, height=ENTRY_H, bg=TRANSPARENT,
+                        highlightthickness=0, bd=0, cursor="xterm")
+_SEND_SIZES = [SEND_D, SEND_D + 1, SEND_D + 2, SEND_D_HOVER]
+_PILLS = [ImageTk.PhotoImage(_key(_rounded_panel(ENTRY_W, ENTRY_H, ENTRY_H // 2, PILL_BG,
+                                                 PILL_EDGE, send_d=sd)))
+          for sd in _SEND_SIZES]
+_pill_item = entry_frame.create_image(0, 0, anchor="nw", image=_PILLS[0])
 
-ENTRY_W, ENTRY_H = 190, 30   # dimensioni della pillola di input
-entry_frame = tk.Frame(textbar, bg=TRANSPARENT, width=ENTRY_W, height=ENTRY_H)
-entry_frame.pack_propagate(False)  # i figli sono place()-ati: servono dimensioni fisse
-entry = tk.Entry(entry_frame, bg=CARD, fg=TXT, insertbackground=TXT,
-                 relief="flat", font=("Segoe UI", 9), justify="center",
-                 highlightthickness=0)
+entry = tk.Entry(entry_frame, bg=PILL_BG, fg=TXT, insertbackground=TXT, relief="flat",
+                 font=FONT_UI, highlightthickness=0, bd=0,
+                 selectbackground=ACCENT, selectforeground="white")
+entry_frame.create_window(14, ENTRY_H // 2, anchor="w", window=entry,
+                          width=ENTRY_W - 14 - ENTRY_H - 4, height=20)
 
-# pillola arrotondata dietro a Entry+pulsante, disegnata con Pillow
-_pill = Image.new("RGBA", (ENTRY_W * 4, ENTRY_H * 4), (0, 0, 0, 0))
-_d = ImageDraw.Draw(_pill)
-_d.rounded_rectangle([0, 0, ENTRY_W * 4 - 1, ENTRY_H * 4 - 1],
-                     radius=ENTRY_H * 2, fill=CARD)
-_pill = _pill.resize((ENTRY_W, ENTRY_H), Image.LANCZOS)
-# anti-alias: nessun pixel semitrasparente (il keying escluderebbe il fringe)
-card_rgb = tuple(int(CARD[i:i + 2], 16) for i in (1, 3, 5))
-_px = _pill.load()
-for _y in range(ENTRY_H):
-    for _x in range(ENTRY_W):
-        _r, _g, _b, _a = _px[_x, _y]
-        _px[_x, _y] = card_rgb if _a > 120 else (1, 1, 1)
-_entry_pill = ImageTk.PhotoImage(_pill)
-_pill_lbl = tk.Label(entry_frame, image=_entry_pill, bd=0)
-_pill_lbl.place(x=0, y=0)
-_pill_lbl.lower()  # l'immagine di sfondo NON deve coprire Entry e pulsante
-entry.place(x=8, y=ENTRY_H // 2 - 10, width=ENTRY_W - 36, height=20)
-entry.lift()
+send_anim = {"i": 0, "target": 0, "job": None}
 
 
-def _pill_click(_e=None):
-    entry.focus_set()
+def _send_step():
+    s = send_anim
+    s["i"] += 1 if s["target"] > s["i"] else -1
+    entry_frame.itemconfig(_pill_item, image=_PILLS[s["i"]])
+    s["job"] = root.after(16, _send_step) if s["i"] != s["target"] else None
 
 
-_pill_lbl.bind("<Button-1>", _pill_click)
+def _send_hover(on):
+    send_anim["target"] = len(_PILLS) - 1 if on else 0
+    entry_frame.config(cursor="hand2" if on else "xterm")
+    if send_anim["job"] is None and send_anim["i"] != send_anim["target"]:
+        _send_step()
 
 
-def _make_send_png(path: Path) -> None:
-    """Pulsante circolare con freccia, anti-aliasato (corner trasparenti)."""
-    D = 24
-    S = 4
-    img = Image.new("RGBA", (D * S, D * S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([0, 0, D * S - 1, D * S - 1], fill=ACCENT)
-    ax = ay = D * S / 2
-    a = D * S * 0.18
-    d.line([ax - a * 0.7, ay, ax + a * 0.8, ay], fill="white", width=max(2, D * S // 12))
-    d.line([ax + a * 0.8, ay, ax + a * 0.15, ay - a * 0.65], fill="white", width=max(2, D * S // 12))
-    d.line([ax + a * 0.8, ay, ax + a * 0.15, ay + a * 0.65], fill="white", width=max(2, D * S // 12))
-    img = img.resize((D, D), Image.LANCZOS)
-    out = Image.new("RGB", (D, D), (1, 1, 1))
-    op, ip = out.load(), img.load()
-    for yy in range(D):
-        for xx in range(D):
-            r, g, b, al = ip[xx, yy]
-            op[xx, yy] = (r, g, b) if al > 120 else (1, 1, 1)
-    out.save(path)
+def _in_send(x, y):
+    cx, cy = ENTRY_W - ENTRY_H / 2, ENTRY_H / 2
+    return (x - cx) ** 2 + (y - cy) ** 2 <= (SEND_D_HOVER / 2 + 1) ** 2
 
 
-_make_send_png(BASE / "_send_btn.png")
-_send_img = ImageTk.PhotoImage(file=str(BASE / "_send_btn.png"))
-sendbtn = tk.Label(entry_frame, image=_send_img, bd=0, bg=CARD)
-sendbtn.place(x=ENTRY_W - 30, y=3)
-
-
-# --- toggle mute del TTS di ritorno (visibile solo in mouse-over) -------------
-tts_muted = {"on": False}
-if POS_FILE.exists():
-    try:
-        tts_muted["on"] = bool(json.loads(POS_FILE.read_text()).get("muted"))
-    except Exception:
-        pass
-
-
-def _make_speaker_png(path: Path, muted: bool) -> None:
-    """Mini pulsante tondo altoparlante; rosso con barra quando muto."""
-    D = 24
-    S = 4
-    img = Image.new("RGBA", (D * S, D * S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([0, 0, D * S - 1, D * S - 1], fill=(RED if muted else CARD))
-    cx = cy = D * S / 2
-    bx = cx - D * S * 0.28
-    bw = D * S * 0.13
-    d.rounded_rectangle([bx, cy - D * S * 0.11, bx + bw, cy + D * S * 0.11],
-                        radius=2, fill="white")
-    d.polygon([(bx + bw, cy - D * S * 0.13),
-               (bx + bw + D * S * 0.15, cy - D * S * 0.29),
-               (bx + bw + D * S * 0.15, cy + D * S * 0.29),
-               (bx + bw, cy + D * S * 0.13)], fill="white")
-    if muted:
-        d.line([cx - D * S * 0.26, cy - D * S * 0.26,
-                cx + D * S * 0.26, cy + D * S * 0.26],
-               fill="white", width=max(3, D * S // 9))
+def _pill_click(e):
+    if _in_send(e.x, e.y):
+        send_text_cmd()
     else:
-        wx = bx + bw + D * S * 0.20
-        for r in (0.13, 0.21):
-            rr = D * S * r
-            d.arc([wx - rr, cy - rr, wx + rr, cy + rr], start=-55, end=55,
-                  fill="white", width=max(2, D * S // 13))
-    img = img.resize((D, D), Image.LANCZOS)
-    out = Image.new("RGB", (D, D), (1, 1, 1))
-    op, ip = out.load(), img.load()
-    for yy in range(D):
-        for xx in range(D):
-            r, g, b, al = ip[xx, yy]
-            op[xx, yy] = (r, g, b) if al > 120 else (1, 1, 1)
-    out.save(path)
+        entry.focus_set()
 
 
-_make_speaker_png(BASE / "_spk_on.png", muted=False)
-_make_speaker_png(BASE / "_spk_off.png", muted=True)
-SPK_ON = ImageTk.PhotoImage(file=str(BASE / "_spk_on.png"))
-SPK_OFF = ImageTk.PhotoImage(file=str(BASE / "_spk_off.png"))
-mute_btn = tk.Label(textbar, image=(SPK_OFF if tts_muted["on"] else SPK_ON),
-                    bd=0, bg=TRANSPARENT)
+entry_frame.bind("<Motion>", lambda e: _send_hover(_in_send(e.x, e.y)))
+entry_frame.bind("<Button-1>", _pill_click)
+
+# placeholder (tk.Entry non ce l'ha)
+PLACEHOLDER = "Scrivi a Chicco…"
+ph = {"on": False}
+_NAV_KEYS = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Left", "Right",
+             "Up", "Down", "Home", "End", "Tab", "Escape", "Return", "Caps_Lock", "Win_L", "Win_R"}
+
+
+def _ph_show():
+    if not entry.get():
+        ph["on"] = True
+        entry.config(fg=MUT)
+        entry.insert(0, PLACEHOLDER)
+        entry.icursor(0)
+
+
+def _ph_clear():
+    if ph["on"]:
+        ph["on"] = False
+        entry.delete(0, "end")
+        entry.config(fg=TXT)
+
+
+def entry_text() -> str:
+    return "" if ph["on"] else entry.get().strip()
+
+
+def _ph_key(e):
+    if ph["on"] and e.keysym not in _NAV_KEYS:
+        _ph_clear()
+
+
+def _ph_keyup(_e=None):
+    if not ph["on"] and not entry.get():
+        _ph_show()
+
+
+entry.bind("<Key>", _ph_key)
+entry.bind("<KeyRelease>", _ph_keyup)
+entry.bind("<Button-1>", lambda e: entry.icursor(0) if ph["on"] else None, add="+")
+
+# --- toggle mute del TTS (visibile solo in mouse-over) --------------------------
+tts_muted = {"on": bool(prefs.get("muted"))}
+_SPK = {
+    (False, False): ImageTk.PhotoImage(_key(_glossy(SPK_D, SPK_BG, _icon_speaker(False)))),
+    (False, True): ImageTk.PhotoImage(_key(_glossy(SPK_D, _lighter(SPK_BG, 0.12), _icon_speaker(False)))),
+    (True, False): ImageTk.PhotoImage(_key(_glossy(SPK_D, RED, _icon_speaker(True)))),
+    (True, True): ImageTk.PhotoImage(_key(_glossy(SPK_D, _lighter(RED, 0.12), _icon_speaker(True)))),
+}
+spk_hover = {"on": False}
+mute_btn = tk.Label(root, bd=0, bg=TRANSPARENT, cursor="hand2")
+
+
+def _spk_refresh():
+    mute_btn.config(image=_SPK[(tts_muted["on"], spk_hover["on"])])
+
+
+_spk_refresh()
 
 
 def open_entry():
-    entry_frame.pack(anchor="e", padx=6, pady=4)
-    mute_btn.pack(side="right", padx=(2, 2), pady=4)  # a sinistra della pillola
+    entry_frame.place(x=PILL_X, y=PILL_Y)
+    mute_btn.place(x=SPK_X, y=PILL_Y + (ENTRY_H - SPK_D) // 2)
+    _ph_show()
     entry.focus_set()
-    root.geometry(f"{W}x{H_CIRCLE + H_CHIP + 34}+{root.winfo_x()}+{root.winfo_y()}")
 
 
 def close_entry():
-    entry_frame.pack_forget()
-    mute_btn.pack_forget()
+    entry_frame.place_forget()
+    mute_btn.place_forget()
     entry.delete(0, "end")
-    root.geometry(f"{W}x{H_CIRCLE + H_CHIP}+{root.winfo_x()}+{root.winfo_y()}")
+    ph["on"] = False
+    entry.config(fg=TXT)
+    _send_hover(False)
 
 
 def toggle_entry():
@@ -364,31 +717,47 @@ def _on_leave(_e=None):
 
 
 def _leave_close():
-    if not hover["on"] and entry_frame.winfo_ismapped() and not entry.get().strip():
+    if not hover["on"] and entry_frame.winfo_ismapped() and not entry_text():
         close_entry()
 
 
-for _w in (root, canvas, entry_frame, entry, _pill_lbl, mute_btn):
+for _w in (root, canvas, entry_frame, entry, mute_btn):
     _w.bind("<Enter>", _on_enter)
     _w.bind("<Leave>", _on_leave)
-sendbtn.bind("<Enter>", _on_enter)
+
+
+# effetto bollicina sul cerchio (in aggiunta al comportamento sopra)
+def _mic_enter(_e=None):
+    mic_hover["on"] = True
+    if not drag["down"]:
+        _animate(HOVER_SCALE)
+
+
+def _mic_leave(_e=None):
+    mic_hover["on"] = False
+    if not drag["down"]:
+        _animate(1.0)
+
+
+canvas.bind("<Enter>", _mic_enter, add="+")
+canvas.bind("<Leave>", _mic_leave, add="+")
+entry_frame.bind("<Leave>", lambda e: _send_hover(False), add="+")
+
+
+def _spk_set_hover(on):
+    spk_hover["on"] = on
+    _spk_refresh()
+
+
+mute_btn.bind("<Enter>", lambda e: _spk_set_hover(True), add="+")
+mute_btn.bind("<Leave>", lambda e: _spk_set_hover(False), add="+")
 
 
 def toggle_mute(_e=None):
     tts_muted["on"] = not tts_muted["on"]
-    mute_btn.config(image=(SPK_OFF if tts_muted["on"] else SPK_ON))
+    _spk_refresh()
     stop_tts()  # se sta parlando, zitta subito
-    try:
-        pos = json.loads(POS_FILE.read_text()) if POS_FILE.exists() else {}
-    except Exception:
-        pos = {}
-    pos["muted"] = tts_muted["on"]
-    pos.setdefault("x", root.winfo_x())
-    pos.setdefault("y", root.winfo_y())
-    try:
-        POS_FILE.write_text(json.dumps(pos))
-    except Exception:
-        pass
+    _save_prefs(muted=tts_muted["on"])
     bubble.show("Voce disattivata." if tts_muted["on"] else "Voce riattivata.")
 
 
@@ -403,6 +772,7 @@ def _fetch_json(path):
 
 def show_stt_popup():
     on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
+
     def work():
         try:
             info = _fetch_json("/api/stt")
@@ -418,6 +788,7 @@ def show_stt_popup():
 
 
 canvas.bind("<Double-Button-1>", lambda e: show_stt_popup())
+
 
 # --- rete ---------------------------------------------------------------------
 def _post_json(path, payload):
@@ -457,7 +828,7 @@ def _show_entry(e):
 
 
 def send_text_cmd():
-    text = entry.get().strip()
+    text = entry_text()
     if not text:
         return
     close_entry()
@@ -469,18 +840,19 @@ def send_text_cmd():
             res = _post_json("/api/text", {"text": text})
             ui(lambda: _show_entry(res))
         except Exception as exc:
-            ui(lambda: bubble.show(f"Errore: {exc}"))
+            msg = f"Errore: {exc}"  # 'exc' non esiste piu' fuori dall'except
+            ui(lambda: bubble.show(msg))
 
     threading.Thread(target=run, daemon=True).start()
 
 
-sendbtn.bind("<Button-1>", lambda e: send_text_cmd())
 entry.bind("<Return>", lambda e: send_text_cmd())
 entry.bind("<Escape>", lambda e: close_entry())
 
+
 def _on_focus_out(_e=None):
-    # la textbox ora si chiude da sola all'uscita del mouse; il focus-out
-    # resta solo come sicurezza quando si clicca in un'altra app con testo dentro
+    # la textbox si chiude da sola all'uscita del mouse; il focus-out resta
+    # come sicurezza quando si clicca in un'altra app
     if not entry_frame.winfo_ismapped():
         return
     try:
@@ -489,7 +861,7 @@ def _on_focus_out(_e=None):
             return
     except Exception:
         pass
-    if not entry.get().strip():  # con testo dentro resta aperta
+    if not entry_text():  # con testo dentro resta aperta
         close_entry()
 
 
@@ -508,10 +880,11 @@ def _rec_thread():
                 chunks.append(rec.record(numframes=SR // 10).copy())
     except Exception as exc:
         rec_flag.clear()
-        ui(lambda: (set_mic_color(ACCENT), bubble.show(f"Errore microfono: {exc}")))
+        msg = f"Errore microfono: {exc}"
+        ui(lambda: (set_mic_color(ACCENT), bubble.show(msg)))
         return
     audio = np.concatenate(chunks) if chunks else np.zeros((0, 1), np.float32)
-    set_mic_color(ACCENT)
+    ui(lambda: set_mic_color(ACCENT))
     if audio.size == 0:
         ui(lambda: bubble.show("Non ho registrato nulla."))
         return
@@ -527,7 +900,8 @@ def _rec_thread():
         res = _post_wav(buf.getvalue())
         ui(lambda: _show_entry(res))
     except Exception as exc:
-        ui(lambda: bubble.show(f"Errore server: {exc}"))
+        msg = f"Errore server: {exc}"
+        ui(lambda: bubble.show(msg))
 
 
 def toggle_recording():
@@ -546,17 +920,20 @@ def toggle_recording():
 # e non fa nulla d'altro. Soglia calcolata sulla distanza TOTALE dal punto
 # di pressione, cosi' anche i drag lenti vengono riconosciuti come drag.
 drag = {"px": 0, "py": 0, "moved": False, "down": False}
-DRAG_THRESHOLD = 6  # pixel di distanza totale per considerarlo un drag
+DRAG_THRESHOLD = 6
 
 
 def on_press(e):
     drag.update(px=e.x_root, py=e.y_root, moved=False, down=True)
+    _animate(PRESS_SCALE)
 
 
 def on_motion(e):
     if not drag["down"]:
         return
     if (abs(e.x_root - drag["px"]) + abs(e.y_root - drag["py"])) > DRAG_THRESHOLD:
+        if not drag["moved"]:
+            _animate(DRAG_SCALE)
         drag["moved"] = True
     if drag["moved"]:
         dx, dy = e.x_root - drag["px"], e.y_root - drag["py"]
@@ -568,11 +945,9 @@ def on_release(e):
     if not drag["down"]:
         return
     drag["down"] = False
+    _animate(HOVER_SCALE if mic_hover["on"] else 1.0)
     if drag["moved"]:
-        try:
-            POS_FILE.write_text(json.dumps({"x": root.winfo_x(), "y": root.winfo_y()}))
-        except Exception:
-            pass
+        _save_prefs()  # merge: il mute salvato non si perde piu'
         return
     # click vs doppio click: attendo 260 ms; se arriva il doppio, annullo il toggle
     click = {"seq": getattr(on_release, "_n", 0) + 1}
@@ -580,9 +955,28 @@ def on_release(e):
     root.after(260, lambda: toggle_recording() if on_release._n == click["seq"] else None)
 
 
+def _quit(_e=None):
+    rec_flag.clear()
+    stop_tts()
+    root.destroy()
+
+
 canvas.bind("<Button-1>", on_press)
 canvas.bind("<B1-Motion>", on_motion)
 canvas.bind("<ButtonRelease-1>", on_release)
-canvas.bind("<Button-3>", lambda e: root.destroy())  # click destro = chiudi
+canvas.bind("<Button-3>", _quit)  # click destro = chiudi
 
+
+# --- avvio server in background: la UI compare subito -------------------------
+def _boot():
+    if server_up():
+        return
+    ui(lambda: bubble.show("Avvio del server…", sticky=True))
+    ensure_server()
+    ok = server_up()
+    ui(lambda: bubble.show("Pronto." if ok else "Server non raggiungibile."))
+
+
+root.after(30, _pump_ui)
+root.after(200, lambda: threading.Thread(target=_boot, daemon=True).start())
 root.mainloop()
