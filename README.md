@@ -212,14 +212,25 @@ huggingface-cli download deepdml/faster-whisper-large-v3-turbo-ct2 ^
 ## 🚀 Avvio manuale (senza CLI)
 
 ```bat
-:: terminale 1 — server (o lascia che lo avvii il widget da solo)
-python chicco_agent\server.py
+:: un solo comando: pulisce le istanze precedenti e apre server + widget
+doppio click su chicco_app.py     (oppure: python chicco_app.py)
 
-:: terminale 2 — widget desktop (niente console con pythonw)
-pythonw chicco_agent\widget.py
+:: con la console si vedono i messaggi di avvio:
+python chicco_app.py
+:: solo server, senza widget:
+python chicco_app.py --server
+:: riavvio pulito del server ma riuso di quello attivo se sano:
+python chicco_app.py --reuse
 
-:: alternativa: UI nel browser su http://127.0.0.1:8123
+:: alternativa a mano:
+python chicco_agent\server.py     :: terminale 1
+pythonw chicco_agent\widget.py    :: terminale 2
 ```
+
+Se la porta 8123 è occupata da un'istanza precedente questa viene **terminata
+in automatico** (solo se è un processo Python: un programma estraneo sulla porta
+viene rispettato e segnalato) e tutto riparte pulito; i widget desktop duplicati
+vengono chiusi e ne resta uno.
 
 > I vecchi script `voice_assistant_server.py` e `assistant_widget.py` alla radice
 > sono shim retrocompatibili che puntano al pacchetto. Su macOS/Linux: `python3

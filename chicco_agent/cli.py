@@ -368,65 +368,21 @@ def cmd_run(only: str | None = None) -> int:
     if not VOSK_DIR.is_dir():
         install_vosk()
 
-    _step("Avvio server su http://127.0.0.1:8123")
-    if not server_up():
-        print("  (primo avvio: carico Laya + Vosk, puo' volerci un minuto...)")
-        pu.popen_hidden([sys.executable, str(PKG / "server.py")],
-                        cwd=str(PKG.parent),
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(150):
-            time.sleep(1)
-            if server_up():
-                break
-    if not server_up():
-        _fail("il server non e' partito: lancialo a mano per vedere l'errore:")
-        print(f"    python {PKG / 'server.py'}")
-        return 1
-    _ok("server attivo")
-
-    if only != "server":
-        _step("Avvio widget desktop")
-        exe = sys.executable
-        if pu.IS_WINDOWS:
-            pythonw = Path(sys.executable).with_name("pythonw.exe")
-            exe = str(pythonw) if pythonw.exists() else sys.executable
-        pu.popen_hidden([str(exe), str(PKG / "widget.py")],
-                        cwd=str(PKG.parent))
-        _ok("widget avviato (guarda nell'angolo dello schermo)")
-
-    print("\nChicco e' pronto. Parla col microfono o scrivi nella pillola.")
-    print("Chiudi il widget: click destro sul cerchio.  Stop server:  chicco stop")
-    return 0
+    try:
+        from . import launcher
+    except ImportError:
+        from chicco_agent import launcher
+    return launcher.start_all(reuse=True,
+                              skip_widget=(only == "server"))
 
 
 def cmd_stop() -> int:
     _step("Arresto")
-    if pu.IS_WINDOWS:
-        try:
-            subprocess.run(["taskkill", "/F", "/IM", "pythonw.exe"],
-                           capture_output=True)
-            _ok("widget fermato")
-        except Exception:
-            pass
-    else:
-        try:
-            out = subprocess.run(["pgrep", "-f", "chicco_agent/widget.py"],
-                                 capture_output=True, text=True).stdout.split()
-            for pid in {p.strip() for p in out if p.strip().isdigit()}:
-                subprocess.run(["kill", pid], capture_output=True)
-            _ok("widget fermato")
-        except Exception:
-            pass
     try:
-        out = subprocess.run(["powershell", "-NoProfile", "-Command",
-                              "Get-NetTCPConnection -LocalPort 8123 -State Listen "
-                              "-ErrorAction SilentlyContinue | Select -Exp OwningProcess"],
-                             capture_output=True, text=True).stdout.split()
-        for pid in {p.strip() for p in out if p.strip().isdigit()}:
-            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
-        _ok("server fermato")
-    except Exception:
-        pass
+        from . import launcher
+    except ImportError:
+        from chicco_agent import launcher
+    launcher.stop_all()
     return 0
 
 
