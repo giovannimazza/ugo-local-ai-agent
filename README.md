@@ -38,41 +38,49 @@ La libreria dà contesto all'IA (per aprire l'app giusta) e alimenta il comando
 Il widget desktop: cerchio flottante trasparente e trascinabile, pillola di input che
 appare al passaggio del mouse, toggle mute del TTS, risposte in una bolla a scomparsa.
 
+**Correzione automatica degli input**: ogni comando — detto *o scritto* — passa da
+Qwen prima dell'esecuzione, che ripulisce parole sentite/digitate male e nomi d'app
+storti (`apri spotrifyt` → `apri spotify`). Le correzioni che farebbero perdere un
+intent, un luogo (`desktop`, `documenti`…) o un sito noto vengono scartate; se il
+nome dell'app resta irrecuperabile, un fallback fuzzy trova l'app più vicina nella
+libreria. Quando una correzione viene applicata, nella bolla del widget e nella UI
+compare la trascrizione originale in piccolo (🎧 "…").
+
 ---
 
 ## 🏗️ Architettura / Stack
 
 ```
- ┌──────────────┐   WAV    ┌──────────────────────┐
- │ Widget Tkinter│ ───────▶ │  Server FastAPI      │
- │ (assistant_   │          │  :8123               │
- │  widget.py)   │ ◀─────── │                      │
- └──────────────┘  testo   │ 1. STT: Whisper      │
-      ▲   bolla             │    large-v3-turbo    │
-      │   TTS               │    GGUF Q8_0         │
-      │                     │    (transcribe.cpp,  │
- ┌──────────────┐          │     Vulkan → AMD GPU)│
- │ UI web       │          │    fallback: Vosk it │
- │ (browser)    │                           │ 2. Correzione STT:   │
-                           │    Qwen ripulisce la │
-                           │    trascrizione con  │
-                           │    guardie anti-danno│
-                           │ 3. Intent: regole +  │
- └──────────────┘          │    Laya (3 livelli)  │
-                           │ 4. Comandi→JSON:     │
-                           │    Qwen2.5 0.5B      │
-                           │    (Ollama, locale)  │
-                           │ 4. Esecuzione reale  │
-                           │    sul PC + TTS      │
-                           │    (pyttsx3/SAPI)    │
-                           └──────────────────────┘
+ ┌────────────────┐  WAV    ┌──────────────────────────┐
+ │ Widget Tkinter  │ ──────▶ │  Server FastAPI           │
+ │ (chicco_agent/  │         │  :8123                    │
+ │  widget.py)     │ ◀────── │                           │
+ └────────────────┘  testo  │ 1. STT: Whisper           │
+      ▲   bolla             │    large-v3-turbo         │
+      │   TTS               │    GGUF Q8_0              │
+      │                     │    (transcribe.cpp,       │
+ ┌──────────────┐           │     Vulkan → AMD GPU)     │
+ │ UI web       │           │    fallback: Vosk it      │
+ │ (browser)    │           │ 2. Correzione STT:        │
+ └──────────────┘           │    Qwen ripulisce la      │
+                            │    trascrizione           │
+                            │    (guardie anti-danno)   │
+                            │ 3. Intent: regole +       │
+                            │    Laya (3 livelli)       │
+                            │ 4. Comandi→JSON:          │
+                            │    Qwen2.5 0.5B           │
+                            │    (Ollama, locale)       │
+                            │ 5. Esecuzione reale       │
+                            │    sul PC + TTS           │
+                            │    (pyttsx3/SAPI)         │
+                            └──────────────────────────┘
 ```
 
 | Livello | Tecnologia | Ruolo |
 |---|---|---|
 | **STT** | [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) + `whisper-large-v3-turbo-Q8_0.gguf` su **Vulkan** (testato su AMD RX 9070 XT, ~6× realtime) | trascrizione it/qualunque lingua; fallback Vosk piccolo |
 | **Intent** | regole testuali + [Laya](https://pypi.org/project/laya/) (ModernBERT, probabilità calibrate) | classificare il comando in ~20 ms, 3 livelli di fallback |
-| **LLM** | Qwen2.5 0.5B via [Ollama](https://ollama.com) | tradurre frasi libere in specifica JSON (`create_file{name,content}`…) |
+| **LLM** | Qwen2.5 0.5B via [Ollama](https://ollama.com) | correzione della trascrizione (con guardie anti-danno: intent, luoghi, siti noti) + traduzione frasi libere in specifica JSON (`create_file{name,content}`…); fallback fuzzy `difflib` sui nomi d'app |
 | **Esecuzione** | Python (os, subprocess, send2trash, pycaw, webbrowser) | azioni reali: file system, app, siti, volume |
 | **Librerie app/giochi** | `appindex.py` + `games.py`: menu Start, Store/AppX, portabili, manifest Steam/Epic/GOG | contesto per l'IA, avvio app, elenchi su richiesta |
 | **TTS** | pyttsx3 → voci SAPI di Windows (Elsa IT) | risposta vocale offline, interrotta su nuovo input |
@@ -151,7 +159,10 @@ pythonw chicco_agent\widget.py
 ### UI web
 Interfaccia chat stile ChatGPT su `http://127.0.0.1:8123`: messaggi con avatar,
 hero con comandi suggeriti, microfono nel composer. Le risposte che contengono
-elenchi (giochi, app) aprono una **modale** con la lista completa.
+elenchi (giochi, app) aprono una **modale** con la lista completa; il pulsante
+**🗂️ App e giochi** (fisso in alto a destra) apre la libreria completa con
+categorie **comprimibili** (Giochi / Applicazioni / Strumenti di sistema) e
+**ricerca per nome**.
 
 ### API
 ```bash
@@ -168,6 +179,7 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 | `POST /api/apps/rescan` | reindicizza le app |
 | `GET /api/list` | ultima lista giochi/app richiesta a voce |
 | `GET /api/stt` | trascrittore attivo (motore, modello, dispositivo) |
+| `POST /api/normalize` | corregge una trascrizione con Qwen senza eseguirla: `{raw, text, corrected}` |
 | `GET /_tts_reply.wav` | ultima risposta vocale |
 
 ## 📁 Struttura del progetto
