@@ -25,7 +25,7 @@ import numpy as np
 import soundcard as sc
 import tkinter as tk
 import winsound
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
 BASE = Path(__file__).resolve().parent
 PORT = 8123
@@ -207,28 +207,123 @@ def set_mic_color(color):
 # --- zona testo: chip compatta che si espande --------------------------------
 textbar = tk.Frame(root, bg=TRANSPARENT)
 textbar.pack(fill="x")
+
+ENTRY_W, ENTRY_H = 190, 30   # dimensioni della pillola di input
 entry_frame = tk.Frame(textbar, bg=TRANSPARENT)
-chip = tk.Label(textbar, text="\U0001F4AC Scrivi...", bg=CARD, fg=MUT,
-                font=("Segoe UI", 9), padx=10, pady=4)
-chip.pack(anchor="e", padx=6, pady=2)
 entry = tk.Entry(entry_frame, bg=CARD, fg=TXT, insertbackground=TXT,
-                 relief="flat", font=("Segoe UI", 9))
-sendbtn = tk.Label(entry_frame, text="\u27A4", bg=ACCENT, fg="white",
-                   font=("Segoe UI", 10, "bold"), padx=7, pady=3)
+                 relief="flat", font=("Segoe UI", 9), justify="center",
+                 highlightthickness=0)
+
+# pillola arrotondata dietro a Entry+pulsante, disegnata con Pillow
+_pill = Image.new("RGBA", (ENTRY_W * 4, ENTRY_H * 4), (0, 0, 0, 0))
+_d = ImageDraw.Draw(_pill)
+_d.rounded_rectangle([0, 0, ENTRY_W * 4 - 1, ENTRY_H * 4 - 1],
+                     radius=ENTRY_H * 2, fill=CARD)
+_pill = _pill.resize((ENTRY_W, ENTRY_H), Image.LANCZOS)
+# anti-alias: nessun pixel semitrasparente (il keying escluderebbe il fringe)
+card_rgb = tuple(int(CARD[i:i + 2], 16) for i in (1, 3, 5))
+_px = _pill.load()
+for _y in range(ENTRY_H):
+    for _x in range(ENTRY_W):
+        _r, _g, _b, _a = _px[_x, _y]
+        _px[_x, _y] = card_rgb if _a > 120 else (1, 1, 1)
+_entry_pill = ImageTk.PhotoImage(_pill)
+_pill_lbl = tk.Label(entry_frame, image=_entry_pill, bd=0)
+_pill_lbl.place(x=0, y=0)
+entry.place(x=8, y=ENTRY_H // 2 - 10, width=ENTRY_W - 36, height=20)
+
+
+def _make_send_png(path: Path) -> None:
+    """Pulsante circolare con freccia, anti-aliasato (corner trasparenti)."""
+    D = 24
+    S = 4
+    img = Image.new("RGBA", (D * S, D * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([0, 0, D * S - 1, D * S - 1], fill=ACCENT)
+    ax = ay = D * S / 2
+    a = D * S * 0.18
+    d.line([ax - a * 0.7, ay, ax + a * 0.8, ay], fill="white", width=max(2, D * S // 12))
+    d.line([ax + a * 0.8, ay, ax + a * 0.15, ay - a * 0.65], fill="white", width=max(2, D * S // 12))
+    d.line([ax + a * 0.8, ay, ax + a * 0.15, ay + a * 0.65], fill="white", width=max(2, D * S // 12))
+    img = img.resize((D, D), Image.LANCZOS)
+    out = Image.new("RGB", (D, D), (1, 1, 1))
+    op, ip = out.load(), img.load()
+    for yy in range(D):
+        for xx in range(D):
+            r, g, b, al = ip[xx, yy]
+            op[xx, yy] = (r, g, b) if al > 120 else (1, 1, 1)
+    out.save(path)
+
+
+_make_send_png(BASE / "_send_btn.png")
+_send_img = ImageTk.PhotoImage(file=str(BASE / "_send_btn.png"))
+sendbtn = tk.Label(entry_frame, image=_send_img, bd=0, bg=CARD)
+sendbtn.place(x=ENTRY_W - 30, y=3)
+
+
+# --- toggle mute del TTS di ritorno (visibile solo in mouse-over) -------------
+tts_muted = {"on": False}
+if POS_FILE.exists():
+    try:
+        tts_muted["on"] = bool(json.loads(POS_FILE.read_text()).get("muted"))
+    except Exception:
+        pass
+
+
+def _make_speaker_png(path: Path, muted: bool) -> None:
+    """Mini pulsante tondo altoparlante; rosso con barra quando muto."""
+    D = 24
+    S = 4
+    img = Image.new("RGBA", (D * S, D * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([0, 0, D * S - 1, D * S - 1], fill=(RED if muted else CARD))
+    cx = cy = D * S / 2
+    bx = cx - D * S * 0.28
+    bw = D * S * 0.13
+    d.rounded_rectangle([bx, cy - D * S * 0.11, bx + bw, cy + D * S * 0.11],
+                        radius=2, fill="white")
+    d.polygon([(bx + bw, cy - D * S * 0.13),
+               (bx + bw + D * S * 0.15, cy - D * S * 0.29),
+               (bx + bw + D * S * 0.15, cy + D * S * 0.29),
+               (bx + bw, cy + D * S * 0.13)], fill="white")
+    if muted:
+        d.line([cx - D * S * 0.26, cy - D * S * 0.26,
+                cx + D * S * 0.26, cy + D * S * 0.26],
+               fill="white", width=max(3, D * S // 9))
+    else:
+        wx = bx + bw + D * S * 0.20
+        for r in (0.13, 0.21):
+            rr = D * S * r
+            d.arc([wx - rr, cy - rr, wx + rr, cy + rr], start=-55, end=55,
+                  fill="white", width=max(2, D * S // 13))
+    img = img.resize((D, D), Image.LANCZOS)
+    out = Image.new("RGB", (D, D), (1, 1, 1))
+    op, ip = out.load(), img.load()
+    for yy in range(D):
+        for xx in range(D):
+            r, g, b, al = ip[xx, yy]
+            op[xx, yy] = (r, g, b) if al > 120 else (1, 1, 1)
+    out.save(path)
+
+
+_make_speaker_png(BASE / "_spk_on.png", muted=False)
+_make_speaker_png(BASE / "_spk_off.png", muted=True)
+SPK_ON = ImageTk.PhotoImage(file=str(BASE / "_spk_on.png"))
+SPK_OFF = ImageTk.PhotoImage(file=str(BASE / "_spk_off.png"))
+mute_btn = tk.Label(textbar, image=(SPK_OFF if tts_muted["on"] else SPK_ON),
+                    bd=0, bg=TRANSPARENT)
 
 
 def open_entry():
-    chip.pack_forget()
-    entry_frame.pack(fill="x", padx=6, pady=2)
-    entry.pack(side="left", fill="x", expand=True, ipady=4)
-    sendbtn.pack(side="left", padx=(4, 0), fill="y")
+    entry_frame.pack(anchor="e", padx=6, pady=4)
+    mute_btn.pack(side="right", padx=(2, 2), pady=4)  # a sinistra della pillola
     entry.focus_set()
-    root.geometry(f"{W}x{H_CIRCLE + H_CHIP + 30}+{root.winfo_x()}+{root.winfo_y()}")
+    root.geometry(f"{W}x{H_CIRCLE + H_CHIP + 34}+{root.winfo_x()}+{root.winfo_y()}")
 
 
 def close_entry():
     entry_frame.pack_forget()
-    chip.pack(anchor="e", padx=6, pady=2)
+    mute_btn.pack_forget()
     entry.delete(0, "end")
     root.geometry(f"{W}x{H_CIRCLE + H_CHIP}+{root.winfo_x()}+{root.winfo_y()}")
 
@@ -240,7 +335,51 @@ def toggle_entry():
         open_entry()
 
 
-chip.bind("<Button-1>", lambda e: toggle_entry())
+# la textbox appare quando il mouse entra nel widget e si chiude quando esce
+hover = {"on": False}
+
+
+def _on_enter(_e=None):
+    hover["on"] = True
+    if not entry_frame.winfo_ismapped():
+        open_entry()
+
+
+def _on_leave(_e=None):
+    hover["on"] = False
+    root.after(350, _leave_close)  # piccolo ritardo: evita sfarfallio
+
+
+def _leave_close():
+    if not hover["on"] and entry_frame.winfo_ismapped() and not entry.get().strip():
+        close_entry()
+
+
+for _w in (root, canvas, entry_frame, entry, _pill_lbl, mute_btn):
+    _w.bind("<Enter>", _on_enter)
+    _w.bind("<Leave>", _on_leave)
+sendbtn.bind("<Enter>", _on_enter)
+
+
+def toggle_mute(_e=None):
+    tts_muted["on"] = not tts_muted["on"]
+    mute_btn.config(image=(SPK_OFF if tts_muted["on"] else SPK_ON))
+    stop_tts()  # se sta parlando, zitta subito
+    try:
+        pos = json.loads(POS_FILE.read_text()) if POS_FILE.exists() else {}
+    except Exception:
+        pos = {}
+    pos["muted"] = tts_muted["on"]
+    pos.setdefault("x", root.winfo_x())
+    pos.setdefault("y", root.winfo_y())
+    try:
+        POS_FILE.write_text(json.dumps(pos))
+    except Exception:
+        pass
+    bubble.show("Voce disattivata." if tts_muted["on"] else "Voce riattivata.")
+
+
+mute_btn.bind("<Button-1>", toggle_mute)
 
 # --- rete ---------------------------------------------------------------------
 def _post_json(path, payload):
@@ -273,6 +412,8 @@ def stop_tts():
 
 def _show_entry(e):
     bubble.show(e.get("assistant") or e.get("error") or "errore")
+    if tts_muted["on"]:
+        return  # muto: la risposta resta solo scritta nella bolla
     winsound.PlaySound(str(BASE / "_tts_reply.wav"),
                        winsound.SND_FILENAME | winsound.SND_ASYNC)
 
@@ -299,9 +440,9 @@ sendbtn.bind("<Button-1>", lambda e: send_text_cmd())
 entry.bind("<Return>", lambda e: send_text_cmd())
 entry.bind("<Escape>", lambda e: close_entry())
 
-# click fuori dal widget -> il widget perde il focus -> chiudi la textbox.
-# Se il focus e' semplicemente passato alla bolla di risposta, non chiudere.
 def _on_focus_out(_e=None):
+    # la textbox ora si chiude da sola all'uscita del mouse; il focus-out
+    # resta solo come sicurezza quando si clicca in un'altra app con testo dentro
     if not entry_frame.winfo_ismapped():
         return
     try:
@@ -310,7 +451,8 @@ def _on_focus_out(_e=None):
             return
     except Exception:
         pass
-    close_entry()
+    if not entry.get().strip():  # con testo dentro resta aperta
+        close_entry()
 
 
 root.bind("<FocusOut>", _on_focus_out)
