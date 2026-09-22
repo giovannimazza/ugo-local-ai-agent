@@ -46,6 +46,12 @@ nome dell'app resta irrecuperabile, un fallback fuzzy trova l'app più vicina ne
 libreria. Quando una correzione viene applicata, nella bolla del widget e nella UI
 compare la trascrizione originale in piccolo (🎧 "…").
 
+**Conferma vocale**: se Qwen riscrive la trascrizione in modo radicalmente diverso
+(similarità sotto soglia), Chicco non esegue nulla e chiede *'Hai detto …? Rispondi
+sì o no'* — un sì vocale (anche storto: 'confirmo' vale) esegue il comando proposto,
+un no annulla; dopo 90 secondi la richiesta scade e il comando successivo parte
+normale.
+
 ---
 
 ## 🏗️ Architettura / Stack

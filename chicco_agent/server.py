@@ -913,13 +913,113 @@ def run_command(text: str, intent: str) -> str:
 # ---------------------------------------------------------------------------
 # Pipeline completa
 # ---------------------------------------------------------------------------
+# Conferma vocale delle correzioni 'molto diverse': se Qwen riscrive la
+# trascrizione radicalmente, Chicco chiede 'Hai detto ...?' ed esegue solo
+# dopo un si' vocale (o annulla con no). Scopo dopo PENDING_TTL secondi.
+CONFIRM_RATIO = 0.55
+PENDING_TTL = 90.0
+_pending = {"text": None, "ts": 0.0}
+_YES = {"si", "sì", "ok", "okay", "confermo", "conferma", "esatto", "esatta",
+        "giusto", "giusta", "certo", "certamente", "appunto", "sicuro",
+        "corretto", "corretta", "esegui", "vai", "yes", "sure", "quoto"}
+_NO = {"no", "nope", "annulla", "annullare", "cancella", "sbagliato",
+       "sbagliata", "falso", "falsa", "riprova", "stop", "negativo",
+       "non", "niente", "mica"}
+
+
+def _yes_no(text: str):
+    """True (affermazione), False (negazione) o None (non e' una risposta).
+    Tollerante ai near-miss dello STT ('confirmo' -> 'confermo')."""
+    tokens = re.findall(r"[a-zà-ù]+", (text or "").lower())
+    if not tokens:
+        return None
+    tset = set(tokens)
+    if tset & _NO:
+        return False
+    if tset & _YES:
+        return True
+    # fuzzy: la voce (soprattutto quella sintetica) viene sentita storta
+    for tok in tokens:
+        if difflib.get_close_matches(tok, _NO, n=1, cutoff=0.82):
+            return False
+        if difflib.get_close_matches(tok, _YES, n=1, cutoff=0.82):
+            return True
+    return None
+
+
+def _consume_pending(text: str):
+    """Se c'e' una conferma in attesa e valida, la consuma e ritorna
+    (decisione, testo_in_attesa). Il pending scade sempre qui dentro."""
+    with _log_lock:
+        pend_text, pend_ts = _pending["text"], _pending["ts"]
+        _pending["text"] = None
+    if not pend_text or time.time() - pend_ts > PENDING_TTL:
+        return None, None
+    return _yes_no(text), pend_text
+
+
+def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
+          raw: str | None = None, show_list: bool = False) -> dict:
+    """Costruisce l'entry di risposta: history, log, voce e ritorno API."""
+    entry = {
+        "user": user, "assistant": reply, "intent": intent,
+        "detector": src, "input": source, "ms": dt, "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    if raw:
+        entry["raw"] = raw
+    if show_list:
+        entry["show_list"] = True
+    with _log_lock:
+        _history.append(entry)
+        if len(_history) > 200:
+            del _history[:-200]
+    print(f"[cmd] intent={intent} via {src} ({dt} ms): {user!r} -> {reply!r}")
+    try:
+        speak(reply)
+    except Exception as exc:
+        print(f"[tts] errore: {exc}")
+    return entry
+
+
 def process(text: str, source: str) -> dict:
     raw_stt, corrected = text, None
+    # --- conferma in attesa (solo voce): 'si' esegue, 'no' annulla ---
+    # NOTA: il controllo va SEMPRE prima della normalizzazione Qwen, che
+    # riscriverebbe 'si confermo' in 'Conferma.' mandando in crash la logica
+    if source == "voce" and _yes_no(text or "") is not None:
+        decision, pend_text = _consume_pending(text or "")
+        if decision is True and pend_text:
+            text = raw_stt = pend_text  # eseguo cio' che Qwen aveva proposto
+            print(f"[confirm] comando confermato, eseguo: {text!r}")
+            intent, src, t0 = "confirm", "guard", time.time()
+            try:
+                reply = _process_inner(text, detect_intent(text)[0], src)
+            except Exception as exc:
+                reply = f"Ho avuto un problema tecnico ({type(exc).__name__})."
+                intent = "error:confirm"
+            return _emit(text, reply, intent, src, source,
+                         int((time.time() - t0) * 1000))
+        if decision is False:
+            return _emit(text or "no", "Va bene, annullato.", "confirm", "guard", source, 0)
+        # decision None: non era una risposta a una conferma -> nuovo comando
+    else:
+        with _log_lock:  # un input digitato fa decadere eventuali conferme
+            _pending["text"] = None
+
     if text:
         # fase 0: Qwen corregge errori di dettato/trascrizione prima di tutto
         # (voce E testo: anche chi scrive sbaglia a digitare 'apri spotrifyt')
         cand = safe_normalize(text)
         if cand:
+            if (source == "voce" and difflib.SequenceMatcher(
+                    None, raw_stt.lower(), cand.lower()).ratio() < CONFIRM_RATIO):
+                # correzione radicalmente diversa: niente esecuzione, chiedo
+                with _log_lock:
+                    _pending["text"] = cand
+                    _pending["ts"] = time.time()
+                print(f"[confirm] correzione troppo diversa, chiedo: {raw_stt!r} -> {cand!r}")
+                return _emit(raw_stt, f'Hai detto: "{cand}"? Rispondi sì o no.',
+                             "confirm", "guard", source, 0)
             corrected, text = cand, cand
             print(f"[normalize] {raw_stt!r} -> {cand!r}")
     intent, src = detect_intent(text)
@@ -935,24 +1035,8 @@ def process(text: str, source: str) -> dict:
     dt = int((time.time() - t0) * 1000)
     with _log_lock:
         items = list(_last_items) if intent == "list_apps" else []
-    entry = {
-        "user": text, "assistant": reply, "intent": intent,
-        "detector": src, "input": source, "ms": dt, "ts": datetime.now().isoformat(timespec="seconds"),
-    }
-    if corrected:
-        entry["raw"] = raw_stt
-    if items:
-        entry["show_list"] = True
-    with _log_lock:
-        _history.append(entry)
-        if len(_history) > 200:
-            del _history[:-200]
-    print(f"[cmd] intent={intent} via {src} ({dt} ms): {text!r} -> {reply!r}")
-    try:
-        speak(reply)
-    except Exception as exc:
-        print(f"[tts] errore: {exc}")
-    return entry
+    return _emit(text, reply, intent, src, source, dt,
+                 raw=raw_stt if corrected else None, show_list=bool(items))
 
 
 def _process_inner(text: str, intent: str, src: str) -> str:
