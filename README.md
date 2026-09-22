@@ -53,9 +53,13 @@ appare al passaggio del mouse, toggle mute del TTS, risposte in una bolla a scom
       │                     │    (transcribe.cpp,  │
  ┌──────────────┐          │     Vulkan → AMD GPU)│
  │ UI web       │          │    fallback: Vosk it │
- │ (browser)    │          │ 2. Intent: regole +  │
+ │ (browser)    │                           │ 2. Correzione STT:   │
+                           │    Qwen ripulisce la │
+                           │    trascrizione con  │
+                           │    guardie anti-danno│
+                           │ 3. Intent: regole +  │
  └──────────────┘          │    Laya (3 livelli)  │
-                           │ 3. Comandi→JSON:     │
+                           │ 4. Comandi→JSON:     │
                            │    Qwen2.5 0.5B      │
                            │    (Ollama, locale)  │
                            │ 4. Esecuzione reale  │

@@ -28,6 +28,8 @@
   .bot .bubble { background:var(--card); border:1px solid var(--border);
                  border-top-left-radius:4px; }
   .meta { display:block; margin-top:8px; font-size:.68rem; color:var(--mut); }
+  .rawstt { margin-top:6px; color:var(--mut); font-size:.72rem; font-style:italic;
+            border-top:1px dashed var(--border); padding-top:5px; }
 
   /* hero iniziale */
   .hero { text-align:center; margin-top:10vh; }
@@ -247,7 +249,7 @@ async function maybeShowList() {
 function scroll() { chat.scrollTop = chat.scrollHeight; }
 function setStatus(s) { statusEl.textContent = s || 'Chicco può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.'; }
 
-function add(role, text, meta) {
+function add(role, text, meta, raw) {
   hero && hero.remove();
   const row = document.createElement('div');
   row.className = 'row ' + (role === 'you' ? 'you' : 'bot');
@@ -257,6 +259,12 @@ function add(role, text, meta) {
   const b = document.createElement('div');
   b.className = 'bubble';
   b.textContent = text;
+  if (raw) {
+    const r = document.createElement('div'); r.className = 'rawstt';
+    r.title = 'Trascrizione originale corretta da Qwen';
+    r.textContent = '🎧 "' + raw + '"';
+    b.appendChild(r);
+  }
   if (meta) { const m = document.createElement('span'); m.className = 'meta'; m.textContent = meta; b.appendChild(m); }
   row.append(av, b); col.appendChild(row); scroll();
 }
@@ -298,7 +306,7 @@ micBtn.onclick = async () => {
       const r = await fetch('/api/listen', {method:'POST', body:fd});
       const e = await r.json();
       if (e.error) { setStatus(e.error); return; }
-      if (e.user) { add('you', e.user); }
+      if (e.user) { add('you', e.user, '', e.raw); }
       add('bot', e.assistant, e.intent && e.intent !== '-' ? `${e.intent} · ${e.detector} · ${e.ms} ms` : '');
       if (e.show_list) maybeShowList();
     } catch { add('bot', 'Server non raggiungibile.'); }

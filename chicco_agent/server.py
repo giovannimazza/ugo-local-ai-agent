@@ -322,6 +322,56 @@ OLLAMA_SCHEMA = (
 )
 FILE_INTENTS = {"create_file", "append_file", "delete_file", "read_file"}
 
+# ---------------------------------------------------------------------------
+# Correzione trascrizione (fase 0 della pipeline vocale):
+# Qwen ripulisce gli errori dello STT (parole sentite male, ortografia di app
+# e siti) PRIMA del riconoscimento dell'intento: il comando eseguito e' quello
+# corretto, non quello dettato male.
+# ---------------------------------------------------------------------------
+NORMALIZE_SCHEMA = (
+    'You fix speech-to-text mistakes in an Italian voice command for a PC assistant. '
+    'Given the raw transcript, answer ONLY with the corrected Italian command. '
+    'Fix ONLY clearly misheard or misspelled words (e.g. made-up app names). '
+    'Never change words you are not sure about. Never translate, never execute, '
+    'never answer, never add or remove punctuation. Keep Italian. '
+    'Never replace location words: desktop, documenti, downloads must stay exactly. '
+    'Use the real names of apps and sites when the user garbles them. '
+    'If the transcript is already correct or you are unsure, repeat it unchanged. '
+    'Installed apps include: '
+    f'{appindex.llm_context(limit=40)}. '
+    'Examples: apri bre bloko nota -> apri il blocco note; '
+    'apri spotifi -> apri spotify; '
+    'che ore sono -> che ore sono; '
+    'crea una cartella spesa sul desktop -> crea una cartella spesa sul desktop.'
+)
+
+
+def normalize_stt(text: str) -> str | None:
+    """Ritorna la trascrizione corretta da Qwen, o None se non disponibile.
+    La pipeline usa il risultato solo se effettivamente diverso dall'originale."""
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "model": OLLAMA_MODEL,
+            "system": NORMALIZE_SCHEMA,
+            "prompt": text,
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": 0, "num_predict": 120},
+        }).encode()
+        req = urllib.request.Request(OLLAMA_URL, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+        out = (data.get("response") or "").strip().strip('"').strip()
+        # difese: vuoto, delirio troppo lungo o multilinea -> meglio l'originale
+        if not out or "\n" in out or len(out) > len(text) * 3 + 80:
+            return None
+        return out
+    except Exception as exc:
+        print(f"[normalize] errore: {exc}")
+        return None
+
 
 def ollama_parse(text: str) -> dict | None:
     """Chiede al piccolo modello locale di tradurre il comando in JSON."""
@@ -826,6 +876,26 @@ def run_command(text: str, intent: str) -> str:
 # Pipeline completa
 # ---------------------------------------------------------------------------
 def process(text: str, source: str) -> dict:
+    raw_stt, corrected = text, None
+    if source == "voce" and text:
+        # fase 0: Qwen corregge gli errori di trascrizione prima di tutto,
+        # MA solo se non fa perdere un intent gia' riconosciuto dalle keyword
+        # (il 0.5B a volte "corregge" frasi giuste in frasi peggiori)
+        cand = normalize_stt(text)
+        if cand and cand.lower() != raw_stt.strip().lower():
+            kw_raw, kw_new = keyword_intent(raw_stt), keyword_intent(cand)
+            raw_l, cand_l = raw_stt.lower(), cand.lower()
+            lost_place = (any(p in raw_l for p in ("desktop", "scrivania", "documenti", "download"))
+                          and not any(p in cand_l for p in ("desktop", "scrivania", "documenti", "download")))
+            SITI_NOTI = ("youtube", "google", "gmail", "maps", "amazon", "netflix", "twitch",
+                         "github", "reddit", "facebook", "instagram", "whatsapp", "spotify",
+                         "wikipedia", "chatgpt", "steam", "discord")
+            lost_site = any(s in raw_l and s not in cand_l for s in SITI_NOTI)
+            if not (kw_raw and kw_raw != kw_new) and not lost_place and not lost_site:
+                corrected, text = cand, cand
+                print(f"[normalize] {raw_stt!r} -> {cand!r}")
+            else:
+                print(f"[normalize] scartata (perdeva intent={kw_raw}, luogo o sito): {cand!r}")
     intent, src = detect_intent(text)
     t0 = time.time()
     try:
@@ -843,6 +913,8 @@ def process(text: str, source: str) -> dict:
         "user": text, "assistant": reply, "intent": intent,
         "detector": src, "input": source, "ms": dt, "ts": datetime.now().isoformat(timespec="seconds"),
     }
+    if corrected:
+        entry["raw"] = raw_stt
     if items:
         entry["show_list"] = True
     with _log_lock:
