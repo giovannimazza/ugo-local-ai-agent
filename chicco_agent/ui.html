@@ -103,9 +103,15 @@
              display:flex; align-items:center; gap:8px;
              transition:border-color .15s, transform .15s; }
   .appsbtn:hover { border-color:var(--acc); transform:translateY(-1px); }
+  .appsbtn.small { right:190px; padding:8px 12px; }
+  .mcat { cursor:default; }  /* le voci del menu modello non collassano niente */
+  .mitem.click { cursor:pointer; }
+  .mitem.click:hover { background:var(--card); }
+  .mitem .check { margin-left:auto; color:var(--acc); font-weight:700; }
 </style>
 </head>
 <body>
+<button class="appsbtn small" id="modelbtn" title="Modello AI per correzione e interpretazione">⚙️ <span id="modelname">…</span></button>
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
 <div class="app">
   <main class="main">
@@ -228,6 +234,37 @@ msearch.addEventListener('input', () => {
   renderItems(filtered, q.length > 0);
 });
 
+async function openModelMenu() {
+  try {
+    const r = await fetch('/api/model'); const d = await r.json();
+    document.getElementById('modelname').textContent = d.active.replace('qwen2.5:', 'Qwen ');
+    mtitle.textContent = 'Modello AI';
+    mcount.textContent = 'correzione, interpretazione e suggerimenti';
+    msearch.style.display = 'none';
+    mlist.innerHTML = '';
+    for (const name of d.available) {
+      const it = {title: name.replace('qwen2.5:', 'Qwen '), subtitle: '', kind: 'appx',
+                  _model: name, _active: name === d.active};
+      const rowEl = row(it);
+      rowEl.classList.add('click');
+      if (it._active) {
+        const c = document.createElement('span'); c.className = 'check'; c.textContent = '✓';
+        rowEl.appendChild(c);
+      }
+      rowEl.onclick = async () => {
+        const rr = await fetch('/api/model', {method:'POST',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify({model: it._model})});
+        const dd = await rr.json();
+        if (dd.ok) { document.getElementById('modelname').textContent =
+                       it._model.replace('qwen2.5:', 'Qwen '); ovl.classList.remove('open'); }
+        else add('bot', 'Errore: ' + (dd.error || 'cambio modello fallito'));
+      };
+      mlist.appendChild(rowEl);
+    }
+    ovl.classList.add('open');
+  } catch {}
+}
+document.getElementById('modelbtn').onclick = openModelMenu;
 async function openApps() {
   try {
     const r = await fetch('/api/apps'); const d = await r.json();
@@ -316,6 +353,10 @@ micBtn.onclick = async () => {
 };
 
 async function playReply() { try { new Audio('/_tts_reply.wav?t=' + Date.now()).play(); } catch {} }
+
+// etichetta del modello attivo sul pulsante delle impostazioni
+(async () => { try { const r = await fetch('/api/model'); const d = await r.json();
+  document.getElementById('modelname').textContent = d.active.replace('qwen2.5:', 'Qwen '); } catch {} })();
 </script>
 </body>
 </html>

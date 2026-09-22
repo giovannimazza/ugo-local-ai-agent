@@ -298,7 +298,34 @@ LAYA_LABELS = set(LAYA_QUESTIONS["intent"]["criteria"]) - {"unknown"}
 # traduce il linguaggio naturale in una "specifica comando" JSON per l'executer.
 # ---------------------------------------------------------------------------
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:0.5b"
+OLLAMA_MODEL = "qwen2.5:0.5b"   # fallback: il piu' piccolo, sempre disponibile
+DEFAULT_MODEL = "qwen2.5:1.5b"  # benchmark: corretto sulle frasi giuste e sugli errori
+MODEL_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco" / "model.json"
+_active_model = {"name": DEFAULT_MODEL}
+
+try:  # scelta persistita dall'utente (menu widget/UI web)
+    _saved = json.loads(MODEL_FILE.read_text()) if MODEL_FILE.exists() else {}
+    if isinstance(_saved.get("model"), str) and _saved["model"]:
+        _active_model["name"] = _saved["model"]
+except Exception:
+    pass
+
+
+def ollama_models() -> list:
+    """Modelli qwen* installati in Ollama (per menu e validazione)."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=4) as r:
+            tags = [m.get("name", "") for m in json.loads(r.read().decode()).get("models", [])]
+        return sorted(t for t in tags if t.lower().startswith("qwen")) or [OLLAMA_MODEL]
+    except Exception:
+        return [OLLAMA_MODEL]
+
+
+def _llm_model() -> str:
+    """Modello attivo, con rientro a 0.5b se quello scelto non e' installato."""
+    name = _active_model["name"]
+    return name if name in ollama_models() else OLLAMA_MODEL
 OLLAMA_SCHEMA = (
     'Convert an Italian voice command into ONE JSON object for a PC assistant. '
     'Allowed actions: create_folder{name,location}, delete_folder{name,location}, '
@@ -353,7 +380,7 @@ def normalize_stt(text: str) -> str | None:
     try:
         import urllib.request
         payload = json.dumps({
-            "model": OLLAMA_MODEL,
+            "model": _llm_model(),
             "system": NORMALIZE_SCHEMA,
             "prompt": text,
             "stream": False,
@@ -406,7 +433,7 @@ def ollama_parse(text: str) -> dict | None:
     try:
         import urllib.request
         payload = json.dumps({
-            "model": OLLAMA_MODEL,
+            "model": _llm_model(),
             "system": OLLAMA_SCHEMA,
             "prompt": text,
             "format": "json",
@@ -985,7 +1012,7 @@ def qwen_app_suggest(name: str) -> dict | None:
             return None
         import urllib.request
         payload = json.dumps({
-            "model": OLLAMA_MODEL,
+            "model": _llm_model(),
             "system": (f'The user asked to open "{name}" but it is not installed. '
                        'Which ONE of these installed apps did they most likely mean? '
                        'Reply with the exact name of one candidate, or NONE if none '
@@ -1195,6 +1222,31 @@ def api_normalize(payload: dict):
         return JSONResponse({"error": "testo vuoto"}, status_code=400)
     corrected = safe_normalize(text)
     return {"raw": text, "text": corrected or text, "corrected": bool(corrected)}
+
+
+@app.get("/api/model")
+def api_model_get():
+    """Modello LLM attivo + quelli disponibili (menu widget / UI web)."""
+    return {"active": _llm_model(), "available": ollama_models()}
+
+
+@app.post("/api/model")
+def api_model_set(payload: dict):
+    """Cambia il modello LLM (correzione STT, JSON, suggerimenti app)."""
+    name = (payload.get("model") or "").strip()
+    if not name:
+        return JSONResponse({"error": "modello mancante"}, status_code=400)
+    if name not in ollama_models():
+        return JSONResponse({"error": f"modello non installato in Ollama: {name}"},
+                            status_code=400)
+    _active_model["name"] = name
+    try:
+        MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        MODEL_FILE.write_text(json.dumps({"model": name}))
+    except Exception as exc:
+        print(f"[model] persistenza fallita: {exc}")
+    print(f"[model] attivo: {name}")
+    return {"ok": True, "active": name}
 
 
 @app.get("/api/apps")

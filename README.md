@@ -86,7 +86,7 @@ normale.
 |---|---|---|
 | **STT** | [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) + `whisper-large-v3-turbo-Q8_0.gguf` su **Vulkan** (testato su AMD RX 9070 XT, ~6× realtime) | trascrizione it/qualunque lingua; fallback Vosk piccolo |
 | **Intent** | regole testuali + [Laya](https://pypi.org/project/laya/) (ModernBERT, probabilità calibrate) | classificare il comando in ~20 ms, 3 livelli di fallback |
-| **LLM** | Qwen2.5 0.5B via [Ollama](https://ollama.com) | correzione della trascrizione (con guardie anti-danno: intent, luoghi, siti noti) + traduzione frasi libere in specifica JSON (`create_file{name,content}`…); fallback fuzzy `difflib` sui nomi d'app |
+| **LLM** | Qwen2.5 via [Ollama](https://ollama.com), dimensione **selezionabile** (0.5b / 1.5b / 3b — default 1.5b) | correzione della trascrizione (con guardie anti-danno: intent, luoghi, siti noti) + traduzione frasi libere in specifica JSON (`create_file{name,content}`…) + suggerimento 'Intendavi X?' per le app; fallback fuzzy `difflib` sui nomi d'app. Benchmark su Ryzen 7800X3D: 0.5b ~0,05 s/comando ma pasticcia le frasi corrette; 1.5b ~0,55 s e non tocca nulla di giusto; 3b uguale al 1.5b col doppio della RAM |
 | **Esecuzione** | Python (os, subprocess, send2trash, pycaw, webbrowser) | azioni reali: file system, app, siti, volume |
 | **Librerie app/giochi** | `appindex.py` + `games.py`: menu Start, Store/AppX, portabili, manifest Steam/Epic/GOG | contesto per l'IA, avvio app, elenchi su richiesta |
 | **TTS** | pyttsx3 → voci SAPI di Windows (Elsa IT) | risposta vocale offline, interrotta su nuovo input |
@@ -186,6 +186,7 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 | `GET /api/list` | ultima lista giochi/app richiesta a voce |
 | `GET /api/stt` | trascrittore attivo (motore, modello, dispositivo) |
 | `POST /api/normalize` | corregge una trascrizione con Qwen senza eseguirla: `{raw, text, corrected}` |
+| `GET/POST /api/model` | modello LLM attivo / cambia modello (persistito, menu nel widget e nella UI) |
 | `GET /_tts_reply.wav` | ultima risposta vocale |
 
 ## 📁 Struttura del progetto

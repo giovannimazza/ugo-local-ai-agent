@@ -781,20 +781,48 @@ def _fetch_json(path):
         return json.loads(r.read().decode())
 
 
+def _set_model(name):
+    """Cambia il modello LLM via server e conferma nella bolla."""
+    def run():
+        try:
+            _post_json("/api/model", {"model": name})
+            ui(lambda: bubble.show("Modello AI: " + name.replace("qwen2.5:", "Qwen ")))
+        except Exception as exc:
+            ui(lambda: bubble.show(f"Errore modello: {exc}"))
+    threading.Thread(target=run, daemon=True).start()
+
+
 def show_stt_popup():
+    """Doppio click: menu con info trascrittore + scelta del modello AI."""
     on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
 
     def work():
+        stt_text = "Trascrittore non disponibile"
         try:
             info = _fetch_json("/api/stt")
             eng = info.get("engine", "?")
             name = {"whisper": "Whisper", "vosk": "Vosk"}.get(eng, eng)
-            text = (f"Trascrittore: {name}\n"
-                    f"Modello: {info.get('model', '?')}\n"
-                    f"Dispositivo: {info.get('device', '?')}")
-        except Exception as exc:
-            text = f"Trascrittore non disponibile ({exc})"
-        ui(lambda: bubble.show(text, sticky=False))
+            stt_text = f"{name} · {info.get('model', '?')} · {info.get('device', '?')}"
+        except Exception:
+            pass
+        try:
+            mod = _fetch_json("/api/model")
+            current, available = mod.get("active", ""), mod.get("available", [])
+        except Exception:
+            current, available = "", []
+
+        def build():
+            m = tk.Menu(root, tearoff=0, font=FONT_UI, bg=CARD, fg=TXT,
+                        activebackground=ACCENT, activeforeground="#ffffff")
+            m.add_command(label="🎙️ " + stt_text, state="disabled")
+            m.add_separator()
+            m.add_command(label="Modello AI:", state="disabled")
+            for name in available:
+                mark = "  ✓ " if name == current else "     "
+                m.add_command(label=f"{mark}{name.replace('qwen2.5:', 'Qwen ')}",
+                              command=lambda n=name: _set_model(n))
+            m.tk_popup(root.winfo_x() + CIRCLE_CX - 60, root.winfo_y() + C // 2)
+        ui(build)
     threading.Thread(target=work, daemon=True).start()
 
 
