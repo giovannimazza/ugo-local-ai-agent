@@ -182,10 +182,11 @@ def volume_step(direction: str) -> bool:
     if IS_WINDOWS:
         try:
             from ctypes import cast, POINTER
-            from comtypes import CLSCTX_ALL
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
             dev = AudioUtilities.GetSpeakers()
-            interface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            # pycaw recente: EndpointVolume gia' attivato; vecchie versioni: Activate()
+            interface = getattr(dev, "EndpointVolume", None) or dev.Activate(
+                IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
             vol = cast(interface, POINTER(IAudioEndpointVolume))
             step = 0.06 if direction == "up" else -0.06
             cur = vol.GetMasterVolumeLevelScalar()

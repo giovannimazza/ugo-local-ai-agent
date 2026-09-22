@@ -27,6 +27,7 @@ decision-engine non autoregressivo usato qui per la classificazione degli intent
 | *"Quali giochi ho su steam?"* / *"Quali app ho installato?"* | elenco parlato + **modale a schermo** con la lista completa |
 | *"Che ore sono? / Che giorno è oggi?"* | ora e data a voce |
 | *"Alza il volume / Muto"* | controllo audio reale (pycaw) |
+| *"Metti il volume al 30" / "al settanta" / "a metà" / "del 20"* | livello assoluto (cifre, parole o %) o relativo, con verifica del valore ottenuto |
 | *"Elenca i file sul desktop"* | lettura cartella reale |
 
 All'avvio il server indicizza in una **libreria** tutto il PC (collegamenti menu

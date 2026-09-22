@@ -749,6 +749,65 @@ def _handle_list_apps(text: str) -> str:
             "ti apro l'elenco completo a schermo.")
 
 
+# parole-numero italiano per le percentuali del volume ("al settanta", "del quindici")
+_IT_NUMBERS = {
+    "zero": 0, "dieci": 10, "venti": 20, "trenta": 30, "quaranta": 40,
+    "cinquanta": 50, "sessanta": 60, "settanta": 70, "ottanta": 80,
+    "novanta": 90, "cento": 100,
+}
+
+
+def _parse_volume(t: str):
+    """Estrae (livello, modo) dal comando volume: livello 0-100 o None,
+    modo in {'abs','up','down'}. Capisce: 'al 30', '30%', 'al settanta',
+    'a meta', 'al massimo', 'al minimo', 'alza del 20', 'abbassa di 5'."""
+    m = re.search(r"(\d{1,3})\s*%", t) or re.search(
+        r"\b(al|alla|a|del|di)\s+(\d{1,3})\b", t)
+    if not m:
+        m = re.search(r"\b(\d{1,3})\b", t)  # 'volume 30'
+    if m:
+        n = int(m.group(2) if m.lastindex == 2 else m.group(1))
+        prefix = m.group(1) if m.lastindex == 2 else ""
+        if 0 <= n <= 100:
+            verb = any(w in t for w in ("alza", "aumenta", "abbassa",
+                                        "diminuisci", "riduci"))
+            if prefix in ("del", "di") or (not prefix and verb):
+                # 'alza del 20', 'abbassa di 5', 'alza il volume 20'
+                up = any(w in t for w in ("alza", "aumenta"))
+                return n, "up" if up else "down"
+            return n, "abs"
+    for word, val in _IT_NUMBERS.items():
+        if re.search(rf"\b(?:al|a|alla|del|di)?\s*{word}\b", t):
+            return val, "abs"
+    if "massimo" in t or "al max" in t:
+        return 100, "abs"
+    if "minimo" in t or "al min" in t:
+        return 0, "abs"
+    if "meta" in t or "metà" in t or "mezzo" in t:
+        return 50, "abs"
+    m = re.search(r"(?:alza|aumenta|abbassa|diminuisci|riduci)[^\d]{0,20}(\d{1,3})", t)
+    if m and 0 <= int(m.group(1)) <= 100:
+        up = any(w in t for w in ("alza", "aumenta"))
+        return int(m.group(1)), "up" if up else "down"
+    return None, ("up" if ("alza" in t or "aumenta" in t or "su" in t)
+                  else "down")
+
+
+def _endpoint_volume():
+    """Puntatore IAudioEndpointVolume, compatibile con tutte le versioni di pycaw:
+    le recenti espongono dev.EndpointVolume gia' attivato, le vecchie richiedono
+    dev.Activate(...)."""
+    import comtypes
+    from ctypes import cast, POINTER
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    comtypes.CoInitialize()
+    dev = AudioUtilities.GetSpeakers()
+    if getattr(dev, "EndpointVolume", None):
+        return cast(dev.EndpointVolume, POINTER(IAudioEndpointVolume))
+    iface = dev.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
+    return cast(iface, POINTER(IAudioEndpointVolume))
+
+
 def run_command(text: str, intent: str) -> str:
     """Esegue il comando e ritorna la frase da dire alla voce."""
     t = text.lower()
@@ -930,40 +989,56 @@ def run_command(text: str, intent: str) -> str:
         return f"Oggi e' {days[now.weekday()]} {now.day} {months[now.month - 1]} {now.year}."
 
     if intent == "volume":
-        try:
-            import comtypes
-            from ctypes import cast, POINTER
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-            comtypes.CoInitialize()
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
-            vol = cast(interface, POINTER(IAudioEndpointVolume))
-            if "muto" in t or "mute" in t:
+        # muto: toggle istantaneo (prima di qualsiasi altra interpretazione)
+        if "muto" in t or "mute" in t:
+            try:
+                vol = _endpoint_volume()
                 new_mute = not bool(vol.GetMute())
                 vol.SetMute(int(new_mute), None)
                 return "Audio escluso." if new_mute else "Audio riattivato."
-            cur = int(vol.GetMasterVolumeLevelScalar() * 100)
-            if "alza" in t or "aumenta" in t:
-                new = min(100, cur + 10)
+            except Exception as exc:
+                print(f"[volume] errore pycaw (muto): {exc}; uso fallback tasti")
+            subprocess.Popen(["powershell", "-NoProfile", "-Command",
+                              "$w=New-Object -ComObject WScript.Shell; $w.SendKeys('{VK_VOLUME_MUTE}')"],
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+            return "Comando muto inviato."
+        level, mode = _parse_volume(t)
+        try:
+            vol = _endpoint_volume()
+            cur = int(round(vol.GetMasterVolumeLevelScalar() * 100))
+            if level is None:               # 'alza/abbassa il volume' -> +-10
+                level = 10
+                mode = "up" if ("alza" in t or "aumenta" in t) else "down"
+            if mode == "abs":
+                new = level
+            elif mode == "up":
+                new = min(100, cur + level)
             else:
-                new = max(0, cur - 10)
-            vol.SetMasterVolumeLevelScalar(new / 100, None)
-            return f"Volume portato al {new} per cento."
+                new = max(0, cur - level)
+            vol.SetMasterVolumeLevelScalar(new / 100.0, None)
+            got = int(round(vol.GetMasterVolumeLevelScalar() * 100))  # verifica reale
+            if abs(got - new) > 2:
+                return f"Non sono riuscito a portare il volume al {new} per cento."
+            return f"Volume portato al {got} per cento."
         except Exception as exc:
             print(f"[volume] errore pycaw: {exc}; uso fallback tasti")
-        if "muto" in t or "mute" in t:
-            key = "{VK_VOLUME_MUTE}"
-        elif "alza" in t or "aumenta" in t:
-            key = "{VK_VOLUME_UP}"
+        # fallback tasti multimediali: se conosco il livello attuale lo avvicino a passi di 2
+        try:
+            cur = int(round(_endpoint_volume().GetMasterVolumeLevelScalar() * 100))
+        except Exception:
+            cur = 50
+        if mode == "abs" and level is not None:
+            mode = "up" if level > cur else "down"
+            steps = max(0, min(50, abs(level - cur) // 2))
         else:
-            key = "{VK_VOLUME_DOWN}"
-        ps = (f"$w=New-Object -ComObject WScript.Shell; "
-              f"1..10 | ForEach-Object {{ $w.SendKeys('{key}') }}")
-        subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
-                         creationflags=subprocess.CREATE_NO_WINDOW)
-        if "muto" in t:
-            return "Comando muto inviato."
-        return "Volume regolato."
+            steps = 10
+        key = "{VK_VOLUME_UP}" if mode == "up" else "{VK_VOLUME_DOWN}"
+        if steps:
+            ps = (f"$w=New-Object -ComObject WScript.Shell; "
+                  f"1..{steps} | ForEach-Object {{ $w.SendKeys('{key}') }}")
+            subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+        return "Volume regolato approssimativamente."
 
     if intent == "list_files":
         loc = extract_location(text)
