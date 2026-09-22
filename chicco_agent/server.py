@@ -944,9 +944,27 @@ async def api_text(payload: dict):
 
 @app.get("/api/apps")
 def api_apps(q: str | None = Query(default=None)):
-    """Libreria applicazioni indicizzate (lnk, Store/AppX, portabili)."""
+    """Libreria completa: app (lnk, Store/AppX, portabili, shell) + giochi.
+
+    Senza 'q' restituisce anche 'categories' per la lista categorizzata della
+    UI; con 'q' una lista piatta filtrata per nome.
+    """
     apps = appindex.search(q) if q else appindex.get_apps()
-    return {"count": len(apps), "apps": apps[:100]}
+    game_items = [{"name": g["name"], "kind": g["launcher"], "target": ""}
+                  for g in games.get_games()]
+    if q:
+        nq = q.lower()
+        g = [g for g in game_items if nq in g["name"].lower()]
+        return {"count": len(g) + len(apps), "apps": g + apps}
+    n_apps = sum(1 for a in apps if a["kind"] in ("lnk", "appx", "portable"))
+    n_shell = sum(1 for a in apps if a["kind"] == "shell")
+    return {"count": len(game_items) + len(apps), "apps": game_items + apps,
+            "games_count": len(game_items),
+            "categories": [
+                {"name": "Giochi", "count": len(game_items)},
+                {"name": "Applicazioni", "count": n_apps},
+                {"name": "Strumenti di sistema", "count": n_shell},
+            ]}
 
 
 @app.post("/api/apps/rescan")

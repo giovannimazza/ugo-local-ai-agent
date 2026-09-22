@@ -81,9 +81,26 @@
   .mitem .tx b { display:block; font-size:.9rem; font-weight:500; white-space:nowrap;
                  overflow:hidden; text-overflow:ellipsis; }
   .mitem .tx small { color:var(--mut); font-size:.7rem; }
+  .mcat { display:flex; align-items:baseline; gap:8px; color:var(--acc); font-size:.72rem;
+          font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+          padding:14px 12px 6px; border-top:1px solid var(--border); margin-top:8px; }
+  .mcat:first-child { border-top:none; margin-top:0; padding-top:4px; }
+  .mcat span { color:var(--mut); font-weight:400; text-transform:none; letter-spacing:0; }
+  .msearch { width:calc(100% - 24px); margin:0 12px 10px; background:var(--bg);
+             border:1px solid var(--border); border-radius:10px; color:var(--txt);
+             padding:9px 12px; font-size:.85rem; outline:none; font-family:inherit; }
+  .msearch:focus { border-color:var(--acc); }
+  .msearch::placeholder { color:var(--mut); }
+  .appsbtn { position:fixed; top:18px; right:22px; z-index:40; background:var(--card);
+             border:1px solid var(--border); color:var(--txt); font-size:.82rem;
+             font-family:inherit; padding:8px 14px; border-radius:999px; cursor:pointer;
+             display:flex; align-items:center; gap:8px;
+             transition:border-color .15s, transform .15s; }
+  .appsbtn:hover { border-color:var(--acc); transform:translateY(-1px); }
 </style>
 </head>
 <body>
+<button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
 <div class="app">
   <main class="main">
     <div class="chat" id="chat">
@@ -124,6 +141,7 @@
       <div><h3 id="mtitle">Elenco</h3><span id="mcount"></span></div>
       <button id="mclose" title="Chiudi">&times;</button>
     </header>
+    <input class="msearch" id="msearch" placeholder="Cerca per nome…" style="display:none">
     <div class="mlist" id="mlist"></div>
   </div>
 </div>
@@ -136,24 +154,70 @@ const mtitle = document.getElementById('mtitle'), mcount = document.getElementBy
 
 const KIND_ICONS = {steam:'🎮', epic:'🟣', gog:'🟡', launcher:'🚀', appx:'🪟',
                     lnk:'🪟', portable:'📦', shell:'⚙️'};
+const KIND_LABEL = {steam:'Steam', epic:'Epic Games', gog:'GOG', launcher:'Launcher',
+                    appx:'Microsoft Store', lnk:'applicazione', portable:'portabile',
+                    shell:'sistema'};
+const appsBtn = document.getElementById('appsbtn'), msearch = document.getElementById('msearch');
+let currentItems = [];
+
+function row(it) {
+  const r = document.createElement('div'); r.className = 'mitem';
+  const ic = document.createElement('div'); ic.className = 'ic';
+  ic.textContent = KIND_ICONS[it.kind] || '📄';
+  const tx = document.createElement('div'); tx.className = 'tx';
+  const b = document.createElement('b'); b.textContent = it.title;
+  const s = document.createElement('small'); s.textContent = it.subtitle || '';
+  tx.append(b, s); r.append(ic, tx); return r;
+}
+
+function renderItems(items) {
+  mlist.innerHTML = '';
+  const GROUPS = [
+    ['Giochi', k => ['steam','epic','gog','launcher'].includes(k)],
+    ['Applicazioni', k => ['lnk','appx','portable'].includes(k)],
+    ['Strumenti di sistema', k => k === 'shell']];
+  const rest = [...items];
+  for (const [name, test] of GROUPS) {
+    const grp = rest.filter(it => test(it.kind));
+    for (const it of grp) rest.splice(rest.indexOf(it), 1);
+    if (!grp.length) continue;
+    const h = document.createElement('div'); h.className = 'mcat';
+    h.innerHTML = name + ' <span>· ' + grp.length + '</span>';
+    mlist.appendChild(h);
+    for (const it of grp) mlist.appendChild(row(it));
+  }
+  for (const it of rest) mlist.appendChild(row(it));
+}
+
 function showList(title, items) {
+  currentItems = items;
   mtitle.textContent = title;
   mcount.textContent = items.length + ' voci';
-  mlist.innerHTML = '';
-  for (const it of items) {
-    const row = document.createElement('div'); row.className = 'mitem';
-    const ic = document.createElement('div'); ic.className = 'ic';
-    ic.textContent = KIND_ICONS[it.kind] || '📄';
-    const tx = document.createElement('div'); tx.className = 'tx';
-    const b = document.createElement('b'); b.textContent = it.title;
-    const s = document.createElement('small'); s.textContent = it.subtitle || '';
-    tx.append(b, s); row.append(ic, tx); mlist.appendChild(row);
-  }
+  msearch.style.display = items.length > 15 ? '' : 'none';
+  msearch.value = '';
+  renderItems(items);
   ovl.classList.add('open');
 }
+
 document.getElementById('mclose').onclick = () => ovl.classList.remove('open');
 ovl.onclick = e => { if (e.target === ovl) ovl.classList.remove('open'); };
 document.addEventListener('keydown', e => { if (e.key === 'Escape') ovl.classList.remove('open'); });
+
+msearch.addEventListener('input', () => {
+  const q = msearch.value.toLowerCase();
+  renderItems(currentItems.filter(it =>
+    (it.title + ' ' + (it.subtitle || '')).toLowerCase().includes(q)));
+});
+
+async function openApps() {
+  try {
+    const r = await fetch('/api/apps'); const d = await r.json();
+    const items = (d.apps || []).map(a =>
+      ({title: a.name, subtitle: KIND_LABEL[a.kind] || '', kind: a.kind}));
+    showList('App e giochi installati', items);
+  } catch {}
+}
+appsBtn.onclick = openApps;
 
 async function maybeShowList() {
   try {

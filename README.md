@@ -160,7 +160,7 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 | `POST /api/text` | esegue un comando testuale |
 | `POST /api/listen` | audio webm dal browser (via ffmpeg) |
 | `POST /api/listen_wav` | WAV PCM dal widget |
-| `GET /api/apps[?q=termine]` | libreria app indicizzate (ricerca opzionale) |
+| `GET /api/apps[?q=termine]` | libreria app + giochi, con categorie (ricerca opzionale) |
 | `POST /api/apps/rescan` | reindicizza le app |
 | `GET /api/list` | ultima lista giochi/app richiesta a voce |
 | `GET /api/stt` | trascrittore attivo (motore, modello, dispositivo) |
