@@ -90,6 +90,17 @@ def qwen_ok() -> bool:
         return False
 
 
+def qwen_tag_ok(tag: str) -> bool:
+    if not OLLAMA_EXE.exists():
+        return False
+    try:
+        out = subprocess.run([str(OLLAMA_EXE), "list"], capture_output=True,
+                             text=True, timeout=15).stdout
+        return tag in out
+    except Exception:
+        return False
+
+
 def py_import(mod: str) -> bool:
     try:
         __import__(mod)
@@ -161,16 +172,18 @@ def install_ollama() -> None:
 
 
 def install_qwen() -> None:
-    _step("Modello Qwen2.5 0.5B (traduzione comandi -> JSON)")
-    if qwen_ok():
-        _ok("qwen2.5:0.5b gia' presente")
-        return
+    _step("Modelli Qwen2.5 (correzione trascrizione + comandi -> JSON)")
     if not ollama_ok():
         _fail("serve Ollama attivo")
         return
-    print("  scarico ~400 MB...")
-    subprocess.run([_ollama_exe(), "pull", "qwen2.5:0.5b"])
-    _ok("qwen2.5:0.5b installato") if qwen_ok() else _fail("pull fallito")
+    # 1.5b e' il default del server, 0.5b resta il fallback di sicurezza
+    for tag, mb in (("qwen2.5:1.5b", "~1000"), ("qwen2.5:0.5b", "~400")):
+        if qwen_tag_ok(tag):
+            _ok(f"{tag} gia' presente")
+            continue
+        print(f"  scarico {tag} ({mb} MB)...")
+        subprocess.run([_ollama_exe(), "pull", tag])
+        _ok(f"{tag} installato") if qwen_tag_ok(tag) else _fail(f"pull {tag} fallito")
 
 
 def install_whisper() -> None:

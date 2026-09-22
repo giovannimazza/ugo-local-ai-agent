@@ -1,6 +1,7 @@
 # 🎙️ Chicco — Local AI Voice Agent
 
-Assistente vocale **100% locale e offline** per Windows: parli col microfono, capisce,
+Assistente vocale **100% locale e offline** — nato su Windows, ora anche su macOS
+e Linux (vedi [Compatibilità](#-compatibilità-multipiattaforma)): parli col microfono, capisce,
 esegue comandi reali sul PC (cartelle, file, app, siti, volume, ricerche web) e ti
 risponde a voce. Nessuna API key, nessun cloud, nessun costo per token.
 
@@ -74,7 +75,7 @@ normale.
                             │ 3. Intent: regole +       │
                             │    Laya (3 livelli)       │
                             │ 4. Comandi→JSON:          │
-                            │    Qwen2.5 0.5B           │
+                            │    Qwen2.5 1.5b           │
                             │    (Ollama, locale)       │
                             │ 5. Esecuzione reale       │
                             │    sul PC + TTS           │
@@ -96,9 +97,9 @@ normale.
 
 ## ⚙️ Requisiti
 
-- **Windows 10/11** (pieno) oppure **macOS 13+** / **Linux** (vedi Compatibilità)
+- **Windows 10/11** (esperienza completa) oppure **macOS 13+** / **Linux** (vedi Compatibilità)
 - **Python 3.10+** con pip
-- **GPU**: opzionale ma consigliata (Vulkan per Whisper); funziona anche solo CPU
+- **GPU**: opzionale ma consigliata su Windows (Vulkan per Whisper); funziona anche solo CPU
 - ~3 GB di disco per i modelli
 
 ## 🌍 Compatibilità multipiattaforma
@@ -126,14 +127,38 @@ Su Linux servono `espeak-ng` per la voce e `libportaudio2` per il microfono.
 
 ## 📦 Installazione — un solo comando
 
+`chicco run` fa **tutto in automatico**: installa le dipendenze mancanti, Ollama
+(via winget su Windows, brew su macOS, script ufficiale su Linux), i modelli Qwen
+(1.5b predefinito + 0.5b di riserva), Whisper large-v3-turbo Q8_0 (~874 MB, solo
+Windows) e Vosk di fallback, poi avvia server e widget.
+
+### Windows
+
 ```bat
 pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
 chicco run
 ```
 
-`chicco run` fa **tutto in automatico**: installa le dipendenze mancanti, Ollama
-(via winget), il modello Qwen2.5 0.5B, Whisper large-v3-turbo Q8_0 (~874 MB) e
-Vosk di fallback, poi avvia server e widget.
+### macOS
+
+```bash
+pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
+chicco run
+```
+
+Prima volta su macOS: se `brew` manca installalo da [brew.sh](https://brew.sh),
+poi serve la concessione microfono quando macOS la chiede al primo avvio.
+
+### Linux
+
+```bash
+sudo apt install python3-pip espeak-ng libportaudio2
+pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
+chicco run
+```
+
+`espeak-ng` fornisce la voce TTS, `libportaudio2` il microfono; su distro non-Debian
+usa l'equivalente del tuo gestore pacchetti.
 
 Comandi disponibili:
 
@@ -151,8 +176,9 @@ Comandi disponibili:
 :: 1. dipendenze Python
 pip install fastapi uvicorn laya pyttsx3 vosk soundcard numpy pillow send2trash pycaw comtypes transcribe_cpp
 
-:: 2. Ollama + modello per i comandi in linguaggio libero
+:: 2. Ollama + modelli (1.5b e' il default, 0.5b la riserva)
 winget install Ollama.Ollama
+ollama pull qwen2.5:1.5b
 ollama pull qwen2.5:0.5b
 
 :: 3. Whisper large-v3-turbo GGUF (~874 MB)
@@ -176,7 +202,11 @@ pythonw chicco_agent\widget.py
 ```
 
 > I vecchi script `voice_assistant_server.py` e `assistant_widget.py` alla radice
-> sono shim retrocompatibili che puntano al pacchetto.
+> sono shim retrocompatibili che puntano al pacchetto. Su macOS/Linux: `python3
+> chicco_agent/server.py` e `python3 chicco_agent/widget.py`.
+>
+> File runtime (cache indici, wav, posizioni): `%LOCALAPPDATA%\chicco` su Windows,
+> `~/Library/Application Support/chicco` su macOS, `~/.local/share/chicco` su Linux.
 
 ### Usare il widget
 - **Click** sul cerchio → registra; **secondo click** → invia
@@ -225,7 +255,23 @@ chicco_agent/
 └── games.py          # librerie giochi: Steam (win/mac/linux), Epic, GOG
 ```
 
-File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco`.
+File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows),
+`~/Library/Application Support/chicco` (macOS) o `~/.local/share/chicco` (Linux).
+
+## 🍎 Note per piattaforma
+
+- **Windows**: esperienza completa — Whisper su GPU via Vulkan, widget trasparente
+  click-through, TTS SAPI con voci italiane, controllo volume pycaw.
+- **macOS**: trascrizione con **Vosk** (il wheel Whisper usato su Windows non ha
+  build Apple), TTS con la voce di sistema, widget semi-trasparente (Aqua non
+  supporta il keying a colore), giochi letti dai manifest `.acf` di Steam
+  (`~/Library/Application Support/Steam`). Al primo avvio concedere il microfono
+  in Impostazioni → Privacy e sicurezza.
+- **Linux**: come macOS per STT/TTS; widget con trasparenza parziale, giochi via
+  Steam (`~/.steam`), indice app dai file `.desktop` XDG. Su Wayland il
+  always-on-top del widget può dipendere dal compositor.
+- **Ovunque**: server, pipeline (intent + correzione + conferma vocale), UI web e
+  tutti gli endpoint sono identici — cambia solo la "pelle" di sistema.
 
 ## 🛠️ Estendere
 
