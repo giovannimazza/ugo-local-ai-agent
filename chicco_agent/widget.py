@@ -14,6 +14,7 @@ Se il server non e' attivo, lo avvia da solo.
 import io
 import json
 import subprocess
+import os
 import sys
 import threading
 import time
@@ -159,20 +160,20 @@ def _make_mic_png(color_hex: str, path: Path) -> None:
     d = ImageDraw.Draw(img)
     d.ellipse([0, 0, D * S - 1, D * S - 1], fill=color_hex)
     cx = cy = D * S / 2
-    # microfono bianco, proporzioni ridotte come nell'icona web (24px in un cerchio 64px)
-    w = D * S * 0.26
-    h = D * S * 0.30
-    top = cy - D * S * 0.24
+    # microfono bianco, leggermente spostato in alto per bilanciare otticamente
+    w = D * S * 0.25
+    h = D * S * 0.28
+    top = cy - D * S * 0.30
     d.rounded_rectangle([cx - w / 2, top, cx + w / 2, top + h], radius=w / 2, fill="white")
     # archetto inferiore
-    r = D * S * 0.21
-    arc_cy = cy - D * S * 0.03
+    r = D * S * 0.20
+    arc_cy = cy - D * S * 0.07
     d.arc([cx - r, arc_cy - r, cx + r, arc_cy + r], start=-35, end=215,
           fill="white", width=max(2, int(D * S * 0.045)))
     # stelo e base
     lw = max(2, int(D * S * 0.045))
-    d.line([cx, top + h + 1, cx, cy + D * S * 0.21], fill="white", width=lw)
-    d.line([cx - D * S * 0.11, cy + D * S * 0.23, cx + D * S * 0.11, cy + D * S * 0.23],
+    d.line([cx, top + h + 1, cx, cy + D * S * 0.16], fill="white", width=lw)
+    d.line([cx - D * S * 0.105, cy + D * S * 0.185, cx + D * S * 0.105, cy + D * S * 0.185],
            fill="white", width=lw)
     img = img.resize((D, D), Image.LANCZOS)
 
@@ -211,7 +212,8 @@ textbar = tk.Frame(root, bg=TRANSPARENT)
 textbar.pack(fill="x")
 
 ENTRY_W, ENTRY_H = 190, 30   # dimensioni della pillola di input
-entry_frame = tk.Frame(textbar, bg=TRANSPARENT)
+entry_frame = tk.Frame(textbar, bg=TRANSPARENT, width=ENTRY_W, height=ENTRY_H)
+entry_frame.pack_propagate(False)  # i figli sono place()-ati: servono dimensioni fisse
 entry = tk.Entry(entry_frame, bg=CARD, fg=TXT, insertbackground=TXT,
                  relief="flat", font=("Segoe UI", 9), justify="center",
                  highlightthickness=0)
@@ -232,7 +234,16 @@ for _y in range(ENTRY_H):
 _entry_pill = ImageTk.PhotoImage(_pill)
 _pill_lbl = tk.Label(entry_frame, image=_entry_pill, bd=0)
 _pill_lbl.place(x=0, y=0)
+_pill_lbl.lower()  # l'immagine di sfondo NON deve coprire Entry e pulsante
 entry.place(x=8, y=ENTRY_H // 2 - 10, width=ENTRY_W - 36, height=20)
+entry.lift()
+
+
+def _pill_click(_e=None):
+    entry.focus_set()
+
+
+_pill_lbl.bind("<Button-1>", _pill_click)
 
 
 def _make_send_png(path: Path) -> None:
@@ -382,6 +393,31 @@ def toggle_mute(_e=None):
 
 
 mute_btn.bind("<Button-1>", toggle_mute)
+
+
+# --- popup: quale trascrittore STT e' attivo (doppio click sul cerchio) -------
+def _fetch_json(path):
+    with urllib.request.urlopen(ROOT_URL + path, timeout=5) as r:
+        return json.loads(r.read().decode())
+
+
+def show_stt_popup():
+    on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
+    def work():
+        try:
+            info = _fetch_json("/api/stt")
+            eng = info.get("engine", "?")
+            name = {"whisper": "Whisper", "vosk": "Vosk"}.get(eng, eng)
+            text = (f"Trascrittore: {name}\n"
+                    f"Modello: {info.get('model', '?')}\n"
+                    f"Dispositivo: {info.get('device', '?')}")
+        except Exception as exc:
+            text = f"Trascrittore non disponibile ({exc})"
+        ui(lambda: bubble.show(text, sticky=False))
+    threading.Thread(target=work, daemon=True).start()
+
+
+canvas.bind("<Double-Button-1>", lambda e: show_stt_popup())
 
 # --- rete ---------------------------------------------------------------------
 def _post_json(path, payload):
@@ -537,8 +573,11 @@ def on_release(e):
             POS_FILE.write_text(json.dumps({"x": root.winfo_x(), "y": root.winfo_y()}))
         except Exception:
             pass
-    else:
-        toggle_recording()
+        return
+    # click vs doppio click: attendo 260 ms; se arriva il doppio, annullo il toggle
+    click = {"seq": getattr(on_release, "_n", 0) + 1}
+    on_release._n = click["seq"]
+    root.after(260, lambda: toggle_recording() if on_release._n == click["seq"] else None)
 
 
 canvas.bind("<Button-1>", on_press)

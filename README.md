@@ -20,12 +20,20 @@ decision-engine non autoregressivo usato qui per la classificazione degli intent
 | *"Crea un file di testo chiamata spesa con dentro latte e pane"* | file .txt con contenuto |
 | *"Aggiungi al file spesa la riga uova"* / *"Leggi il file spesa"* | append / lettura a voce |
 | *"Appunta che domani ho la dentista alle 15"* | nota in `Note.txt` sul desktop |
-| *"Apri Steam" / "Apri calcolatrice"* | qualsiasi app installata (menu Start + PATH) |
+| *"Apri Steam" / "Apri calcolatrice" / "Apri EarTrumpet"* | qualsiasi app: menu Start, Microsoft Store/AppX, eseguibili portabili, PATH |
 | *"Apri youtube" / "Vai su gmail"* | browser **predefinito** (ShellExecute) |
 | *"Cerca gatti buffi su youtube"* | ricerca diretta su YouTube/Google |
+| *"Quali giochi ho su steam?"* / *"Quali app ho installato?"* | elenco parlato + **modale a schermo** con la lista completa |
 | *"Che ore sono? / Che giorno è oggi?"* | ora e data a voce |
 | *"Alza il volume / Muto"* | controllo audio reale (pycaw) |
 | *"Elenca i file sul desktop"* | lettura cartella reale |
+
+All'avvio il server indicizza in una **libreria** tutto il PC (collegamenti menu
+Start e desktop, app Microsoft Store/AppX, eseguibili portabili senza registro) e
+legge le **librerie native dei launcher di gioco**: manifest `.acf` di Steam,
+`.item` di Epic, `.info` di GOG, più i launcher Riot/EA/Ubisoft/Battle.net.
+La libreria dà contesto all'IA (per aprire l'app giusta) e alimenta il comando
+"quali giochi/app ho".
 
 Il widget desktop: cerchio flottante trasparente e trascinabile, pillola di input che
 appare al passaggio del mouse, toggle mute del TTS, risposte in una bolla a scomparsa.
@@ -62,6 +70,7 @@ appare al passaggio del mouse, toggle mute del TTS, risposte in una bolla a scom
 | **Intent** | regole testuali + [Laya](https://pypi.org/project/laya/) (ModernBERT, probabilità calibrate) | classificare il comando in ~20 ms, 3 livelli di fallback |
 | **LLM** | Qwen2.5 0.5B via [Ollama](https://ollama.com) | tradurre frasi libere in specifica JSON (`create_file{name,content}`…) |
 | **Esecuzione** | Python (os, subprocess, send2trash, pycaw, webbrowser) | azioni reali: file system, app, siti, volume |
+| **Librerie app/giochi** | `appindex.py` + `games.py`: menu Start, Store/AppX, portabili, manifest Steam/Epic/GOG | contesto per l'IA, avvio app, elenchi su richiesta |
 | **TTS** | pyttsx3 → voci SAPI di Windows (Elsa IT) | risposta vocale offline, interrotta su nuovo input |
 | **GUI** | Tkinter stdlib + Pillow (icone anti-aliasate, keying trasparenza) | widget sempre-on-top trascinabile, zero dipendenze GUI |
 
@@ -117,32 +126,65 @@ curl -L -o %USERPROFILE%\.cache\whisper\whisper-large-v3-turbo-Q8_0.gguf ^
 
 ```bat
 :: terminale 1 — server (o lascia che lo avvii il widget da solo)
-python voice_assistant_server.py
+python chicco_agent\server.py
 
 :: terminale 2 — widget desktop (niente console con pythonw)
-pythonw assistant_widget.py
+pythonw chicco_agent\widget.py
 
 :: alternativa: UI nel browser su http://127.0.0.1:8123
 ```
 
+> I vecchi script `voice_assistant_server.py` e `assistant_widget.py` alla radice
+> sono shim retrocompatibili che puntano al pacchetto.
+
 ### Usare il widget
-- **Click** sul cerchio → registra; ** secondo click** → invia
+- **Click** sul cerchio → registra; **secondo click** → invia
+- **Doppio click** → info sul trascrittore attivo (Whisper/Vosk, modello, dispositivo)
 - **Mouse over** → appare pillola di input (Invio = manda) e **toggle mute TTS** 🔊/🔇
 - **Trascina** il widget dove vuoi (la posizione si ricorda)
 - **Click destro** → chiudi
 
-### API rapide
+### UI web
+Interfaccia chat stile ChatGPT su `http://127.0.0.1:8123`: messaggi con avatar,
+hero con comandi suggeriti, microfono nel composer. Le risposte che contengono
+elenchi (giochi, app) aprono una **modale** con la lista completa.
+
+### API
 ```bash
 curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" ^
      -d '{"text":"crea una cartella chiamata Prova sul desktop"}'
 ```
-`POST /api/listen` (webm dal browser) · `POST /api/listen_wav` (WAV dal widget) ·
-`GET /api/history`.
+
+| Endpoint | Uso |
+|---|---|
+| `POST /api/text` | esegue un comando testuale |
+| `POST /api/listen` | audio webm dal browser (via ffmpeg) |
+| `POST /api/listen_wav` | WAV PCM dal widget |
+| `GET /api/apps[?q=termine]` | libreria app indicizzate (ricerca opzionale) |
+| `POST /api/apps/rescan` | reindicizza le app |
+| `GET /api/list` | ultima lista giochi/app richiesta a voce |
+| `GET /api/stt` | trascrittore attivo (motore, modello, dispositivo) |
+| `GET /_tts_reply.wav` | ultima risposta vocale |
+
+## 📁 Struttura del progetto
+
+```
+chicco_agent/
+├── server.py      # FastAPI: STT, intent, LLM, esecuzione, TTS, API
+├── widget.py      # widget desktop Tkinter (trasparente, trascinabile)
+├── ui.html        # UI web stile ChatGPT
+├── cli.py         # comandi chicco run/setup/doctor/stop
+├── appindex.py    # libreria app: lnk, Store/AppX, portabili
+└── games.py       # librerie giochi: Steam, Epic, GOG, launcher
+```
+
+File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco`.
 
 ## 🛠️ Estendere
 
-- **Nuove app/siti**: dizionari `APP_ALIAS` / `SITE_ALIAS` in `voice_assistant_server.py`
+- **Nuove app/siti**: dizionari `APP_ALIAS` / `SITE_ALIAS` in `chicco_agent/server.py`
 - **Nuovi comandi**: aggiungi parole chiave in `KEYWORDS` + un ramo in `run_command()`
+- **Altri launcher di gioco**: aggiungi un collector in `chicco_agent/games.py`
 - **Disattivare Whisper**: variabile d'ambiente `WHISPER=0` (usa solo Vosk)
 - **Microfono/latenza**: il modello Whisper resta residente in RAM/VRAM; avvio a freddo ~1 s
 
