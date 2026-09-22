@@ -764,6 +764,18 @@ def run_command(text: str, intent: str) -> str:
                 hits = [a for a in appindex.get_apps()
                         if appindex._norm(a["name"]) == close[0]][:1]
                 print(f"[open_app] fuzzy: {rest!r} -> {hits[0]['name']!r}")
+        if not hits and rest:
+            # ultimo grado: chiede a Qwen tra le app installate e CONFERMA
+            # prima di avviare ('stimolo' -> 'Intendavi Steam?')
+            sugg = qwen_app_suggest(rest)
+            if sugg:
+                with _log_lock:
+                    _pending["app"] = sugg["name"]
+                    _pending["text"] = None
+                    _pending["ts"] = time.time()
+                print(f"[open_app] qwen suggerisce {rest!r} -> {sugg['name']!r}, chiedo conferma")
+                return (f'Non ho nessuna app chiamata {rest}. '
+                        f'Intendavi {sugg["name"]}? Rispondi sì o no.')
         if hits:
             app = hits[0]
             try:
@@ -918,7 +930,7 @@ def run_command(text: str, intent: str) -> str:
 # dopo un si' vocale (o annulla con no). Scopo dopo PENDING_TTL secondi.
 CONFIRM_RATIO = 0.55
 PENDING_TTL = 90.0
-_pending = {"text": None, "ts": 0.0}
+_pending = {"text": None, "app": None, "ts": 0.0}
 _YES = {"si", "sì", "ok", "okay", "confermo", "conferma", "esatto", "esatta",
         "giusto", "giusta", "certo", "certamente", "appunto", "sicuro",
         "corretto", "corretta", "esegui", "vai", "yes", "sure", "quoto"}
@@ -947,15 +959,56 @@ def _yes_no(text: str):
     return None
 
 
-def _consume_pending(text: str):
-    """Se c'e' una conferma in attesa e valida, la consuma e ritorna
-    (decisione, testo_in_attesa). Il pending scade sempre qui dentro."""
-    with _log_lock:
-        pend_text, pend_ts = _pending["text"], _pending["ts"]
-        _pending["text"] = None
-    if not pend_text or time.time() - pend_ts > PENDING_TTL:
-        return None, None
-    return _yes_no(text), pend_text
+def qwen_app_suggest(name: str) -> dict | None:
+    """Suggerisce quale app installata intendeva l'utente quando ricerca e
+    fuzzy non hanno trovato nulla (es. 'stimolo' -> Steam).
+    Struttura a difesa: 1) difflib produce i candidati piu' vicini; 2) se il
+    migliore e' troppo lontano non si propone nulla (garbage in -> niente);
+    3) Qwen fa SOLO scelta multipla tra nomi reali; 4) il pick deve essere
+    uno dei candidati. L'utente conferma prima dell'avvio, comunque."""
+    try:
+        apps = appindex.get_apps()
+        norm = appindex._norm
+        nq = norm(name)
+        if not nq:
+            return None
+        close = difflib.get_close_matches(nq, [norm(a["name"]) for a in apps],
+                                          n=5, cutoff=0.45)
+        if not close:
+            return None
+        # il migliore troppo lontano = il richiesto non somiglia a nessuna app
+        if difflib.SequenceMatcher(None, nq, close[0]).ratio() < 0.5:
+            return None
+        by_norm = {norm(a["name"]): a for a in apps}
+        cand_names = [by_norm[c]["name"] for c in close if c in by_norm]
+        if not cand_names:
+            return None
+        import urllib.request
+        payload = json.dumps({
+            "model": OLLAMA_MODEL,
+            "system": (f'The user asked to open "{name}" but it is not installed. '
+                       'Which ONE of these installed apps did they most likely mean? '
+                       'Reply with the exact name of one candidate, or NONE if none '
+                       'is plausible. Reply with the name only, nothing else. '
+                       f'Candidates: {", ".join(cand_names)}'),
+            "prompt": "open",
+            "stream": False, "keep_alive": "30m",
+            "options": {"temperature": 0, "num_predict": 40},
+        }).encode()
+        req = urllib.request.Request(OLLAMA_URL, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            out = (json.loads(r.read().decode()).get("response") or "").strip().strip('"').strip()
+        if not out or "\n" in out or len(out) > 60:
+            return None
+        low = out.lower()
+        for app in appindex.search(out, limit=5):
+            if app["name"].lower() == low and app["name"] in cand_names:
+                return app  # valido solo se e' ESATTAMENTE uno dei candidati
+        return None
+    except Exception as exc:
+        print(f"[open_app] qwen_app_suggest errore: {exc}")
+        return None
 
 
 def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
@@ -983,28 +1036,36 @@ def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
 
 def process(text: str, source: str) -> dict:
     raw_stt, corrected = text, None
-    # --- conferma in attesa (solo voce): 'si' esegue, 'no' annulla ---
+    # --- conferma in attesa ('si' esegue, 'no' annulla) ---
     # NOTA: il controllo va SEMPRE prima della normalizzazione Qwen, che
     # riscriverebbe 'si confermo' in 'Conferma.' mandando in crash la logica
-    if source == "voce" and _yes_no(text or "") is not None:
-        decision, pend_text = _consume_pending(text or "")
-        if decision is True and pend_text:
-            text = raw_stt = pend_text  # eseguo cio' che Qwen aveva proposto
-            print(f"[confirm] comando confermato, eseguo: {text!r}")
-            intent, src, t0 = "confirm", "guard", time.time()
-            try:
-                reply = _process_inner(text, detect_intent(text)[0], src)
-            except Exception as exc:
-                reply = f"Ho avuto un problema tecnico ({type(exc).__name__})."
-                intent = "error:confirm"
-            return _emit(text, reply, intent, src, source,
-                         int((time.time() - t0) * 1000))
-        if decision is False:
-            return _emit(text or "no", "Va bene, annullato.", "confirm", "guard", source, 0)
-        # decision None: non era una risposta a una conferma -> nuovo comando
+    if _yes_no(text or "") is not None:
+        decision = _yes_no(text)
+        with _log_lock:
+            pend_text, pend_app, pend_ts = _pending["text"], _pending["app"], _pending["ts"]
+            _pending["text"] = _pending["app"] = None
+        if pend_ts and time.time() - pend_ts <= PENDING_TTL:
+            if decision is True and (pend_app or pend_text):
+                if pend_app:  # 'intendavi X?' confermato: avvia l'app
+                    print(f"[confirm] app confermata, avvio: {pend_app!r}")
+                    reply = run_command(f"apri {pend_app}", "open_app")
+                    return _emit(f"apri {pend_app}", reply, "open_app", "guard", source, 0)
+                text = raw_stt = pend_text  # eseguo cio' che Qwen aveva proposto
+                print(f"[confirm] comando confermato, eseguo: {text!r}")
+                intent, src, t0 = "confirm", "guard", time.time()
+                try:
+                    reply = _process_inner(text, detect_intent(text)[0], src)
+                except Exception as exc:
+                    reply = f"Ho avuto un problema tecnico ({type(exc).__name__})."
+                    intent = "error:confirm"
+                return _emit(text, reply, intent, src, source,
+                             int((time.time() - t0) * 1000))
+            if decision is False:
+                return _emit(text or "no", "Va bene, annullato.", "confirm", "guard", source, 0)
+        # si/no ma nessuna conferma valida in attesa: prosegui come nuovo comando
     else:
-        with _log_lock:  # un input digitato fa decadere eventuali conferme
-            _pending["text"] = None
+        with _log_lock:  # un nuovo comando fa decadere eventuali conferme
+            _pending["text"] = _pending["app"] = None
 
     if text:
         # fase 0: Qwen corregge errori di dettato/trascrizione prima di tutto
@@ -1016,6 +1077,7 @@ def process(text: str, source: str) -> dict:
                 # correzione radicalmente diversa: niente esecuzione, chiedo
                 with _log_lock:
                     _pending["text"] = cand
+                    _pending["app"] = None
                     _pending["ts"] = time.time()
                 print(f"[confirm] correzione troppo diversa, chiedo: {raw_stt!r} -> {cand!r}")
                 return _emit(raw_stt, f'Hai detto: "{cand}"? Rispondi sì o no.',
