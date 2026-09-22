@@ -55,6 +55,15 @@ sì o no'* — un sì vocale (anche storto: 'confirmo' vale) esegue il comando p
 un no annulla; dopo 90 secondi la richiesta scade e il comando successivo parte
 normale.
 
+**Memoria dei refusi**: ogni correzione applicata — o confermata dall'utente — viene
+salvata in `%LOCALAPPDATA%\chicco\learned_fixes.json` (max ~200 voci, ordinate per
+frequenza) e riusata due volte: come correzione **istantanea** quando il refuso
+ricompare (zero chiamate a Qwen, quindi ~0 ms invece di ~500) e come **esempi
+few-shot** nel prompt di Qwen, che così applica sempre le stesse correzioni che tu
+hai approvato. Il prompt di correzione riceve inoltre solo le **app rilevanti** per
+le parole dette (matching fuzzy sull'indice), invece di un sottoinsieme arbitrario
+ della libreria.
+
 ---
 
 ## 🏗️ Architettura / Stack

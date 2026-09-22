@@ -406,14 +406,50 @@ NORMALIZE_SCHEMA = (
 )
 
 
+def _relevant_apps(text: str, limit: int = 8) -> str:
+    """App dell'indice piu' simili alle parole dette: da dare in contesto a Qwen,
+    cosi' vede i nomi RILEVANTI e non un sottoinsieme arbitrario della libreria."""
+    try:
+        toks = appindex._norm(text).split()
+        if not toks:
+            return ""
+        normed = {appindex._norm(a["name"]): a["name"] for a in appindex.get_apps()}
+        picks = []
+        for tok in toks:
+            if len(tok) < 4:  # token corti generano falsi positivi ('ore'->Vortex)
+                continue
+            for m in difflib.get_close_matches(tok, list(normed), n=3, cutoff=0.65):
+                if normed[m] not in picks:
+                    picks.append(normed[m])
+        return "; ".join(picks[:limit])
+    except Exception:
+        return ""
+
+
+def _learned_examples(limit: int = 8) -> str:
+    """Frammento di prompt con le correzioni confermate dall'utente (few-shot):
+    i refusi ricorrenti vengono risolti sempre nello stesso modo."""
+    data = _learned_load()
+    if not data:
+        return ""
+    items = sorted(data.values(), key=lambda v: -v.get("count", 1))[:limit]
+    exs = "; ".join(f"{v['raw']} -> {v['fixed']}" for v in items)
+    return (" Corrections the user already confirmed in past sessions "
+            f'(apply them exactly): {exs}.')
+
+
 def normalize_stt(text: str) -> str | None:
     """Ritorna la trascrizione corretta da Qwen, o None se non disponibile.
     La pipeline usa il risultato solo se effettivamente diverso dall'originale."""
+    print(f"[normalize] chiedo a Qwen ({_llm_model()}): {text!r}")
     try:
         import urllib.request
+        rel = _relevant_apps(text)
         payload = json.dumps({
             "model": _llm_model(),
-            "system": NORMALIZE_SCHEMA,
+            "system": (NORMALIZE_SCHEMA
+                       + (f" Apps possibly mentioned: {rel}." if rel else "")
+                       + _learned_examples()),
             "prompt": text,
             "stream": False,
             "keep_alive": "30m",
@@ -439,23 +475,101 @@ SITI_NOTI = ("youtube", "google", "gmail", "maps", "amazon", "netflix", "twitch"
 LUOGHI = ("desktop", "scrivania", "documenti", "download")
 
 
+# ---------------------------------------------------------------------------
+# Memoria delle correzioni accettate: ogni fix applicato (o confermato con
+# 'si') viene salvato su disco e riusato come correzione istantanea per i
+# refusi ricorrenti — Qwen 'impara' dai tuoi errori tipici di dettato.
+# ---------------------------------------------------------------------------
+LEARNED_FILE = BASE / "learned_fixes.json"
+_learned_lock = threading.Lock()
+
+
+def _learned_load() -> dict:
+    try:
+        return json.loads(LEARNED_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _bare(s: str) -> str:
+    """Testo ridotto a lettere/numeri: per confrontare ignorando maiuscole
+    e punteggiatura (differenze non significative per un comando)."""
+    return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+
+
+def _learn_fix(raw: str, fixed: str) -> None:
+    """Registra (o rinforza) una coppia refuso -> correzione, se significativa."""
+    r, f = raw.strip(), fixed.strip()
+    if len(r) < 4 or _bare(r) == _bare(f):
+        return  # cambia solo maiuscole/punteggiatura: non e' un refuso
+    with _learned_lock:
+        data = _learned_load()
+        for v in data.values():
+            if v["raw"].lower() == r.lower():
+                v["count"] = v.get("count", 1) + 1
+                v["fixed"] = f
+                v["ts"] = time.time()
+                break
+        else:
+            data[r.lower()] = {"raw": r, "fixed": f, "count": 1, "ts": time.time()}
+            if len(data) > 200:  # tengo le correzioni piu' usate
+                keep = sorted(data.items(), key=lambda kv: -kv[1].get("count", 1))[:150]
+                data = dict(keep)
+        try:
+            LEARNED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+            print(f"[learn] memorizzata: {r!r} -> {f!r}")
+        except Exception as exc:
+            print(f"[learn] scrittura fallita: {exc}")
+
+
+def _learned_lookup(text: str) -> str | None:
+    """Se il comando somiglia a un refuso gia' corretto, ritorna il fix noto."""
+    data = _learned_load()
+    if not data:
+        return None
+    t = text.strip().lower()
+    best, score = None, 0.0
+    for v in data.values():
+        ratio = difflib.SequenceMatcher(None, t, v["raw"].lower()).ratio()
+        if ratio > score and ratio >= 0.88:
+            best, score = v["fixed"], ratio
+    return best
+
+
+def _guards_ok(raw: str, cand: str) -> bool:
+    """Guardie anti-danno condivise: la correzione non deve perdere un intent
+    keyword, un luogo o un sito noto, ne' sfuggire in formato strano."""
+    if "->" in cand:
+        return False
+    raw_l, cand_l = raw.lower(), cand.lower()
+    kw_raw, kw_new = keyword_intent(raw_l), keyword_intent(cand_l)
+    if kw_raw and kw_raw != kw_new:
+        return False
+    if any(p in raw_l for p in LUOGHI) and not any(p in cand_l for p in LUOGHI):
+        return False
+    if any(s in raw_l and s not in cand_l for s in SITI_NOTI):
+        return False
+    return True
+
+
 def safe_normalize(text: str) -> str | None:
-    """Correzione STT con guardie anti-danno: accetta il testo corretto da Qwen
-    solo se non fa perdere un intent keyword, un luogo o un sito noto.
-    Ritorna None quando la correzione non e' utilizzabile (o identica)."""
+    """Correzione STT: prima la memoria dei refusi noti (istantanea), poi Qwen.
+    In entrambi i casi la proposta passa le guardie anti-danno. None se nulla
+    di utilizzabile."""
+    # 1) correzioni gia' apprese (confermate dall'utente in passato)
+    remembered = _learned_lookup(text)
+    if remembered and _bare(text) != _bare(remembered):
+        if _guards_ok(text, remembered):
+            print(f"[learn] applicata correzione memorizzata: {text!r} -> {remembered!r}")
+            return remembered
+        print(f"[learn] scartata dalla guardia: {remembered!r}")
+    # 2) Qwen come fallback
     cand = normalize_stt(text)
     if not cand or cand.lower() == text.strip().lower():
         return None
-    if "->" in cand:
-        # il 0.5B a volte ricopia il formato degli esempi dello schema
-        print(f"[normalize] scartata (fuga di formato): {cand!r}")
-        return None
-    raw_l, cand_l = text.lower(), cand.lower()
-    kw_raw, kw_new = keyword_intent(raw_l), keyword_intent(cand_l)
-    lost_place = (any(p in raw_l for p in LUOGHI) and not any(p in cand_l for p in LUOGHI))
-    lost_site = any(s in raw_l and s not in cand_l for s in SITI_NOTI)
-    if (kw_raw and kw_raw != kw_new) or lost_place or lost_site:
-        print(f"[normalize] scartata (perdeva intent={kw_raw}, luogo o sito): {cand!r}")
+    if not _guards_ok(text, cand):
+        print(f"[normalize] scartata dalle guardie: {cand!r}")
         return None
     return cand
 
@@ -1354,13 +1468,16 @@ def process(text: str, source: str) -> dict:
         decision = _yes_no(text)
         with _log_lock:
             pend_text, pend_app, pend_ts = _pending["text"], _pending["app"], _pending["ts"]
-            _pending["text"] = _pending["app"] = None
+            pend_raw = _pending.get("raw")
+            _pending["text"] = _pending["app"] = _pending.get("raw") or None
         if pend_ts and time.time() - pend_ts <= PENDING_TTL:
             if decision is True and (pend_app or pend_text):
                 if pend_app:  # 'intendavi X?' confermato: avvia l'app
                     print(f"[confirm] app confermata, avvio: {pend_app!r}")
                     reply = run_command(f"apri {pend_app}", "open_app")
                     return _emit(f"apri {pend_app}", reply, "open_app", "guard", source, 0)
+                if pend_raw and pend_raw.strip().lower() != pend_text.strip().lower():
+                    _learn_fix(pend_raw, pend_text)  # confermato dall'utente: lo imparo
                 text = raw_stt = pend_text  # eseguo cio' che Qwen aveva proposto
                 print(f"[confirm] comando confermato, eseguo: {text!r}")
                 intent, src, t0 = "confirm", "guard", time.time()
@@ -1389,11 +1506,13 @@ def process(text: str, source: str) -> dict:
                 with _log_lock:
                     _pending["text"] = cand
                     _pending["app"] = None
+                    _pending["raw"] = raw_stt
                     _pending["ts"] = time.time()
                 print(f"[confirm] correzione troppo diversa, chiedo: {raw_stt!r} -> {cand!r}")
                 return _emit(raw_stt, f'Hai detto: "{cand}"? Rispondi sì o no.',
                              "confirm", "guard", source, 0)
             corrected, text = cand, cand
+            _learn_fix(raw_stt, cand)  # refuso ricorrente? sara' istantaneo la prossima volta
             print(f"[normalize] {raw_stt!r} -> {cand!r}")
     intent, src = detect_intent(text)
     t0 = time.time()
