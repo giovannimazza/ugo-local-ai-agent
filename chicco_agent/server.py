@@ -315,6 +315,7 @@ LAYA_QUESTIONS = {
             "time": "ask what time it is",
             "date": "ask what day or date it is today",
             "volume": "turn volume up, down or mute the computer",
+            "close_app": "close or quit a running application the user names",
             "list_files": "list or show the files in a directory",
             "list_apps": "ask which apps or games are installed (e.g. what games do I have on steam)",
             "unknown": "anything else: small talk, questions, other requests",
