@@ -166,11 +166,17 @@ Comandi disponibili:
 
 | Comando | Effetto |
 |---|---|
+| `chicco` | come `chicco run` |
 | `chicco run` | avvia tutto (installa prima ciò che manca) |
 | `chicco run server` | solo il server, senza widget |
 | `chicco setup` | solo installazione, senza avviare |
 | `chicco doctor` | diagnostica: cosa è installato e cosa manca |
 | `chicco stop` | ferma widget e server |
+
+Al primo `setup`/`run` la CLI aggiunge automaticamente il comando `chicco` al
+PATH (directory Scripts di pip su Windows, con notifica ai processi — apri un
+terminale nuovo; su macOS/Linux crea un launcher in `~/.local/bin`), così puoi
+richiamarlo da qualsiasi cartella.
 
 ### Installazione manuale (alternativa)
 

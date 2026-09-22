@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import time
 import urllib.request
 from pathlib import Path
@@ -39,12 +40,21 @@ VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-it-0.22.zip"
 PKG = Path(__file__).resolve().parent
 
 
-def _ollama_exe() -> str:
-    """Percorso del binario ollama per la piattaforma ("ollama" se nel PATH)."""
+def _find_ollama() -> Path:
+    """Percorso del binario ollama: posizione standard su Windows, poi PATH."""
     if pu.IS_WINDOWS:
         exe = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
-        return str(exe) if exe.exists() else "ollama"
-    return "ollama"  # mac (brew) e Linux: binario nel PATH
+        if exe.exists():
+            return exe
+    found = shutil.which("ollama")
+    return Path(found) if found else Path("ollama")
+
+
+OLLAMA_EXE = _find_ollama()  # usato anche da doctor/qwen_ok per .exists()
+
+
+def _ollama_exe() -> str:
+    return str(OLLAMA_EXE)
 
 
 def _step(msg):
@@ -214,6 +224,82 @@ def install_whisper() -> None:
         _warn(f"download fallito ({exc}): si usera' Vosk (piu' semplice)")
 
 
+def ensure_path() -> None:
+    """Rende il comando 'chicco' richiamabile da qualsiasi terminale:
+    su Windows aggiunge la dir Scripts di pip al PATH utente (con broadcast
+    WM_SETTINGCHANGE, niente riavvio), su macOS/Linux crea uno shim in
+    ~/.local/bin."""
+    _step("Comando 'chicco' nel PATH")
+    # pip puo' mettere l'exe nello Scripts globale o in quello utente:
+    # aggiungo entrambi se mancano
+    dirs = {Path(sysconfig.get_path("scripts"))}
+    scheme = ("nt_user" if pu.IS_WINDOWS
+              else "osx_framework_user" if sys.platform == "darwin" else "posix_user")
+    try:
+        dirs.add(Path(sysconfig.get_path("scripts", scheme)))
+    except Exception:
+        pass
+    dirs = [d for d in dirs if d.name]
+    if pu.IS_WINDOWS:
+        try:
+            import ctypes
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                                winreg.KEY_ALL_ACCESS) as k:
+                try:
+                    cur = winreg.QueryValueEx(k, "Path")[0]
+                except FileNotFoundError:
+                    cur = ""
+            voci = [p.strip().lower() for p in cur.split(";") if p.strip()]
+            mancanti = [d for d in dirs if str(d).lower() not in voci]
+            if not mancanti:
+                _ok("'chicco' gia' raggiungibile (" + ", ".join(str(d) for d in dirs) + ")")
+                return
+            new = cur
+            for d in mancanti:
+                new = (new.rstrip(";") + ";" if new else "") + str(d)
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                                    winreg.KEY_ALL_ACCESS) as k:
+                winreg.SetValueEx(k, "Path", 0, winreg.REG_EXPAND_SZ, new)
+            # notifica ai processi: i NUOVI terminali vedono subito il PATH
+            ctypes.windll.user32.SendMessageTimeoutW(
+                0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, None)
+            _ok("aggiunto al PATH utente: " + ", ".join(str(d) for d in mancanti)
+                + " (apri un nuovo terminale)")
+        except Exception as exc:
+            _warn(f"non posso toccare il PATH ({exc}); creo uno shim")
+            _make_shim_windows()
+    else:
+        _make_shim_unix()
+
+
+def _make_shim_windows() -> None:
+    """Alternativa al PATH: chicco.bat che chiama il python giusto."""
+    target = Path.home() / ".local" / "bin"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        bat = target / "chicco.bat"
+        bat.write_text(f'@echo off\r\n"{sys.executable}" -m chicco_agent.cli %*\r\n')
+        _ok(f"shim creato: {bat} (richiede {target} nel PATH)")
+    except Exception as exc:
+        _warn(f"shim non creato ({exc}); usa: \"{sys.executable}\" -m chicco_agent.cli")
+
+
+def _make_shim_unix() -> None:
+    """macOS/Linux: piccolo launcher shell in ~/.local/bin."""
+    target = Path.home() / ".local" / "bin"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        sh = target / "chicco"
+        sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m chicco_agent.cli "$@"\n')
+        sh.chmod(0o755)
+        _ok(f"launcher creato: {sh}")
+        if str(target) not in os.environ.get("PATH", ""):
+            _warn(f"aggiungi al PATH nel tuo .zshrc/.bashrc:  export PATH=\"{target}:$PATH\"")
+    except Exception as exc:
+        _warn(f"launcher non creato ({exc}); usa: {sys.executable} -m chicco_agent.cli")
+
+
 def install_vosk() -> None:
     _step("Modello Vosk italiano (fallback STT, ~48 MB)")
     if VOSK_DIR.is_dir():
@@ -237,11 +323,13 @@ def install_vosk() -> None:
 def cmd_setup() -> int:
     print("Chicco setup — installo tutto il necessario\n")
     install_pip_deps()
+    ensure_path()
     install_ollama()
     install_qwen()
     install_whisper()
     install_vosk()
     print("\nSetup completato. Avvia con:  chicco run")
+    print("Se il terminale non trova 'chicco', aprine uno nuovo.")
     return 0
 
 
@@ -271,6 +359,7 @@ def cmd_doctor() -> int:
 def cmd_run(only: str | None = None) -> int:
     # setup leggero: solo cio' che manca davvero
     install_pip_deps()
+    ensure_path()
     if not (ollama_ok() and qwen_ok()):
         install_ollama()
         install_qwen()
