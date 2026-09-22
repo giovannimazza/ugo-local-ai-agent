@@ -15,7 +15,12 @@ import re
 import time
 from pathlib import Path
 
-CACHE_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco" / "games_index.json"
+try:
+    from . import platform_utils as pu
+except ImportError:  # importato come modulo top-level
+    import platform_utils as pu
+
+CACHE_FILE = pu.data_dir() / "games_index.json"
 TTL = 3600  # riscansiona al piu' ogni ora
 
 _cache: dict = {"when": 0.0, "games": []}
@@ -32,15 +37,23 @@ def _steam_libraries(steam_root: Path) -> list:
     return libs
 
 
+def _steam_roots() -> list:
+    """Radici di Steam per piattaforma (la prima esistente vince)."""
+    if pu.IS_WINDOWS:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+                return [Path(winreg.QueryValueEx(k, "SteamPath")[0])]
+        except Exception:
+            return [Path("C:/Program Files (x86)/Steam")]
+    if pu.IS_MAC:
+        return [Path.home() / "Library" / "Application Support" / "Steam"]
+    return [Path.home() / ".steam" / "steam", Path.home() / ".local" / "share" / "Steam"]
+
+
 def _collect_steam() -> list:
-    root = None
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
-            root = Path(winreg.QueryValueEx(k, "SteamPath")[0])
-    except Exception:
-        root = Path("C:/Program Files (x86)/Steam")
-    if not root.is_dir():
+    root = next((r for r in _steam_roots() if r.is_dir()), None)
+    if not root:
         return []
     games = []
     for lib in _steam_libraries(root):
@@ -59,6 +72,8 @@ def _collect_steam() -> list:
 
 def _collect_epic() -> list:
     out = []
+    if not pu.IS_WINDOWS:
+        return []  # il launcher Epic esiste solo su Windows
     base = Path(os.environ.get("PROGRAMDATA", "")) / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
     if base.is_dir():
         for it in base.glob("*.item"):
@@ -74,6 +89,8 @@ def _collect_epic() -> list:
 
 def _collect_gog() -> list:
     out = []
+    if not pu.IS_WINDOWS:
+        return []  # GOG Galaxy: solo Windows (su mac i giochi GOG sono standalone)
     for env in ("PROGRAMDATA", "PROGRAMFILES(X86)"):
         base = os.environ.get(env)
         if not base:
@@ -93,7 +110,9 @@ def _collect_gog() -> list:
 
 def _collect_launcher_lnks() -> list:
     """I launcher senza libreria leggibile (Riot, EA, Ubisoft, Battle.net):
-    segnalo solo il launcher stesso, prendendolo dai .lnk del menu Start."""
+    segnalo solo il launcher stesso, cercandolo tra le app indicizzate."""
+    if not pu.IS_WINDOWS:
+        return []  # Riot/EA/Ubisoft/Battle.net: client Windows (il gioco via Steam)
     wanted = {"riot games": "Riot Client", "league of legends": "League of Legends",
               "ea games": "EA app", "electronic arts": "EA app",
               "ubisoft": "Ubisoft Connect", "battle.net": "Battle.net"}

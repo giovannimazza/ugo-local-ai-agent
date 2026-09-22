@@ -35,11 +35,17 @@ import numpy as np
 import soundcard as sc
 import tkinter as tk
 import tkinter.font as tkfont
-import winsound
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 
+try:
+    from . import platform_utils as pu
+except ImportError:  # avviato come script diretto
+    if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from chicco_agent import platform_utils as pu
+
 PKG_DIR = Path(__file__).resolve().parent
-BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
+BASE = pu.data_dir()
 BASE.mkdir(parents=True, exist_ok=True)
 PORT = 8123
 SR = 16000
@@ -123,11 +129,8 @@ def server_up() -> bool:
 def ensure_server() -> None:
     if server_up():
         return
-    subprocess.Popen(
-        [sys.executable, str(PKG_DIR / "server.py")],
-        cwd=str(PKG_DIR.parent),
-        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-    )
+    pu.popen_hidden([sys.executable, str(PKG_DIR / "server.py")],
+                    cwd=str(PKG_DIR.parent))
     for _ in range(60):
         time.sleep(1)
         if server_up():
@@ -300,12 +303,19 @@ def _rounded_panel(w, h, radius, fill, edge, send_d=None) -> Image.Image:
 root = tk.Tk()
 root.overrideredirect(True)
 root.attributes("-topmost", True)
-root.attributes("-transparentcolor", TRANSPARENT)
+if pu.IS_WINDOWS:
+    root.attributes("-transparentcolor", TRANSPARENT)
+else:
+    # mac/Linux: niente colore-chiave; finestra semi-trasparente e sfondo card
+    root.attributes("-alpha", 0.92)
+    TRANSPARENT = CARD
 root.configure(bg=TRANSPARENT)
 
 _families = set(tkfont.families(root))
-UI_FAMILY = next((f for f in ("Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI")
-                  if f in _families), "TkDefaultFont")
+_UI_FONTS = (("Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI") if pu.IS_WINDOWS
+             else ("SF Pro Text", "Helvetica Neue", "Ubuntu", "Cantarell", "DejaVu Sans")
+             if not pu.IS_WINDOWS else ())
+UI_FAMILY = next((f for f in _UI_FONTS if f in _families), "TkDefaultFont")
 FONT_UI = (UI_FAMILY, 10)
 FONT_MUT = (UI_FAMILY, 8)
 
@@ -362,7 +372,10 @@ class Bubble:
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
-        self.win.attributes("-transparentcolor", TRANSPARENT)
+        if pu.IS_WINDOWS:
+            self.win.attributes("-transparentcolor", TRANSPARENT)
+        else:
+            self.win.attributes("-alpha", 0.95)
         self.win.attributes("-alpha", 0.0)
         self.win.configure(bg=TRANSPARENT)
         self.cv = tk.Canvas(self.win, bg=TRANSPARENT, highlightthickness=0, bd=0)
@@ -852,18 +865,14 @@ def _meta_of(e):
 
 def stop_tts():
     """Interrompe subito l'eventuale riproduzione vocale in corso."""
-    try:
-        winsound.PlaySound(None, 0)
-    except Exception:
-        pass
+    pu.tts_stop()
 
 
 def _show_entry(e):
     bubble.show(e.get("assistant") or e.get("error") or "errore", raw=e.get("raw"))
     if tts_muted["on"]:
         return  # muto: la risposta resta solo scritta nella bolla
-    winsound.PlaySound(str(BASE / "_tts_reply.wav"),
-                       winsound.SND_FILENAME | winsound.SND_ASYNC)
+    pu.tts_play_file(BASE / "_tts_reply.wav")
 
 
 def send_text_cmd():

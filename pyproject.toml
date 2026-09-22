@@ -22,9 +22,10 @@ dependencies = [
     "numpy>=1.26",
     "pillow>=10.0",
     "send2trash>=1.8",
-    "pycaw>=20240210",
-    "comtypes>=1.4",
-    "transcribe-cpp>=0.2.3",
+    "pycaw>=20240210; sys_platform == 'win32'",
+    "comtypes>=1.4; sys_platform == 'win32'",
+    "transcribe-cpp>=0.2.3; sys_platform == 'win32'",
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.scripts]

@@ -13,14 +13,20 @@ Tutto finisce in una libreria unica cercabile per nome, salvata in cache su
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
 import unicodedata
 from pathlib import Path
 
+try:
+    from . import platform_utils as pu
+except ImportError:  # importato come modulo top-level (server avviato come script)
+    import platform_utils as pu
+
 REFRESH_SECONDI = 600  # rescan al piu' ogni 10 minuti
-BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
+BASE = pu.data_dir()
 INDEX_FILE = BASE / "app_index.json"
 _lock = threading.Lock()
 _cache = {"when": 0.0, "apps": []}
@@ -35,17 +41,29 @@ def _norm(s: str) -> str:
 # 1) collegamenti .lnk
 # ---------------------------------------------------------------------------
 def _lnk_dirs() -> list:
+    """Sorgenti dei collegamenti: Start Menu su Windows, /Applications e .desktop su mac/Linux."""
     dirs = []
-    for env in ("APPDATA", "PROGRAMDATA"):
-        base = os.environ.get(env)
-        if base:
-            p = Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-            if p.is_dir():
-                dirs.append(p)
-    for d in (Path.home() / "Desktop",
-              Path(os.environ.get("PUBLIC", "")) / "Desktop"):
-        if d.is_dir():
-            dirs.append(d)
+    if pu.IS_WINDOWS:
+        for env in ("APPDATA", "PROGRAMDATA"):
+            base = os.environ.get(env)
+            if base:
+                p = Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+                if p.is_dir():
+                    dirs.append(p)
+        for d in (Path.home() / "Desktop",
+                  Path(os.environ.get("PUBLIC", "")) / "Desktop"):
+            if d.is_dir():
+                dirs.append(d)
+    elif pu.IS_MAC:
+        for d in (Path("/Applications"), Path.home() / "Applications"):
+            if d.is_dir():
+                dirs.append(d)
+    else:
+        for d in (Path.home() / ".local" / "share" / "applications",
+                  Path("/usr") / "share" / "applications",
+                  Path("/usr") / "local" / "share" / "applications"):
+            if d.is_dir():
+                dirs.append(d)
     return dirs
 
 
@@ -53,8 +71,17 @@ def _collect_lnks() -> list:
     apps = []
     for d in _lnk_dirs():
         try:
-            for f in d.rglob("*.lnk"):
-                apps.append({"name": f.stem, "kind": "lnk", "target": str(f)})
+            if pu.IS_WINDOWS:
+                for f in d.rglob("*.lnk"):
+                    apps.append({"name": f.stem, "kind": "lnk", "target": str(f)})
+            elif pu.IS_MAC:
+                for app in d.glob("*.app"):
+                    apps.append({"name": app.stem, "kind": "macapp", "target": str(app)})
+            else:
+                for f in d.glob("*.desktop"):
+                    if f.stem.startswith("."):
+                        continue
+                    apps.append({"name": f.stem, "kind": "desktop", "target": str(f)})
         except Exception:
             pass
     return apps
@@ -64,6 +91,8 @@ def _collect_lnks() -> list:
 # 2) Microsoft Store / AppX via Get-StartApps
 # ---------------------------------------------------------------------------
 def _collect_startapps() -> list:
+    if not pu.IS_WINDOWS:
+        return []  # Get-StartApps esiste solo su Windows
     out = []
     try:
         r = subprocess.run(
@@ -93,24 +122,35 @@ def _collect_startapps() -> list:
 # ---------------------------------------------------------------------------
 def _portable_roots() -> list:
     roots = []
-    for env in ("LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
-        base = os.environ.get(env)
-        if base:
-            roots.append(Path(base) / "Programs")
-    for extra in (Path.home() / "Portable Programs",
-                  Path("D:/") / "Programs", Path("D:/") / "Portable"):
-        if extra.is_dir():
-            roots.append(extra)
+    if pu.IS_WINDOWS:
+        for env in ("LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base = os.environ.get(env)
+            if base:
+                roots.append(Path(base) / "Programs")
+        for extra in (Path.home() / "Portable Programs",
+                      Path("D:/") / "Programs", Path("D:/") / "Portable"):
+            if extra.is_dir():
+                roots.append(extra)
+    elif pu.IS_MAC:
+        for extra in (Path.home() / "Applications", Path("/opt") / "homebrew"):
+            if extra.is_dir():
+                roots.append(extra)
+    else:
+        for extra in (Path.home() / ".local" / "opt", Path("/opt"),
+                      Path.home() / "opt"):
+            if extra.is_dir():
+                roots.append(extra)
     return roots
 
 
 def _collect_portables() -> list:
     apps, seen_exe = [], set()
+    pattern = "*.exe" if pu.IS_WINDOWS else "*.AppImage"
     for root in _portable_roots():
         if not root.is_dir():
             continue
         try:
-            it = root.rglob("*.exe")
+            it = root.rglob(pattern)
         except Exception:
             continue
         for exe in it:
@@ -198,12 +238,17 @@ def search(query: str, limit: int = 15) -> list:
 def launch(app: dict) -> None:
     """Avvia un'app dell'indice secondo il suo tipo."""
     kind, target = app["kind"], app["target"]
-    if kind == "appx":
-        subprocess.Popen(["explorer.exe", target])
-    elif kind == "shell":
-        subprocess.Popen(["explorer.exe", target])
-    else:  # lnk o portable
-        os.startfile(target)  # noqa: S606
+    if pu.IS_WINDOWS:
+        if kind in ("appx", "shell"):
+            subprocess.Popen(["explorer.exe", target])
+        else:  # lnk o portable
+            os.startfile(target)  # noqa: S606
+    elif kind == "macapp":
+        subprocess.Popen(["open", target])
+    elif kind == "desktop":
+        subprocess.Popen(["gio", "launch", target] if shutil.which("gio") else ["sh", target])
+    else:
+        pu.open_path(target)
 
 
 def llm_context(limit: int = 120) -> str:

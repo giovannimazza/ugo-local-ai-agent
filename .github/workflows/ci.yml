@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installa il pacchetto (dipendenze per piattaforma)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Compila tutti i moduli (errori di sintassi)
+        run: python -m compileall -q chicco_agent
+
+      - name: Import dei moduli cross-platform (senza avviare server/GUI)
+        run: python -c "import chicco_agent.platform_utils as pu; import chicco_agent.appindex; import chicco_agent.games; import chicco_agent.cli; print('OS:', pu.OS_NAME, '| dati:', pu.data_dir())"
+
+      - name: Sanity check percorsi e indici
+        run: |
+          python -c "
+          import chicco_agent.appindex as ai
+          import chicco_agent.games as g
+          apps = ai.get_apps()
+          print('app indicizzate:', len(apps))
+          games = g.get_games()
+          print('giochi:', len(games))
+          assert isinstance(apps, list) and isinstance(games, list)
+          "

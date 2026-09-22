@@ -96,10 +96,33 @@ normale.
 
 ## ⚙️ Requisiti
 
-- **Windows 10/11**
+- **Windows 10/11** (pieno) oppure **macOS 13+** / **Linux** (vedi Compatibilità)
 - **Python 3.10+** con pip
 - **GPU**: opzionale ma consigliata (Vulkan per Whisper); funziona anche solo CPU
 - ~3 GB di disco per i modelli
+
+## 🌍 Compatibilità multipiattaforma
+
+Tutte le differenze di sistema operativo sono incapsulate in `chicco_agent/platform_utils.py`
+(cartelle dati, TTS, avvio file, volume, flag subprocess): il resto del codice non fa mai
+branch su `sys.platform` direttamente. La CI verifica installazione, compilazione e
+scansione indici su runner Windows, macOS e Linux a ogni push.
+
+| Funzione | Windows | macOS | Linux |
+|---|---|---|---|
+| Server, pipeline, intent, correzione STT, UI web | ✅ | ✅ | ✅ |
+| STT Whisper GPU (Vulkan) | ✅ | — (fallback **Vosk**) | — (fallback **Vosk**) |
+| TTS italiano | ✅ SAPI (Elsa) | ✅ NSSpeech (Alice) | ✅ espeak-ng (`apt install espeak-ng`) |
+| Indice app | menu Start, Store/AppX, portabili | `/Applications` | `.desktop` (XDG) |
+| Librerie giochi | Steam, Epic, GOG, launcher | **Steam** (stesso formato `.acf`) | **Steam** (stesso formato) |
+| Widget | trasparente click-through | semi-trasparente (Aqua) | semi-trasparente |
+| Volume | pycaw | osascript | pactl (se presente) |
+| Cartelle dati | `%LOCALAPPDATA%\chicco` | `~/Library/Application Support/chicco` | `~/.local/share/chicco` |
+| Installazione Ollama (`chicco setup`) | winget | brew | script ufficiale |
+
+Nota: fuori da Windows Whisper GPU è disattivo (il wheel `transcribe_cpp` contiene DLL
+Windows) e la trascrizione usa automaticamente Vosk: meno precisa ma funzionante.
+Su Linux servono `espeak-ng` per la voce e `libportaudio2` per il microfono.
 
 ## 📦 Installazione — un solo comando
 
@@ -193,12 +216,13 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 
 ```
 chicco_agent/
-├── server.py      # FastAPI: STT, intent, LLM, esecuzione, TTS, API
-├── widget.py      # widget desktop Tkinter (trasparente, trascinabile)
-├── ui.html        # UI web stile ChatGPT
-├── cli.py         # comandi chicco run/setup/doctor/stop
-├── appindex.py    # libreria app: lnk, Store/AppX, portabili
-└── games.py       # librerie giochi: Steam, Epic, GOG, launcher
+├── server.py         # FastAPI: STT, intent, LLM, esecuzione, TTS, API
+├── widget.py         # widget desktop Tkinter (trasparente, trascinabile)
+├── ui.html           # UI web stile ChatGPT
+├── cli.py            # comandi chicco run/setup/doctor/stop
+├── platform_utils.py # astrazioni OS: cartelle, TTS, open, volume, subprocess
+├── appindex.py       # libreria app: lnk/Store/portabili, /Applications, .desktop
+└── games.py          # librerie giochi: Steam (win/mac/linux), Epic, GOG
 ```
 
 File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco`.

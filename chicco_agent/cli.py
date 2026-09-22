@@ -12,6 +12,7 @@ Uso tipico su una macchina nuova:
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -19,14 +20,28 @@ import urllib.request
 from pathlib import Path
 
 PORT = 8123
-DATA = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
+try:
+    from . import platform_utils as pu
+except ImportError:  # eseguito come script diretto
+    if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from chicco_agent import platform_utils as pu
+
+DATA = pu.data_dir()
 WHISPER_GGUF = Path.home() / ".cache" / "whisper" / "whisper-large-v3-turbo-Q8_0.gguf"
 WHISPER_URL = ("https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/"
                "resolve/main/whisper-large-v3-turbo-Q8_0.gguf")
 VOSK_DIR = Path.home() / ".cache" / "vosk" / "vosk-model-small-it-0.22"
 VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-it-0.22.zip"
-OLLAMA_EXE = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
 PKG = Path(__file__).resolve().parent
+
+
+def _ollama_exe() -> str:
+    """Percorso del binario ollama per la piattaforma ("ollama" se nel PATH)."""
+    if pu.IS_WINDOWS:
+        exe = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+        return str(exe) if exe.exists() else "ollama"
+    return "ollama"  # mac (brew) e Linux: binario nel PATH
 
 
 def _step(msg):
@@ -109,18 +124,35 @@ def install_ollama() -> None:
     if ollama_ok():
         _ok("server Ollama attivo")
         return
-    if not OLLAMA_EXE.exists():
-        print("  installo via winget (~1 min)...")
-        r = subprocess.run(["winget", "install", "Ollama.Ollama", "-e", "--silent",
-                            "--accept-source-agreements", "--accept-package-agreements"],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            _fail("winget non e' riuscito: installa Ollama da https://ollama.com")
-            return
+    if not shutil.which("ollama"):
+        if pu.IS_WINDOWS:
+            print("  installo via winget (~1 min)...")
+            r = subprocess.run(["winget", "install", "Ollama.Ollama", "-e", "--silent",
+                                "--accept-source-agreements", "--accept-package-agreements"],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                _fail("winget non e' riuscito: installa Ollama da https://ollama.com")
+                return
+        elif pu.IS_MAC:
+            if not shutil.which("brew"):
+                _fail("Homebrew mancante: installalo da https://brew.sh poi rilancia")
+                return
+            print("  installo via brew (~1 min)...")
+            r = subprocess.run(["brew", "install", "ollama"], capture_output=True, text=True)
+            if r.returncode != 0:
+                _fail("brew non e' riuscito: installa Ollama da https://ollama.com")
+                return
+        else:
+            print("  installo via script ufficiale (~1 min)...")
+            r = subprocess.run("curl -fsSL https://ollama.com/install.sh | sh",
+                               shell=True, capture_output=True, text=True)
+            if r.returncode != 0:
+                _fail("installer non riuscito: installa Ollama da https://ollama.com")
+                return
     # avvia il server se non risponde
     if not ollama_ok():
-        subprocess.Popen([str(OLLAMA_EXE), "serve"],
-                         creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
+        pu.popen_hidden([_ollama_exe(), "serve"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(30):
             time.sleep(1)
             if ollama_ok():
@@ -137,7 +169,7 @@ def install_qwen() -> None:
         _fail("serve Ollama attivo")
         return
     print("  scarico ~400 MB...")
-    subprocess.run([str(OLLAMA_EXE), "pull", "qwen2.5:0.5b"])
+    subprocess.run([_ollama_exe(), "pull", "qwen2.5:0.5b"])
     _ok("qwen2.5:0.5b installato") if qwen_ok() else _fail("pull fallito")
 
 
@@ -223,12 +255,11 @@ def cmd_run(only: str | None = None) -> int:
         install_vosk()
 
     _step("Avvio server su http://127.0.0.1:8123")
-    detached = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
     if not server_up():
         print("  (primo avvio: carico Laya + Vosk, puo' volerci un minuto...)")
-        subprocess.Popen([sys.executable, str(PKG / "server.py")],
-                         cwd=str(PKG.parent), creationflags=detached,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        pu.popen_hidden([sys.executable, str(PKG / "server.py")],
+                        cwd=str(PKG.parent),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(150):
             time.sleep(1)
             if server_up():
@@ -241,11 +272,13 @@ def cmd_run(only: str | None = None) -> int:
 
     if only != "server":
         _step("Avvio widget desktop")
-        pythonw = Path(sys.executable).with_name("pythonw.exe")
-        exe = pythonw if pythonw.exists() else sys.executable
-        subprocess.Popen([str(exe), str(PKG / "widget.py")],
-                         cwd=str(PKG.parent), creationflags=detached)
-        _ok("widget avviato (guarda in basso a destra)")
+        exe = sys.executable
+        if pu.IS_WINDOWS:
+            pythonw = Path(sys.executable).with_name("pythonw.exe")
+            exe = str(pythonw) if pythonw.exists() else sys.executable
+        pu.popen_hidden([str(exe), str(PKG / "widget.py")],
+                        cwd=str(PKG.parent))
+        _ok("widget avviato (guarda nell'angolo dello schermo)")
 
     print("\nChicco e' pronto. Parla col microfono o scrivi nella pillola.")
     print("Chiudi il widget: click destro sul cerchio.  Stop server:  chicco stop")
@@ -254,12 +287,22 @@ def cmd_run(only: str | None = None) -> int:
 
 def cmd_stop() -> int:
     _step("Arresto")
-    try:
-        subprocess.run(["taskkill", "/F", "/IM", "pythonw.exe"],
-                       capture_output=True)
-        _ok("widget fermato")
-    except Exception:
-        pass
+    if pu.IS_WINDOWS:
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "pythonw.exe"],
+                           capture_output=True)
+            _ok("widget fermato")
+        except Exception:
+            pass
+    else:
+        try:
+            out = subprocess.run(["pgrep", "-f", "chicco_agent/widget.py"],
+                                 capture_output=True, text=True).stdout.split()
+            for pid in {p.strip() for p in out if p.strip().isdigit()}:
+                subprocess.run(["kill", pid], capture_output=True)
+            _ok("widget fermato")
+        except Exception:
+            pass
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command",
                               "Get-NetTCPConnection -LocalPort 8123 -State Listen "

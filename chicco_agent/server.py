@@ -36,6 +36,13 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+try:  # pacchetto (pip install / -m) O script diretto (python chicco_agent/server.py)
+    from . import platform_utils as pu
+except ImportError:
+    if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from chicco_agent import platform_utils as pu
+
 import laya
 import pyttsx3
 import send2trash
@@ -48,7 +55,7 @@ from vosk import KaldiRecognizer, Model as VoskModel
 # ---------------------------------------------------------------------------
 PORT = 8123
 PKG_DIR = Path(__file__).resolve().parent
-BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
+BASE = pu.data_dir()
 BASE.mkdir(parents=True, exist_ok=True)
 VOSK_MODEL_DIR = os.path.expanduser("~/.cache/vosk/vosk-model-small-it-0.22")
 HOME = Path.home()
@@ -89,13 +96,14 @@ SITE_ALIAS = {
     "facebook": "https://www.facebook.com",
     "amazon": "https://www.amazon.it",
 }
+_UF = pu.user_folders()
 FOLDER_MAP = {
-    "desktop": HOME / "Desktop",
-    "scrivania": HOME / "Desktop",
-    "documenti": HOME / "Documents",
-    "documents": HOME / "Documents",
-    "download": HOME / "Downloads",
-    "scaricati": HOME / "Downloads",
+    "desktop": _UF.get("desktop", HOME / "Desktop"),
+    "scrivania": _UF.get("desktop", HOME / "Desktop"),
+    "documenti": _UF.get("documents", HOME / "Documents"),
+    "documents": _UF.get("documents", HOME / "Documents"),
+    "download": _UF.get("downloads", HOME / "Downloads"),
+    "scaricati": _UF.get("downloads", HOME / "Downloads"),
     "immagini": HOME / "Pictures",
     "pictures": HOME / "Pictures",
     "musica": HOME / "Music",
@@ -210,11 +218,17 @@ def speak(text: str) -> str:
     """Riproduce la risposta a voce e ritorna il path del file wav generato."""
     out = BASE / "_tts_reply.wav"
     with _tts_lock:
-        engine = pyttsx3.init()
-        _pick_voice(engine)
-        engine.setProperty("rate", 175)
-        engine.save_to_file(text, str(out))
-        engine.runAndWait()
+        try:
+            engine = pyttsx3.init()
+            _pick_voice(engine)
+            engine.setProperty("rate", 175)
+            engine.save_to_file(text, str(out))
+            engine.runAndWait()
+        except Exception as exc:
+            # fuori da Windows pyttsx3 usa espeak/NSSpeechSynthesizer: se mancano,
+            # la risposta resta scritta (bolla/UI) invece di rompere la pipeline
+            print(f"[tts] motore non disponibile ({exc}); risposta solo testuale")
+            out.write_bytes(b"")
     return str(out)
 
 
@@ -240,7 +254,13 @@ def get_whisper():
 
 
 def whisper_available() -> bool:
-    return os.environ.get("WHISPER", "1") == "1" and os.path.isfile(WHISPER_GGUF)
+    if os.environ.get("WHISPER", "1") != "1" or not os.path.isfile(WHISPER_GGUF):
+        return False
+    if not pu.IS_WINDOWS:
+        # il wheel transcribe_cpp che usiamo e' Windows-only (DLL Vulkan):
+        # fuori da Windows Whisper resta disattivo e si usa Vosk
+        return False
+    return True
 
 
 def _whisper_transcribe(pcm16: bytes) -> str:
@@ -300,7 +320,7 @@ LAYA_LABELS = set(LAYA_QUESTIONS["intent"]["criteria"]) - {"unknown"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen2.5:0.5b"   # fallback: il piu' piccolo, sempre disponibile
 DEFAULT_MODEL = "qwen2.5:1.5b"  # benchmark: corretto sulle frasi giuste e sugli errori
-MODEL_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco" / "model.json"
+MODEL_FILE = pu.data_dir() / "model.json"
 _active_model = {"name": DEFAULT_MODEL}
 
 try:  # scelta persistita dall'utente (menu widget/UI web)
