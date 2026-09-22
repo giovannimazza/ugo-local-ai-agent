@@ -19,6 +19,7 @@ Avvio:  python voice_assistant_server.py   ->  http://127.0.0.1:8123
 import games
 import io
 import appindex
+import difflib
 import json
 import numpy as np
 import os
@@ -753,6 +754,16 @@ def run_command(text: str, intent: str) -> str:
                     continue
         # 1) libreria indicizzata: .lnk, app Store/AppX e portabili
         hits = appindex.search(rest, limit=3)
+        if not hits:
+            # fallback fuzzy: il nome era storpiato ('spotrifyt' -> 'Spotify')
+            close = difflib.get_close_matches(
+                appindex._norm(rest),
+                [appindex._norm(a["name"]) for a in appindex.get_apps()],
+                n=1, cutoff=0.72)
+            if close:
+                hits = [a for a in appindex.get_apps()
+                        if appindex._norm(a["name"]) == close[0]][:1]
+                print(f"[open_app] fuzzy: {rest!r} -> {hits[0]['name']!r}")
         if hits:
             app = hits[0]
             try:
@@ -904,9 +915,9 @@ def run_command(text: str, intent: str) -> str:
 # ---------------------------------------------------------------------------
 def process(text: str, source: str) -> dict:
     raw_stt, corrected = text, None
-    if source == "voce" and text:
-        # fase 0: Qwen corregge gli errori di trascrizione prima di tutto
-        # (con guardie anti-danno, vedi safe_normalize)
+    if text:
+        # fase 0: Qwen corregge errori di dettato/trascrizione prima di tutto
+        # (voce E testo: anche chi scrive sbaglia a digitare 'apri spotrifyt')
         cand = safe_normalize(text)
         if cand:
             corrected, text = cand, cand
