@@ -361,7 +361,8 @@ OLLAMA_SCHEMA = (
     'Allowed actions: create_folder{name,location}, delete_folder{name,location}, '
     'create_file{name,content,location}, append_file{name,content,location}, '
     'delete_file{name,location}, read_file{name,location}, open_app{app}, '
-    'open_site{site}, search_web{query,site}, volume{direction}, time{}, date{}, unknown{}. '
+    'open_site{site}, close_app{name}, search_web{query,site}, volume{direction}, time{}, date{}, unknown{}. '
+    'close_app closes a running application the user asked to quit. '
     'location is one of: desktop, documents, downloads, home. '
     'For create_file and append_file the name MUST end with .txt (text file). '
     'content holds the exact text to write. If nothing fits use unknown. '
@@ -507,6 +508,7 @@ KEYWORDS = [
                    "leggi il documento", "cosa c'e scritto sul file")),
     ("note", ("appunta", "annota", "segna che", "prendi nota")),
     ("open_app", ("apri ", "lancia ", "avvia ")),
+    ("close_app", ("chiudi ", "chiudere ", "termina ", "arresta ", "esci da ")),
     ("open_site", ("apri ", "vai su ", "vai a ", "portami su ", "cerca ", "ricerca ")),
     ("volume", ("volume", "muto", "mute")),
     ("time", ("che ore sono", "che ora e", "ora esatta", "orario")),
@@ -808,6 +810,179 @@ def _endpoint_volume():
     return cast(iface, POINTER(IAudioEndpointVolume))
 
 
+# processi che Chicco si rifiuta di chiudere (sistema o se stesso)
+_CLOSE_PROTECTED = {"explorer", "winlogon", "csrss", "dwm", "system", "idle",
+                    "python", "pythonw", "ollama", "audiodg", "svchost", "services"}
+
+
+def _running_processes() -> list:
+    """Nomi immagine (senza .exe) dei processi attivi, minuscoli e deduplicati."""
+    if not pu.IS_WINDOWS:
+        return []
+    try:
+        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
+                           text=True, timeout=15,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        out = []
+        for line in r.stdout.splitlines():
+            if line.startswith('"'):
+                name = line.split('","')[0].strip('"').lower()
+                if name.endswith(".exe"):
+                    out.append(name[:-4])
+        return list(dict.fromkeys(out))  # dedup mantenendo l'ordine
+    except Exception:
+        return []
+
+
+def _still_running(img: str) -> bool:
+    """True se esiste ancora un processo con quel nome immagine."""
+    try:
+        r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {img}"],
+                           capture_output=True, text=True, timeout=15,
+                           creationflags=subprocess.CREATE_NO_WINDOW if pu.IS_WINDOWS else 0)
+        return img.lower() in (r.stdout or "").lower()
+    except Exception:
+        return False
+
+
+def _kill_by_image(base: str, force: bool = False, display: str | None = None) -> str:
+    """Chiude i processi con quel nome immagine: prima tenta la chiusura
+    'educata' (l'app salva e esce), poi, se serve, la forza. `display` e'
+    il nome da usare nelle frasi di risposta (es. 'la calcolatrice')."""
+    img = re.sub(r"[^A-Za-z0-9_.-]", "", base)  # niente injection negli argomenti
+    if not img:
+        return "Nome processo non valido."
+    if not img.lower().endswith(".exe"):
+        img += ".exe"
+    if img.lower()[:-4] in _CLOSE_PROTECTED:
+        return "Questo processo di sistema non lo chiudo per sicurezza."
+    nome = display or base
+    flags = subprocess.CREATE_NO_WINDOW if pu.IS_WINDOWS else 0
+    try:
+        if force:
+            r = subprocess.run(["taskkill", "/IM", img, "/F"], capture_output=True,
+                               text=True, timeout=15, creationflags=flags)
+            return (f"Ho chiuso {nome} (forzato)." if r.returncode == 0
+                    else f"Non vedo {nome} tra i programmi aperti.")
+        r = subprocess.run(["taskkill", "/IM", img], capture_output=True,
+                           text=True, timeout=15, creationflags=flags)
+        if r.returncode == 0:
+            # le app UWP possono ignorare il segnale 'educato': verifico davvero
+            time.sleep(1.0)
+            if not _still_running(img):
+                return f"Ho chiuso {nome}."
+            print(f"[close_app] {img} resisteva alla chiusura educata: forzo")
+        r2 = subprocess.run(["taskkill", "/IM", img, "/F"], capture_output=True,
+                            text=True, timeout=15, creationflags=flags)
+        if r2.returncode == 0:
+            time.sleep(0.5)
+            if not _still_running(img):
+                return f"{nome} non si chiudeva: chiusura forzata eseguita."
+            return f"Non riesco a chiudere {nome}."
+        return f"Non vedo {nome} tra i programmi aperti."
+    except FileNotFoundError:
+        return "La chiusura delle app e' disponibile solo su Windows."
+    except Exception as exc:
+        return f"Errore chiudendo {nome}: {exc}"
+
+
+def _alias_exe(alias: str, cmd):
+    """Se l'alias di APP_ALIAS punta a un .exe, ritorna il nome del processo."""
+    cand = cmd[0] if isinstance(cmd, list) and cmd else cmd
+    if isinstance(cand, str) and cand.lower().endswith(".exe"):
+        return os.path.basename(cand)
+    return None
+
+
+def _close_app(t: str) -> str:
+    """Chiude un'applicazione: alias noti -> confronto con i processi realmente
+    attivi (l'app deve essere aperta) -> voci della libreria -> fuzzy.
+    Restituisce la frase da dire."""
+    rest = re.sub(r"^(chiudi|chiudere|termina|arresta|esci da)\s+"
+                  r"(il\s+|la\s+|lo\s+|l'|un\s+|una\s+)?", "", t).strip(" .!?")
+    force = bool(re.search(r"\b(forza|forzatamente|subito|ammazza[rl]?)\b", rest))
+    rest = re.sub(r"\b(forza|forzatamente|subito|ammazza[rl]?)\b", "", rest).strip(" .!?")
+    if not rest:
+        return "Quale applicazione devo chiudere?"
+    norm = appindex._norm(rest)
+    running = _running_processes()
+
+    alias_name = None
+    # 1) alias noti che puntano a un eseguibile (calcolatrice -> calc/CalculatorApp)
+    for alias, cmd in APP_ALIAS.items():
+        if alias in rest or rest.startswith(alias):
+            exe = _alias_exe(alias, cmd)
+            if not exe:
+                continue
+            stem = exe[:-4].lower()
+            if stem in running:
+                return _kill_by_image(stem, force, display=alias)
+            # l'exe storico non gira: cerco il nome dell'alias tra i processi reali
+            hit = difflib.get_close_matches(alias, running, n=1, cutoff=0.6)
+            if hit:
+                print(f"[close_app] alias {alias!r}: {stem!r} non attivo, uso {hit[0]!r}")
+                return _kill_by_image(hit[0], force, display=alias)
+            alias_name = alias   # es. il Blocco note di Windows 11 e' un'app Store:
+            break                # prosegue con processi reali e libreria sotto
+
+    # 2) il nome detto combacia con un processo realmente attivo:
+    #    esatto -> sottostringa ('spotify' in Spotify) -> fuzzy ('codestraits')
+    proc = norm.split()[-1] if norm.split() else ""
+    if proc and running:
+        cand = [p for p in running if p == proc] or \
+               [p for p in running if proc in p] or \
+               difflib.get_close_matches(proc, running, n=1, cutoff=0.72)
+        if cand and cand[0] not in _CLOSE_PROTECTED:
+            return _kill_by_image(cand[0], force, display=cand[0].capitalize())
+
+    # 3) nome esatto nella libreria app: dal target ricavo il processo;
+    #    per le app Store provo anche la coda del package ('WindowsNotepad'
+    #    contiene 'notepad', che e' il nome del processo reale)
+    candidates = []
+    for a in appindex.get_apps():
+        if appindex._norm(a["name"]) == norm:
+            tgt = a.get("target") or ""
+            if a["kind"] == "appx" and "!" in tgt:
+                candidates.append(tgt.rsplit("!", 1)[-1])
+                candidates.append(tgt.rsplit("!", 1)[0].split(".")[-1])
+            elif tgt.lower().endswith(".exe"):
+                candidates.append(os.path.splitext(os.path.basename(tgt))[0])
+    for cand in candidates:
+        c = cand.lower()
+        if c in running:
+            return _kill_by_image(c, force, display=rest)
+        hit = next((p for p in running
+                    if (c in p or p in c) and p not in _CLOSE_PROTECTED
+                    and min(len(p), len(c)) >= 5), None)
+        if hit:
+            print(f"[close_app] package {cand!r} -> processo {hit!r}")
+            return _kill_by_image(hit, force, display=rest)
+    if candidates:
+        return f"{rest} non e' aperta al momento."
+
+    # 4) fuzzy sul nome della libreria ('visual studio cod' -> Visual Studio Code)
+    close = difflib.get_close_matches(
+        norm, [appindex._norm(a["name"]) for a in appindex.get_apps()], n=1, cutoff=0.75)
+    if close:
+        match = next(a for a in appindex.get_apps() if appindex._norm(a["name"]) == close[0])
+        tgt = match.get("target") or ""
+        if match["kind"] == "appx" and "!" in tgt:
+            proc = tgt.rsplit("!", 1)[-1]
+        elif tgt.lower().endswith(".exe"):
+            proc = os.path.splitext(os.path.basename(tgt))[0]
+        else:
+            proc = ""
+        print(f"[close_app] fuzzy: {rest!r} -> {match['name']!r} ({proc})")
+        if proc and proc.lower() in running:
+            return _kill_by_image(proc, force)
+        if proc:
+            return f"{match['name']} non e' aperta al momento."
+
+    if alias_name:
+        return f"Non vedo {alias_name} tra i programmi aperti."
+    return f"Non trovo nessuna applicazione chiamata {rest}."
+
+
 def run_command(text: str, intent: str) -> str:
     """Esegue il comando e ritorna la frase da dire alla voce."""
     t = text.lower()
@@ -855,6 +1030,9 @@ def run_command(text: str, intent: str) -> str:
             return f"Non ho trovato nessuna cartella chiamata {name or 'cosi'}."
         send2trash.send2trash(str(target))  # nel cestino, recuperabile
         return f"Ho spostato la cartella {target.name} nel cestino."
+
+    if intent == "close_app":
+        return _close_app(t)
 
     if intent == "open_app":
         rest = re.sub(r"^(apri|lancia|avvia)\s+(il\s+|la\s+|lo\s+|l'|un\s+|una\s+)?", "", t).strip(" .!?")

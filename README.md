@@ -22,6 +22,7 @@ decision-engine non autoregressivo usato qui per la classificazione degli intent
 | *"Aggiungi al file spesa la riga uova"* / *"Leggi il file spesa"* | append / lettura a voce |
 | *"Appunta che domani ho la dentista alle 15"* | nota in `Note.txt` sul desktop |
 | *"Apri Steam" / "Apri calcolatrice" / "Apri EarTrumpet"* | qualsiasi app: menu Start, Microsoft Store/AppX, eseguibili portabili, PATH |
+| *"Chiudi Spotify" / "chiudi il blocco note" / "chiudi calcolatrice forza"* | chiude l'app se è aperta (taskkill graduale → forzato, con verifica del processo); rifiuta i processi di sistema |
 | *"Apri youtube" / "Vai su gmail"* | browser **predefinito** (ShellExecute) |
 | *"Cerca gatti buffi su youtube"* | ricerca diretta su YouTube/Google |
 | *"Quali giochi ho su steam?"* / *"Quali app ho installato?"* | elenco parlato + **modale a schermo** con la lista completa |
