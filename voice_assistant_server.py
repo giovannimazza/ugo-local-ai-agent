@@ -38,7 +38,7 @@ import pyttsx3
 import send2trash
 from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from vosk import KaldiRecognizer, Model
+from vosk import KaldiRecognizer, Model as VoskModel
 
 # ---------------------------------------------------------------------------
 # Configurazione
@@ -171,6 +171,14 @@ _history = []           # chat per la UI
 _stt = {"model": None, "recognizer": None}
 _laya_router = None
 
+# ---------------------------------------------------------------------------
+# Whisper large-v3-turbo (GGUF Q8_0) via transcribe.cpp + Vulkan (AMD 9070 XT).
+# Se il modello non c'e' o WHISPER=0, si ricade su Vosk piccolo.
+# ---------------------------------------------------------------------------
+WHISPER_GGUF = os.path.expanduser("~/.cache/whisper/whisper-large-v3-turbo-Q8_0.gguf")
+_whisper = {"model": None}
+_whisper_lock = threading.Lock()
+
 try:
     laya_system = laya.load("convaiinnovations/laya")  # checkpoint inglese
 except Exception as exc:  # laya opzionale: senza, si usa solo il matching testuale
@@ -207,15 +215,50 @@ def speak(text: str) -> str:
 def get_stt():
     if _stt["model"] is None:
         print("[stt] caricamento modello Vosk italiano...")
-        _stt["model"] = Model(VOSK_MODEL_DIR)
+        _stt["model"] = VoskModel(VOSK_MODEL_DIR)
     return _stt["model"]
 
 
+def get_whisper():
+    """Carica il modello Whisper una sola volta; resta sulla GPU via Vulkan."""
+    if _whisper["model"] is None:
+        with _whisper_lock:
+            if _whisper["model"] is None:
+                print("[whisper] caricamento large-v3-turbo Q8_0 (Vulkan)...")
+                import transcribe_cpp as tc
+                _whisper["model"] = tc.Model(WHISPER_GGUF)
+    return _whisper["model"]
+
+
+def whisper_available() -> bool:
+    return os.environ.get("WHISPER", "1") == "1" and os.path.isfile(WHISPER_GGUF)
+
+
+def _whisper_transcribe(pcm16: bytes) -> str:
+    """PCM s16le 16k mono -> testo con Whisper turbo (float32, GPU)."""
+    a = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+    model = get_whisper()
+    with model.session() as s:
+        return (s.run(a).text or "").strip()
+
+
 def _vosk_transcribe(pcm: bytes) -> str:
-    """Trascrive PCM s16le 16 kHz mono; riconoscitore fresco per ogni richiesta."""
+    """Trascrive PCM s16le 16 kHz mono con Vosk; riconoscitore fresco per richiesta."""
     rec = KaldiRecognizer(get_stt(), 16000)
     rec.AcceptWaveform(pcm)
     return json.loads(rec.FinalResult()).get("text", "").strip()
+
+
+def transcribe(pcm: bytes) -> str:
+    """Whisper prima (qualita' alta, GPU), Vosk come fallback."""
+    if whisper_available():
+        try:
+            text = _whisper_transcribe(pcm)
+            if text:
+                return text
+        except Exception as exc:
+            print(f"[whisper] errore: {exc}; fallback Vosk")
+    return _vosk_transcribe(pcm)
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +821,7 @@ def _wav_to_pcm16k(data: bytes) -> bytes:
 def _handle_pcm(pcm: bytes):
     if not pcm:
         return JSONResponse({"error": "audio vuoto"}, status_code=400)
-    text = _vosk_transcribe(pcm)
+    text = transcribe(pcm)
     if not text:
         entry = {"user": "", "assistant": "Non ho sentito nulla, riprova.",
                  "intent": "-", "detector": "-", "input": "voce", "ms": 0,

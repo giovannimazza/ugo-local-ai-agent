@@ -144,30 +144,53 @@ canvas.pack(fill="x")
 
 
 def _make_mic_png(color_hex: str, path: Path) -> None:
-    """Cerchio liscio + icona microfono bianca, disegnati 4x e ridotti (anti-alias)."""
+    """Cerchio + icona microfono, disegnati 4x e ridotti.
+
+    Il keying di trasparenza di Windows non ha alpha parziale: i pixel di bordo
+    semi-trasparenti diventerebbero un contorno nero. Quindi: alpha sotto soglia
+    -> colore trasparente esatto; fringe scuro sul bordo -> colore pieno del
+    cerchio; icona bianca -> anti-alias normale (interno, opaco).
+    """
     D = 64
     S = 4
     img = Image.new("RGBA", (D * S, D * S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.ellipse([0, 0, D * S - 1, D * S - 1], fill=color_hex)
     cx = cy = D * S / 2
-    # corpo del microfono (capsula bianca)
-    w = D * S * 0.34
-    h = D * S * 0.42
-    top = cy - D * S * 0.28
+    # microfono bianco, proporzioni ridotte come nell'icona web (24px in un cerchio 64px)
+    w = D * S * 0.26
+    h = D * S * 0.30
+    top = cy - D * S * 0.24
     d.rounded_rectangle([cx - w / 2, top, cx + w / 2, top + h], radius=w / 2, fill="white")
     # archetto inferiore
-    r = D * S * 0.30
-    arc_cy = cy - D * S * 0.07
+    r = D * S * 0.21
+    arc_cy = cy - D * S * 0.03
     d.arc([cx - r, arc_cy - r, cx + r, arc_cy + r], start=-35, end=215,
-          fill="white", width=max(2, int(D * S * 0.05)))
+          fill="white", width=max(2, int(D * S * 0.045)))
     # stelo e base
-    lw = max(2, int(D * S * 0.05))
-    d.line([cx, top + h + 1, cx, cy + D * S * 0.27], fill="white", width=lw)
-    d.line([cx - D * S * 0.13, cy + D * S * 0.29, cx + D * S * 0.13, cy + D * S * 0.29],
+    lw = max(2, int(D * S * 0.045))
+    d.line([cx, top + h + 1, cx, cy + D * S * 0.21], fill="white", width=lw)
+    d.line([cx - D * S * 0.11, cy + D * S * 0.23, cx + D * S * 0.11, cy + D * S * 0.23],
            fill="white", width=lw)
     img = img.resize((D, D), Image.LANCZOS)
-    img.save(path)
+
+    acc = tuple(int(color_hex[i:i + 2], 16) for i in (1, 3, 5))
+    thr = 120
+    out = Image.new("RGB", (D, D), TRANSPARENT)  # niente canale alpha
+    op = out.load()
+    ip = img.load()
+    for yy in range(D):
+        for xx in range(D):
+            R, G, B, A = ip[xx, yy]
+            if A < thr:
+                op[xx, yy] = (1, 1, 1)  # esattamente il colore trasparente
+                continue
+            lum = (R * 0.299 + G * 0.587 + B * 0.114) / 255
+            if lum >= 0.55:
+                op[xx, yy] = (R, G, B)      # icona bianca: tieni l'anti-alias
+            else:
+                op[xx, yy] = acc            # bordo/fringe scuro: colore pieno
+    out.save(path)
 
 
 _make_mic_png(ACCENT, BASE / "_mic_on.png")
