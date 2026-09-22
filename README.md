@@ -74,7 +74,28 @@ appare al passaggio del mouse, toggle mute del TTS, risposte in una bolla a scom
 - **GPU**: opzionale ma consigliata (Vulkan per Whisper); funziona anche solo CPU
 - ~3 GB di disco per i modelli
 
-## 📦 Installazione
+## 📦 Installazione — un solo comando
+
+```bat
+pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
+chicco run
+```
+
+`chicco run` fa **tutto in automatico**: installa le dipendenze mancanti, Ollama
+(via winget), il modello Qwen2.5 0.5B, Whisper large-v3-turbo Q8_0 (~874 MB) e
+Vosk di fallback, poi avvia server e widget.
+
+Comandi disponibili:
+
+| Comando | Effetto |
+|---|---|
+| `chicco run` | avvia tutto (installa prima ciò che manca) |
+| `chicco run server` | solo il server, senza widget |
+| `chicco setup` | solo installazione, senza avviare |
+| `chicco doctor` | diagnostica: cosa è installato e cosa manca |
+| `chicco stop` | ferma widget e server |
+
+### Installazione manuale (alternativa)
 
 ```bat
 :: 1. dipendenze Python
@@ -92,7 +113,7 @@ curl -L -o %USERPROFILE%\.cache\whisper\whisper-large-v3-turbo-Q8_0.gguf ^
 > Vosk (fallback STT) scarica il modello `vosk-model-small-it-0.22` in
 > `~/.cache/vosk/` al primo avvio se assente; senza Whisper si usa solo Vosk.
 
-## 🚀 Avvio
+## 🚀 Avvio manuale (senza CLI)
 
 ```bat
 :: terminale 1 — server (o lascia che lo avvii il widget da solo)

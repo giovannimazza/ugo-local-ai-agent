@@ -1,0 +1,872 @@
+# -*- coding: utf-8 -*-
+"""
+Assistente vocale locale con UI web.
+
+Flusso: microfono -> STT offline (Vosk, italiano) -> intent (Laya, locale)
+      -> esecuzione comando reale sul PC -> risposta TTS offline (Elsa, italiano).
+
+Comandi supportati:
+  - "crea una cartella chiamata Prova sul desktop"
+  - "elimina la cartella Prova"            (nel cestino, recuperabile)
+  - "apri calcolatrice / blocco note / youtube / spotify ..."
+  - "che ore sono?" / "che giorno e' oggi?"
+  - "alza il volume / abbassa il volume / muto"
+  - "elenca i file sul desktop" / "riavvia il riconoscimento"
+
+Avvio:  python voice_assistant_server.py   ->  http://127.0.0.1:8123
+"""
+
+import io
+import json
+import numpy as np
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import unicodedata
+import urllib.parse
+import wave
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+
+import laya
+import pyttsx3
+import send2trash
+from fastapi import FastAPI, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from vosk import KaldiRecognizer, Model as VoskModel
+
+# ---------------------------------------------------------------------------
+# Configurazione
+# ---------------------------------------------------------------------------
+PORT = 8123
+PKG_DIR = Path(__file__).resolve().parent
+BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
+BASE.mkdir(parents=True, exist_ok=True)
+VOSK_MODEL_DIR = os.path.expanduser("~/.cache/vosk/vosk-model-small-it-0.22")
+HOME = Path.home()
+CONF_THRESHOLD = 0.70  # sotto questa confidence Laya -> risposta "non ho capito"
+
+APP_ALIAS = {
+    "calcolatrice": "calc.exe",
+    "calculator": "calc.exe",
+    "blocco note": "notepad.exe",
+    "notepad": "notepad.exe",
+    "paint": "mspaint.exe",
+    "esplora risorse": "explorer.exe",
+    "explorer": "explorer.exe",
+    "task manager": "taskmgr.exe",
+    "gestione attivita": "taskmgr.exe",
+    "cmd": "cmd.exe",
+    "terminale": "cmd.exe",
+    "prompt dei comandi": "cmd.exe",
+    "spotify": ["spotify"],
+    "comet": ["comet"],
+    "chrome": ["chrome"],
+    "edge": ["msedge"],
+    "word": ["winword"],
+    "excel": ["excel"],
+    "vscode": ["code"],
+    "visual studio code": ["code"],
+    "vlc": ["vlc"],
+}
+SITE_ALIAS = {
+    "youtube": "https://www.youtube.com",
+    "google": "https://www.google.com",
+    "gmail": "https://mail.google.com",
+    "wikipedia": "https://it.wikipedia.org",
+    "github": "https://github.com",
+    "chatgpt": "https://chat.openai.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "instagram": "https://www.instagram.com",
+    "facebook": "https://www.facebook.com",
+    "amazon": "https://www.amazon.it",
+}
+FOLDER_MAP = {
+    "desktop": HOME / "Desktop",
+    "scrivania": HOME / "Desktop",
+    "documenti": HOME / "Documents",
+    "documents": HOME / "Documents",
+    "download": HOME / "Downloads",
+    "scaricati": HOME / "Downloads",
+    "immagini": HOME / "Pictures",
+    "pictures": HOME / "Pictures",
+    "musica": HOME / "Music",
+    "video": HOME / "Videos",
+    "home": HOME,
+}
+PLACE_WORDS = {  # parole comuni che NON sono nomi di cartelle
+    "una", "un", "il", "lo", "la", "le", "i", "gli", "nuova", "nuovo",
+    "cartella", "directory", "chiamata", "chiamato", "chiamato", "nome",
+    "sul", "sulla", "nel", "nella", "in", "su", "del", "della", "dei",
+    "per", "favore", "potresti", "puoi", "voglio", "vorrei", "fammi",
+    "che", "si", "prego", "adesso", "ora", "poi", "dopo", "con", "di",
+}
+DEFAULT_LOCATION = HOME / "Desktop"
+
+
+# ---------------------------------------------------------------------------
+# Collegamenti del menu Start: per aprire QUALSIASI app installata (Steam, Epic...)
+# ---------------------------------------------------------------------------
+def _norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def _start_menu_dirs() -> list:
+    dirs = []
+    for env in ("APPDATA", "PROGRAMDATA"):
+        base = os.environ.get(env)
+        if base:
+            p = Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+            if p.is_dir():
+                dirs.append(p)
+    desktop = HOME / "Desktop"
+    if desktop.is_dir():
+        dirs.append(desktop)
+    return dirs
+
+
+_LNK_CACHE = {"when": 0.0, "files": []}
+
+
+def _find_shortcut(target: str) -> Path | None:
+    """Cerca il collegamento .lnk che somiglia di piu' al nome richiesto."""
+    now = time.time()
+    if now - _LNK_CACHE["when"] > 300 or not _LNK_CACHE["files"]:
+        files = []
+        for d in _start_menu_dirs():
+            try:
+                files.extend(d.rglob("*.lnk"))
+            except Exception:
+                pass
+        _LNK_CACHE.update(when=now, files=files)
+    t = _norm(target)
+    if not t:
+        return None
+    best, best_score = None, 0.0
+    for f in _LNK_CACHE["files"]:
+        name = _norm(f.stem)
+        if name == t:
+            score = 3.0
+        elif t in name:
+            score = 2.0 + min(1.0, len(t) / max(1, len(name)))
+        elif name in t:
+            score = 1.0 + min(1.0, len(name) / max(1, len(t)))
+        else:
+            score = 0.0
+        if score > best_score:
+            best, best_score = f, score
+    return best if best_score >= 2.0 else None
+
+# ---------------------------------------------------------------------------
+# Stato globale
+# ---------------------------------------------------------------------------
+app = FastAPI(title="Assistente Vocale Locale")
+_log_lock = threading.Lock()
+_tts_lock = threading.Lock()
+_history = []           # chat per la UI
+_stt = {"model": None, "recognizer": None}
+_laya_router = None
+
+# ---------------------------------------------------------------------------
+# Whisper large-v3-turbo (GGUF Q8_0) via transcribe.cpp + Vulkan (AMD 9070 XT).
+# Se il modello non c'e' o WHISPER=0, si ricade su Vosk piccolo.
+# ---------------------------------------------------------------------------
+WHISPER_GGUF = os.path.expanduser("~/.cache/whisper/whisper-large-v3-turbo-Q8_0.gguf")
+_whisper = {"model": None}
+_whisper_lock = threading.Lock()
+
+try:
+    laya_system = laya.load("convaiinnovations/laya")  # checkpoint inglese
+except Exception as exc:  # laya opzionale: senza, si usa solo il matching testuale
+    print(f"[laya] non disponibile ({exc}); uso solo regole testuali")
+    laya_system = None
+
+
+# ---------------------------------------------------------------------------
+# TTS (Elsa, italiano)
+# ---------------------------------------------------------------------------
+def _pick_voice(engine) -> None:
+    for v in engine.getProperty("voices"):
+        name = (v.name or "").lower()
+        if "ital" in name or "elsa" in name or "it-it" in str(getattr(v, "id", "")).lower():
+            engine.setProperty("voice", v.id)
+            return
+
+
+def speak(text: str) -> str:
+    """Riproduce la risposta a voce e ritorna il path del file wav generato."""
+    out = BASE / "_tts_reply.wav"
+    with _tts_lock:
+        engine = pyttsx3.init()
+        _pick_voice(engine)
+        engine.setProperty("rate", 175)
+        engine.save_to_file(text, str(out))
+        engine.runAndWait()
+    return str(out)
+
+
+# ---------------------------------------------------------------------------
+# STT (Vosk, italiano, offline)
+# ---------------------------------------------------------------------------
+def get_stt():
+    if _stt["model"] is None:
+        print("[stt] caricamento modello Vosk italiano...")
+        _stt["model"] = VoskModel(VOSK_MODEL_DIR)
+    return _stt["model"]
+
+
+def get_whisper():
+    """Carica il modello Whisper una sola volta; resta sulla GPU via Vulkan."""
+    if _whisper["model"] is None:
+        with _whisper_lock:
+            if _whisper["model"] is None:
+                print("[whisper] caricamento large-v3-turbo Q8_0 (Vulkan)...")
+                import transcribe_cpp as tc
+                _whisper["model"] = tc.Model(WHISPER_GGUF)
+    return _whisper["model"]
+
+
+def whisper_available() -> bool:
+    return os.environ.get("WHISPER", "1") == "1" and os.path.isfile(WHISPER_GGUF)
+
+
+def _whisper_transcribe(pcm16: bytes) -> str:
+    """PCM s16le 16k mono -> testo con Whisper turbo (float32, GPU)."""
+    a = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+    model = get_whisper()
+    with model.session() as s:
+        return (s.run(a).text or "").strip()
+
+
+def _vosk_transcribe(pcm: bytes) -> str:
+    """Trascrive PCM s16le 16 kHz mono con Vosk; riconoscitore fresco per richiesta."""
+    rec = KaldiRecognizer(get_stt(), 16000)
+    rec.AcceptWaveform(pcm)
+    return json.loads(rec.FinalResult()).get("text", "").strip()
+
+
+def transcribe(pcm: bytes) -> str:
+    """Whisper prima (qualita' alta, GPU), Vosk come fallback."""
+    if whisper_available():
+        try:
+            text = _whisper_transcribe(pcm)
+            if text:
+                return text
+        except Exception as exc:
+            print(f"[whisper] errore: {exc}; fallback Vosk")
+    return _vosk_transcribe(pcm)
+
+
+# ---------------------------------------------------------------------------
+# Laya: classifica l'intento tra i tipi di comando
+# ---------------------------------------------------------------------------
+LAYA_QUESTIONS = {
+    "intent": {
+        "type": "choice",
+        "instructions": "What action is the user asking the voice assistant to perform?",
+        "criteria": {
+            "create_folder": "create a new folder somewhere",
+            "delete_folder": "delete or remove an existing folder",
+            "open_app": "open or launch a program or application",
+            "open_site": "open a website or go to a web page",
+            "time": "ask what time it is",
+            "date": "ask what day or date it is today",
+            "volume": "turn volume up, down or mute the computer",
+            "list_files": "list or show the files in a directory",
+            "unknown": "anything else: small talk, questions, other requests",
+        },
+    }
+}
+LAYA_LABELS = set(LAYA_QUESTIONS["intent"]["criteria"]) - {"unknown"}
+
+# ---------------------------------------------------------------------------
+# Piccolo modello LLM locale (Ollama + Qwen2.5 0.5B):
+# traduce il linguaggio naturale in una "specifica comando" JSON per l'executer.
+# ---------------------------------------------------------------------------
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_MODEL = "qwen2.5:0.5b"
+OLLAMA_SCHEMA = (
+    'Convert an Italian voice command into ONE JSON object for a PC assistant. '
+    'Allowed actions: create_folder{name,location}, delete_folder{name,location}, '
+    'create_file{name,content,location}, append_file{name,content,location}, '
+    'delete_file{name,location}, read_file{name,location}, open_app{app}, '
+    'open_site{site}, search_web{query,site}, volume{direction}, time{}, date{}, unknown{}. '
+    'location is one of: desktop, documents, downloads, home. '
+    'For create_file and append_file the name MUST end with .txt (text file). '
+    'content holds the exact text to write. If nothing fits use unknown. '
+    'Answer ONLY with the JSON object. '
+    'Examples: '
+    'crea un file di testo chiamata spesa con dentro latte -> '
+    '{"action":"create_file","name":"spesa.txt","content":"latte","location":"desktop"}; '
+    'aggiungi al file spesa la riga uova -> '
+    '{"action":"append_file","name":"spesa.txt","content":"uova","location":"desktop"}; '
+    'elimina il file spesa -> {"action":"delete_file","name":"spesa.txt","location":"desktop"}; '
+    'apri steam -> {"action":"open_app","app":"steam"}; '
+    'leggi il file spesa -> {"action":"read_file","name":"spesa.txt","location":"desktop"}.'
+)
+FILE_INTENTS = {"create_file", "append_file", "delete_file", "read_file"}
+
+
+def ollama_parse(text: str) -> dict | None:
+    """Chiede al piccolo modello locale di tradurre il comando in JSON."""
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "model": OLLAMA_MODEL,
+            "system": OLLAMA_SCHEMA,
+            "prompt": text,
+            "format": "json",
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": 0, "num_predict": 150},
+        }).encode()
+        req = urllib.request.Request(OLLAMA_URL, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode())
+        spec = json.loads(data.get("response") or "{}")
+        if not isinstance(spec, dict):
+            return None
+        # il modello 0.5B a volte usa {"command", "data"{...}} invece del formato piatto
+        norm = {"action": str(spec.get("action") or spec.get("command") or "unknown")}
+        nested = spec.get("data") if isinstance(spec.get("data"), dict) else {}
+        for k in ("name", "content", "location", "app", "site", "query", "direction"):
+            v = spec.get(k, nested.get(k))
+            if isinstance(v, str) and v.strip():
+                norm[k] = v.strip()
+        return norm
+    except Exception as exc:
+        print(f"[ollama] errore: {exc}")
+        return None
+
+# parole chiave per il fallback testuale (sempre attivo, vince se trova un match)
+KEYWORDS = [
+    ("delete_folder", ("elimina la cartella", "elimina cartella", "cancella la cartella",
+                       "cancella cartella", "rimuovi la cartella", "rimuovi cartella")),
+    ("create_folder", ("crea una cartella", "crea cartella", "nuova cartella",
+                       "creami una cartella", "creami cartella")),
+    ("create_file", ("crea un file", "crea file", "nuovo file", "nuova nota",
+                     "creami un file", "scrivi un file", "crea un documento di testo",
+                     "crea un file di testo")),
+    ("append_file", ("aggiungi al file", "aggiungi una riga", "scrivi nel file",
+                     "aggiungi al file di testo")),
+    ("delete_file", ("elimina il file", "cancella il file", "elimina il documento",
+                     "cancella il documento")),
+    ("read_file", ("leggi il file", "leggi il contenuto", "cosa c'e scritto nel file",
+                   "leggi il documento", "cosa c'e scritto sul file")),
+    ("note", ("appunta", "annota", "segna che", "prendi nota")),
+    ("open_app", ("apri ", "lancia ", "avvia ")),
+    ("open_site", ("apri ", "vai su ", "vai a ", "portami su ", "cerca ", "ricerca ")),
+    ("volume", ("volume", "muto", "mute")),
+    ("time", ("che ore sono", "che ora e", "ora esatta", "orario")),
+    ("date", ("che giorno", "data di oggi", "che data")),
+    ("list_files", ("elenca i file", "mostra i file", "elenca i documenti",
+                    "cosa c'e in", "lista file")),
+]
+
+
+def laya_intent(text: str):
+    """Ritorna (label, confidence) usando Laya, oppure (None, 0)."""
+    if laya_system is None:
+        return None, 0.0
+    try:
+        res = laya_system.predict({"command": text}, LAYA_QUESTIONS)
+        a = res["answers"]["intent"]
+        return a["choice"], float(a["confidence"])
+    except Exception as exc:
+        print(f"[laya] errore: {exc}")
+        return None, 0.0
+
+
+def keyword_intent(text: str):
+    t = " " + text.lower().strip() + " "
+    # 1) i siti web hanno la precedenza: "apri youtube" e' un sito, non un'app.
+    #    Cosi' "apri youtube" va al browser predefinito (es. Comet) e non viene
+    #    scambiato per un eseguibile.
+    for alias in SITE_ALIAS:
+        if re.search(rf"\b{re.escape(alias)}\b", t):
+            return "open_site"
+    # 2) poi le app, le cartelle e il resto
+    for label, words in KEYWORDS:
+        for w in words:
+            if w in t:
+                return label
+    if "ore" in t or "ora" in t:
+        return "time"
+    return None
+
+
+def detect_intent(text: str):
+    """Laya propone, le parole chiave confermano. Ritorna (label, source)."""
+    kw = keyword_intent(text)
+    if kw:
+        return kw, "keyword"
+    label, conf = laya_intent(text)
+    if label and label != "unknown" and conf >= CONF_THRESHOLD:
+        return label, f"laya({conf:.2f})"
+    return "unknown", "none"
+
+
+# ---------------------------------------------------------------------------
+# Esecuzione comandi reali
+# ---------------------------------------------------------------------------
+def extract_folder_name(text: str) -> str:
+    """Cerca il nome della cartella: 'chiamata X', 'nome X', altrimenti ultima parola utile."""
+    t = text.lower()
+    m = re.search(r"(?:chiamat[oa]|di nome|nome)\s+(?:la\s+|la\s+nuova\s+|una\s+)?([a-z0-9 _\-]+)", t)
+    if m:
+        name = m.group(1).strip()
+    else:
+        words = [w for w in re.findall(r"[a-z0-9_\-]+", t) if w not in PLACE_WORDS]
+        name = words[-1] if words else ""
+    name = re.sub(r"\b(sul|sulla|nel|nella|in|su|desktop|scrivania|documenti|download)\b.*$", "", name).strip()
+    name = name.strip(" .,!?")
+    if name:
+        name = name[0].upper() + name[1:]  # "prova" -> "Prova"
+    return name
+
+
+def extract_location(text: str) -> Path:
+    t = text.lower()
+    for key, path in FOLDER_MAP.items():
+        if key in t:
+            return path
+    return DEFAULT_LOCATION
+
+
+def resolve_folder(text: str, name: str) -> Path | None:
+    """Trova la cartella citata cercando in Desktop, Documenti e Download."""
+    if not name:
+        return None
+    loc = extract_location(text)
+    for base in (HOME, HOME / "Desktop", HOME / "Documents", HOME / "Downloads"):
+        if base.is_dir() and base.name.lower() == name:
+            return base
+    for base in {loc, HOME}:
+        p = base / name
+        if p.is_dir():
+            return p
+    return None
+
+
+def sanitize_filename(name: str) -> str:
+    name = re.sub(r'[<>:"/\\|?*]', " ", name or "")
+    name = re.sub(r"\s+", " ", name).strip()
+    return name[:80].strip(" .")
+
+
+def execute_spec(spec: dict, text: str) -> str:
+    """Esegue la specifica JSON prodotta dal piccolo modello (file e altro)."""
+    tl = text.lower()
+    action = str(spec.get("action") or "unknown")
+    loc = FOLDER_MAP.get(str(spec.get("location") or "").lower())
+    if loc is None:
+        loc = extract_location(text)
+    name = sanitize_filename(str(spec.get("name") or ""))
+    content = str(spec.get("content") or "").strip()
+
+    # fallback deterministici: il modello 0.5B a volte perde nome o contenuto
+    if action in FILE_INTENTS and not name:
+        m = (re.search(r"\b(?:chiamat[oa]|di nome|nome)\s+(?:un\s+|una\s+|il\s+|la\s+)?"
+                       r"([a-z0-9_. \-]+?)(?:\s+(?:sul|nel|nella|in|con|dentro)\b.*$|$)", tl)
+             or re.search(r"\b(?:file|documento|nota)\s+([a-z0-9_.\-]+)\b"
+                          r"(?!\s+(?:di\b|testo\b))", tl))
+        if m:
+            name = sanitize_filename(m.group(1))
+    if action in ("create_file", "append_file"):
+        m = re.search(r"\bcon\s+(?:dentro|scritto|il testo)\s+(.+?)\s*$", tl)
+        if m:
+            content = re.sub(r"\s+(?:sul|nel|nella|in)\s+(?:desktop|documenti|downloads|home)\s*$",
+                             "", m.group(1)).strip(" .")
+
+    if action in FILE_INTENTS and name and "." not in name:
+        name += ".txt"  # di default i file creati a voce sono di testo
+
+    if action == "create_file":
+        if not name:
+            return "Come vuoi chiamare il file?"
+        target = loc / name
+        if target.exists():
+            return f"Il file {name} esiste gia' in {loc}."
+        target.write_text(content, encoding="utf-8")
+        extra = f" con scritto: {content[:80]}" if content else " vuoto"
+        return f"File {name} creato in {loc}{extra}."
+
+    if action == "append_file":
+        if not name:
+            return "Su quale file devo scrivere?"
+        if not content:
+            return "Cosa devo scrivere nel file?"
+        target = loc / name
+        if target.exists():
+            body = target.read_text(encoding="utf-8", errors="ignore")
+            if body and not body.endswith("\n"):
+                body += "\n"  # la nuova riga non deve incollarsi alla precedente
+            target.write_text(body + content + "\n", encoding="utf-8")
+            return f"Aggiunta una riga al file {name}."
+        target.write_text(content + "\n", encoding="utf-8")
+        return f"Il file {name} non c'era: l'ho creato in {loc} con la riga dentro."
+
+    if action == "delete_file":
+        if not name:
+            return "Quale file devo eliminare?"
+        target = loc / name
+        if not target.exists():
+            return f"Non trovo il file {name} in {loc}."
+        send2trash.send2trash(str(target))
+        return f"Il file {name} e' nel cestino."
+
+    if action == "read_file":
+        if not name:
+            return "Quale file devo leggere?"
+        target = loc / name
+        if not target.exists():
+            return f"Non trovo il file {name} in {loc}."
+        try:
+            body = target.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            return f"Non riesco a leggere il file {name}."
+        if not body:
+            return f"Il file {name} e' vuoto."
+        preview = body[:160].replace("\n", ". ")
+        more = " e altro" if len(body) > 160 else ""
+        return f"Il file {name} contiene: {preview}{more}."
+
+    # il modello puo' anche ri-instradare verso i comandi gia' esistenti
+    if action == "open_app" and spec.get("app"):
+        return run_command(f"apri {spec['app']}", "open_app")
+    if action == "open_site" and spec.get("site"):
+        return run_command(f"apri {spec['site']}", "open_site")
+    if action == "search_web" and spec.get("query"):
+        site = "youtube" if "youtube" in str(spec.get("site") or "") else "google"
+        return run_command(f"cerca {spec['query']} su {site}", "open_site")
+
+    return ("Non ho capito il comando. Posso creare o eliminare cartelle e file di testo, "
+            "aprire app e siti, cercare su YouTube o Google, darti ora e data, "
+            "regolare il volume o elencare i file.")
+
+
+def run_command(text: str, intent: str) -> str:
+    """Esegue il comando e ritorna la frase da dire alla voce."""
+    t = text.lower()
+
+    # Note vocali: "appunta che ..." -> appende in Note.txt sul desktop
+    if intent == "note":
+        m = re.match(r"^\s*(?:appunta|annota|segna(?:\s+che)?|prendi nota(?:\s+di)?)\b[,: ]*(.+?)\s*$", t)
+        content = (m.group(1) if m else text).strip()
+        target = DEFAULT_LOCATION / "Note.txt"
+        body = ""
+        if target.exists():
+            body = target.read_text(encoding="utf-8", errors="ignore")
+            if body and not body.endswith("\n"):
+                body += "\n"
+        target.write_text(body + content + "\n", encoding="utf-8")
+        return f"Appuntato in Note.txt: {content[:80]}."
+
+    # I file passano dal piccolo modello: estrae nome, contenuto e posizione.
+    if intent in FILE_INTENTS:
+        spec = ollama_parse(text)
+        if spec is None:
+            return "Per gestire i file mi serve Ollama ma non risponde: e' avviato?"
+        spec["action"] = intent  # la categoria e' gia' certa dalle parole chiave
+        return execute_spec(spec, text)
+
+    if intent == "create_folder":
+        name = extract_folder_name(text)
+        if not name:
+            return "Come vuoi che si chiami la cartella?"
+        loc = extract_location(text)
+        target = loc / name
+        if target.exists():
+            return f"La cartella {name} esiste gia' sul {loc.name.lower()}."
+        target.mkdir(parents=True, exist_ok=False)
+        return f"Fatto. Ho creato la cartella {name} in {loc}."
+
+    if intent == "delete_folder":
+        name = extract_folder_name(text)
+        target = resolve_folder(text, name)
+        if target is None:
+            return f"Non ho trovato nessuna cartella chiamata {name or 'cosi'}."
+        send2trash.send2trash(str(target))  # nel cestino, recuperabile
+        return f"Ho spostato la cartella {target.name} nel cestino."
+
+    if intent == "open_app":
+        rest = re.sub(r"^(apri|lancia|avvia)\s+(il\s+|la\s+|lo\s+|l'|un\s+|una\s+)?", "", t).strip(" .!?")
+        for alias, cmd in APP_ALIAS.items():
+            if alias in rest or rest.startswith(alias):
+                try:
+                    if isinstance(cmd, list):
+                        subprocess.Popen(cmd, shell=True)
+                    else:
+                        os.startfile(cmd)  # noqa: S606 - intenzionale, comando utente
+                    return f"Sto aprendo {alias}."
+                except Exception:
+                    continue
+        # 1) collegamenti nel menu Start (Steam, Epic Games, qualsiasi app installata)
+        lnk = _find_shortcut(rest)
+        if lnk is not None:
+            os.startfile(str(lnk))  # noqa: S606
+            return f"Sto aprendo {lnk.stem}."
+        # 2) eseguibile nel PATH (notepad, calc...)
+        exe = shutil.which(rest) or shutil.which(rest + ".exe")
+        if exe:
+            subprocess.Popen([exe])
+            return f"Sto aprendo {rest}."
+        # 3) ultimo tentativo: ShellExecute risolve anche gli App Paths del registro
+        try:
+            os.startfile(rest)  # noqa: S606
+            return f"Sto aprendo {rest}."
+        except Exception:
+            return (f"Non trovo nessuna app chiamata {rest}. "
+                    "Controlla che sia installata e che il nome sia giusto.")
+
+    if intent == "open_site":
+        # -- ricerche esplicite su YouTube / Google, in tutte le formulazioni --
+        def web_search(site: str, query: str) -> str:
+            q = urllib.parse.quote_plus(query)
+            if site == "youtube":
+                url = f"https://www.youtube.com/results?search_query={q}"
+            else:
+                url = f"https://www.google.com/search?q={q}"
+            os.startfile(url)  # noqa: S606 - apre il browser predefinito (es. Comet)
+            return f"Cerco {query} su {site.capitalize()}."
+
+        # 1) "cerca X su youtube/google" (\b per non far combaciare "cerca" dentro "ricerca")
+        m = re.search(r"\bcerca\s+(?:su\s+)?(.+?)\s+su\s+(youtube|google)\b", t)
+        if m:
+            return web_search(m.group(2), m.group(1))
+        # 2) "fai/apri una ricerca su youtube (di X)"
+        m = re.search(r"(?:apri|fai|vai|portami|mostra)\s+(?:una\s+|la\s+)?ricerca\s+"
+                      r"su\s+(youtube|google)(?:\s+(?:di|per|su)\s+(.+?)\s*)?$", t)
+        if m and m.group(2):
+            return web_search(m.group(1), m.group(2))
+        # 3) "su youtube cerca X"
+        m = re.search(r"su\s+(youtube|google)\s+(?:cerca|ricerca)\s+(.+?)\s*$", t)
+        if m:
+            return web_search(m.group(1), m.group(2))
+        # 4) "apri (la ricerca di) X su youtube/google"
+        m = re.search(r"(?:apri|fai|vai|portami|mostra)\s+(?:la\s+|una\s+|il\s+)?"
+                      r"(?:ricerca\s+)?(?:di\s+|per\s+|la\s+)?"
+                      r"((?!ricerca\b|cerca\b).+?)\s+su\s+(youtube|google)\b", t)
+        if m:
+            return web_search(m.group(2), m.group(1))
+        # 5) "cerca X" senza sito -> Google
+        m = re.search(r"\b(?:cerca|ricerca)\s+(?:di\s+|la\s+|per\s+)?(.+?)\s*$", t)
+        if m:
+            return web_search("google", m.group(1))
+        for alias, url in SITE_ALIAS.items():
+            if re.search(rf"\b{re.escape(alias)}\b", t):
+                # os.startfile usa ShellExecute -> apre il BROWSER PREDEFINITO
+                os.startfile(url)  # noqa: S606
+                return f"Apro {alias} nel browser."
+        m = re.search(r"(?:vai (?:su|a)|portami su|apri)\s+([a-z0-9\.\-]+\.[a-z]{2,})", t)
+        if m:
+            url = "https://" + m.group(1)
+            os.startfile(url)  # noqa: S606
+            return f"Apro {m.group(1)}."
+        return "Non ho capito quale sito aprire."
+
+    if intent == "time":
+        now = datetime.now()
+        return f"Sono le {now.strftime('%H e %M')}."
+
+    if intent == "date":
+        days = ["lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato", "domenica"]
+        months = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
+                  "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+        now = datetime.now()
+        return f"Oggi e' {days[now.weekday()]} {now.day} {months[now.month - 1]} {now.year}."
+
+    if intent == "volume":
+        try:
+            import comtypes
+            from ctypes import cast, POINTER
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            comtypes.CoInitialize()
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
+            vol = cast(interface, POINTER(IAudioEndpointVolume))
+            if "muto" in t or "mute" in t:
+                new_mute = not bool(vol.GetMute())
+                vol.SetMute(int(new_mute), None)
+                return "Audio escluso." if new_mute else "Audio riattivato."
+            cur = int(vol.GetMasterVolumeLevelScalar() * 100)
+            if "alza" in t or "aumenta" in t:
+                new = min(100, cur + 10)
+            else:
+                new = max(0, cur - 10)
+            vol.SetMasterVolumeLevelScalar(new / 100, None)
+            return f"Volume portato al {new} per cento."
+        except Exception as exc:
+            print(f"[volume] errore pycaw: {exc}; uso fallback tasti")
+        if "muto" in t or "mute" in t:
+            key = "{VK_VOLUME_MUTE}"
+        elif "alza" in t or "aumenta" in t:
+            key = "{VK_VOLUME_UP}"
+        else:
+            key = "{VK_VOLUME_DOWN}"
+        ps = (f"$w=New-Object -ComObject WScript.Shell; "
+              f"1..10 | ForEach-Object {{ $w.SendKeys('{key}') }}")
+        subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+        if "muto" in t:
+            return "Comando muto inviato."
+        return "Volume regolato."
+
+    if intent == "list_files":
+        loc = extract_location(text)
+        try:
+            items = sorted(p.name for p in loc.iterdir())
+        except Exception:
+            return f"Non riesco a leggere la cartella {loc}."
+        preview = ", ".join(items[:12])
+        more = f" e altri {len(items) - 12}" if len(items) > 12 else ""
+        return f"In {loc.name} trovo: {preview}{more}."
+
+    return ("Non ho capito il comando. Posso creare o eliminare cartelle, aprire app e "
+            "siti, darti ora e data, regolare il volume o elencare i file.")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline completa
+# ---------------------------------------------------------------------------
+def process(text: str, source: str) -> dict:
+    intent, src = detect_intent(text)
+    t0 = time.time()
+    if intent == "unknown":
+        # nessuna regola e Laya non sicuri: prova il piccolo modello LLM
+        spec = ollama_parse(text)
+        if spec and spec.get("action") and spec["action"] != "unknown":
+            intent = f"llm:{spec['action']}"
+            src = f"ollama:{OLLAMA_MODEL}"
+            reply = execute_spec(spec, text)
+        else:
+            reply = run_command(text, intent)
+    else:
+        reply = run_command(text, intent)
+    dt = int((time.time() - t0) * 1000)
+    entry = {
+        "user": text, "assistant": reply, "intent": intent,
+        "detector": src, "input": source, "ms": dt, "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _log_lock:
+        _history.append(entry)
+        if len(_history) > 200:
+            del _history[:-200]
+    print(f"[cmd] intent={intent} via {src} ({dt} ms): {text!r} -> {reply!r}")
+    try:
+        speak(reply)
+    except Exception as exc:
+        print(f"[tts] errore: {exc}")
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+@app.get("/")
+def index():
+    return FileResponse(PKG_DIR / "ui.html")
+
+
+@app.post("/api/listen")
+async def api_listen(audio: UploadFile):
+    """Riceve l'audio dal browser (webm/opus), lo trascrive con Vosk ed esegue."""
+    data = await audio.read()
+    # decodifica webm -> pcm 16k mono tramite ffmpeg (se presente)
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le",
+             "-ac", "1", "-ar", "16000", "pipe:1"],
+            input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True,
+        )
+    except FileNotFoundError:
+        return JSONResponse({"error": "ffmpeg non trovato: installalo per lo STT dal browser"},
+                            status_code=500)
+    return _handle_pcm(proc.stdout)
+
+
+@app.post("/api/listen_wav")
+async def api_listen_wav(request: Request):
+    """Riceve un WAV PCM (widget desktop), lo trascrive con Vosk ed esegue (senza ffmpeg)."""
+    data = await request.body()
+    try:
+        return _handle_pcm(_wav_to_pcm16k(data))
+    except Exception as exc:
+        return JSONResponse({"error": f"WAV non valido: {exc}"}, status_code=400)
+
+
+def _wav_to_pcm16k(data: bytes) -> bytes:
+    """Converte WAV PCM 16 bit (mono/stereo, frequenza qualsiasi) in s16le 16 kHz mono."""
+    with wave.open(io.BytesIO(data), "rb") as w:
+        sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        raw = w.readframes(w.getnframes())
+    if sw != 2:
+        raise ValueError("atteso PCM 16 bit")
+    a = np.frombuffer(raw, dtype=np.int16)
+    if ch > 1:
+        a = a.reshape(-1, ch).mean(axis=1).astype(np.int16)
+    if sr != 16000:
+        n = int(len(a) * 16000 / sr)
+        a = np.interp(np.linspace(0, len(a) - 1, n),
+                      np.arange(len(a), dtype=np.float64),
+                      a.astype(np.float64)).astype(np.int16)
+    return a.tobytes()
+
+
+def _handle_pcm(pcm: bytes):
+    if not pcm:
+        return JSONResponse({"error": "audio vuoto"}, status_code=400)
+    text = transcribe(pcm)
+    if not text:
+        entry = {"user": "", "assistant": "Non ho sentito nulla, riprova.",
+                 "intent": "-", "detector": "-", "input": "voce", "ms": 0,
+                 "ts": datetime.now().isoformat(timespec="seconds")}
+        with _log_lock:
+            _history.append(entry)
+        speak(entry["assistant"])
+        return entry
+    return process(text, "voce")
+
+
+@app.post("/api/text")
+async def api_text(payload: dict):
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "testo vuoto"}, status_code=400)
+    return process(text, "testo")
+
+
+@app.get("/_tts_reply.wav")
+def tts_wav():
+    """Ultima risposta vocale generata, riprodotta dalla UI."""
+    return FileResponse(BASE / "_tts_reply.wav", media_type="audio/wav")
+
+
+@app.get("/api/history")
+def api_history():
+    with _log_lock:
+        return {"history": list(reversed(_history[-50:]))}
+
+
+@app.post("/api/reload_stt")
+def api_reload_stt():
+    _stt["model"] = None
+    _stt["recognizer"] = None
+    get_stt()
+    return {"ok": True, "message": "Riconoscimento ricaricato."}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    print(f"Assistente vocale locale su http://127.0.0.1:{PORT}")
+    get_stt()  # pre-carica Vosk
+    webbrowser.open(f"http://127.0.0.1:{PORT}")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

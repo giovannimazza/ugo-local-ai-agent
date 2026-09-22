@@ -1,8 +1,14 @@
 # cache e file generati a runtime dal server/widget
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/
 _tts_reply.wav
 _mic_on.png
 _mic_rec.png
+_send_btn.png
+_spk_on.png
+_spk_off.png
 widget_pos.json
 .freebuff/
