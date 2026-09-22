@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Assistente Widget</title>
+<style>
+  :root { --bg:#0f1220; --card:#181c2f; --acc:#7c6cff; --txt:#e8e9f3; --mut:#8b90ad; }
+  * { box-sizing:border-box; margin:0; }
+  html, body { height:100%; }
+  body { background:radial-gradient(1200px 600px at 70% 20%, #171b31 0%, var(--bg) 60%);
+         color:var(--txt); font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; }
+
+  /* ---- widget flottante ---- */
+  .widget { position:fixed; right:26px; bottom:26px; display:flex; flex-direction:column;
+            align-items:flex-end; gap:10px; z-index:50; }
+
+  /* bolla risposta: appare sopra il widget e svanisce */
+  .bubble { max-width:320px; background:var(--card); border:1px solid #262b47;
+            padding:10px 14px; border-radius:14px; border-bottom-right-radius:4px;
+            font-size:.9rem; line-height:1.45; box-shadow:0 8px 30px #0007;
+            opacity:0; transform:translateY(8px); transition:opacity .25s, transform .25s;
+            pointer-events:none; }
+  .bubble.show { opacity:1; transform:none; }
+  .bubble .meta { display:block; margin-top:5px; font-size:.68rem; color:var(--mut); }
+
+  /* cerchio microfono */
+  .mic { width:64px; height:64px; border-radius:50%; border:none; cursor:pointer;
+         background:var(--acc); display:flex; align-items:center; justify-content:center;
+         box-shadow:0 6px 24px #7c6cff66; transition:transform .15s, background .2s; }
+  .mic:hover { transform:scale(1.06); }
+  .mic svg { width:28px; height:28px; fill:#fff; }
+  .mic.rec { background:#e5484d; animation:pulse 1.2s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 #e5484d66} 70%{box-shadow:0 0 0 18px #e5484d00} 100%{box-shadow:0 0 0 0 #e5484d00} }
+  .mic:disabled { opacity:.55; cursor:wait; animation:none; }
+
+  /* tasto textbox: pillola compatta che si espande */
+  .textzone { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+  .chip { background:var(--card); border:1px solid #262b47; color:var(--mut);
+          font-size:.8rem; padding:8px 14px; border-radius:99px; cursor:pointer;
+          display:flex; align-items:center; gap:7px; transition:.2s; }
+  .chip:hover { color:var(--txt); border-color:var(--acc); }
+  .chip svg { width:14px; height:14px; fill:currentColor; }
+  .inputrow { display:none; gap:6px; }
+  .textzone.open .chip { display:none; }
+  .textzone.open .inputrow { display:flex; }
+  .inputrow input { width:240px; background:var(--card); border:1px solid #262b47; color:var(--txt);
+                    padding:10px 13px; border-radius:99px; font-size:.85rem; outline:none;
+                    box-shadow:0 8px 30px #0007; }
+  .inputrow input:focus { border-color:var(--acc); }
+  .inputrow button { width:38px; height:38px; border-radius:50%; border:none; background:var(--acc);
+                     color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .inputrow button svg { width:16px; height:16px; fill:#fff; }
+</style>
+</head>
+<body>
+<div class="widget">
+  <div class="bubble" id="bubble"></div>
+  <div class="textzone" id="textzone">
+    <div class="inputrow">
+      <input id="text" placeholder="Scrivi un comando…">
+      <button id="send" title="Invia">
+        <svg viewBox="0 0 24 24"><path d="M2 21 23 12 2 3l4 8 12 1-12 1z"/></svg>
+      </button>
+    </div>
+    <button class="chip" id="chip" title="Scrivi un comando">
+      <svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-6 4V6a2 2 0 0 1 2-2z"/></svg>
+      Scrivi…
+    </button>
+  </div>
+  <button class="mic" id="mic" title="Premi e parla">
+    <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+  </button>
+</div>
+<script>
+const micBtn = document.getElementById('mic'), bubble = document.getElementById('bubble');
+const textzone = document.getElementById('textzone'), textIn = document.getElementById('text');
+let bubbleTimer = null;
+
+function show(text, meta, sticky) {
+  bubble.textContent = text;
+  if (meta) {
+    let m = document.createElement('span'); m.className = 'meta'; m.textContent = meta;
+    bubble.appendChild(m);
+  }
+  bubble.classList.add('show');
+  clearTimeout(bubbleTimer);
+  if (!sticky) bubbleTimer = setTimeout(() => bubble.classList.remove('show'), 7000);
+}
+
+function openInput()  { textzone.classList.add('open');  textIn.focus(); }
+function closeInput() { textzone.classList.remove('open'); textIn.value = ''; }
+document.getElementById('chip').onclick = openInput;
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeInput(); });
+document.addEventListener('click', e => {
+  if (textzone.classList.contains('open') && !textzone.contains(e.target)) closeInput();
+});
+
+async function sendText() {
+  const t = textIn.value.trim(); if (!t) return;
+  closeInput();
+  show('…', '', true);
+  try {
+    const r = await fetch('/api/text', {method:'POST', headers:{'Content-Type':'application/json'},
+                                        body:JSON.stringify({text:t})});
+    const e = await r.json();
+    show(e.assistant || e.error || 'errore',
+         e.intent && e.intent !== '-' ? `${e.intent} · ${e.detector} · ${e.ms} ms` : '');
+    playReply();
+  } catch { show('Server non raggiungibile.'); }
+}
+document.getElementById('send').onclick = sendText;
+textIn.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
+
+// ---- microfono ----
+let media, chunks = [], recording = false;
+micBtn.onclick = async () => {
+  if (recording) { media.stop(); return; }
+  try {
+    media = new MediaRecorder(await navigator.mediaDevices.getUserMedia({audio:true}));
+  } catch { show('Permesso microfono negato'); return; }
+  chunks = []; recording = true; micBtn.classList.add('rec');
+  show('Sto ascoltando…', '', true);
+  media.ondataavailable = e => chunks.push(e.data);
+  media.onstop = async () => {
+    recording = false; micBtn.classList.remove('rec'); micBtn.disabled = true;
+    show('Trascrivo…', '', true);
+    try {
+      const fd = new FormData();
+      fd.append('audio', new Blob(chunks, {type:'audio/webm'}), 'cmd.webm');
+      const r = await fetch('/api/listen', {method:'POST', body:fd});
+      const e = await r.json();
+      if (e.error) show(e.error);
+      else show(e.user ? `${e.user}` : '(non ho sentito nulla)',
+                e.intent && e.intent !== '-' ? `${e.intent} · ${e.detector} · ${e.ms} ms` : '');
+      playReply();
+    } catch { show('Server non raggiungibile.'); }
+    micBtn.disabled = false;
+  };
+  media.start();
+};
+
+async function playReply() {
+  try { new Audio('/_tts_reply.wav?t=' + Date.now()).play(); } catch {}
+}
+</script>
+</body>
+</html>
