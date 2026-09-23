@@ -444,6 +444,35 @@ def cmd_stop() -> int:
     return 0
 
 
+def cmd_help() -> int:
+    """Aiuto completo: tutti i comandi con una spiegazione breve."""
+    print("""Ugo — assistente vocale locale.  Uso:  ugo <comando>
+
+Comandi:
+  run [server]    avvia tutto: server + widget (prima installa cio' che manca);
+                  con "server" avvia solo il server, senza widget desktop
+  start           sinonimo di run
+  setup           installa/verifica TUTTO (dipendenze, Ollama, modelli, voce)
+  doctor          diagnostica: cosa e' installato e cosa manca, senza installare
+  stop            ferma widget e server (uccide solo i processi di Ugo)
+  log             apre un terminale che mostra in diretta l'ascolto passivo
+                  (cosa sente la wake word "Ugo")
+  update          controlla GitHub e aggiorna all'ultima versione del canale
+  channel         canale di aggiornamento:  dev = main  |  stable = release
+                  (solo  ugo channel  mostra quello attivo)
+  version         versione installata
+  help            questo aiuto
+
+Prime volte:
+  ugo setup       una volta sola, installa tutto
+  ugo run         ogni volta che vuoi usare Ugo (o doppio click su ugo_app.py)
+
+Esempi:
+  ugo channel stable     solo release ufficiali (rollback facile)
+  ugo run server         server senza widget (per la UI web nel browser)""")
+    return 0
+
+
 def main() -> int:
     cmd = sys.argv[1].lower() if len(sys.argv) > 1 else "run"
     if cmd in ("setup", "install"):
@@ -502,10 +531,9 @@ def main() -> int:
         only = sys.argv[2].lower() if len(sys.argv) > 2 else None
         return cmd_run(only)
     if cmd in ("-h", "--help", "help"):
-        print(__doc__)
-        return 0
-    print(f"comando sconosciuto: {cmd}\n" + __doc__)
-    return 1
+        return cmd_help()
+    print(f"comando sconosciuto: {cmd}\n")
+    return cmd_help()
 
 
 if __name__ == "__main__":
