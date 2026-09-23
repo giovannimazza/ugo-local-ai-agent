@@ -259,6 +259,31 @@ release con le note automatiche e nel canale stable `ugo update` porta il
 codice esattamente a quel tag. Per tornare a seguire lo sviluppo:
 `ugo channel dev`.
 
+#### Rollback a una versione precedente
+
+Il canale stable rende il rollback banale: ogni versione rilasciata resta
+taggata su GitHub e `ugo update` porta sempre all'ultima — per tornare
+indietro basta chiedere un tag specifico:
+
+```bash
+# 1. ferma i componenti
+ugo stop
+
+# 2. porta il codice esattamente al tag della versione che vuoi (es. v0.3.0)
+git checkout v0.3.0
+
+# 3. reinstalla e riavvia
+pip install -e .
+ugo run
+
+# per ripartire con l'ultima versione disponibile:
+git checkout main && git pull
+```
+
+Le modifiche locali non committate sopravvivono a tutti questi passaggi
+(stash/checkout le portano dietro); memoria refusi, routine e preferenze
+vivono in `%LOCALAPPDATA%/ugo` e non vengono toccate dal rollback.
+
 ### Installazione manuale (alternativa)
 
 ```bat

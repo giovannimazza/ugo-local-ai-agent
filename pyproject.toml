@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ugo-agent"
-version = "0.3.0"
+version = "0.3.1"
 description = "Assistente vocale locale: Whisper (GPU) + Laya + Qwen/Ollama, comandi reali sul PC con widget desktop"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from chicco_agent import launcher  # noqa: E402
+from ugo_agent import launcher  # noqa: E402
 
 if __name__ == "__main__":
     only_server = "--server" in sys.argv
