@@ -2,7 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<title>Chicco — Assistente Locale</title>
+<title>Ugo — Assistente Locale</title>
 <style>
   :root { --bg:#0f1220; --card:#181c2f; --acc:#7c6cff; --txt:#e8e9f3; --mut:#8b90ad;
           --border:#262b47; }
@@ -122,6 +122,8 @@
 <button class="appsbtn small" id="ttsbtn" title="Voce di risposta (TTS)">🔊 <span id="ttsname">…</span></button>
 <button class="appsbtn small" id="membtn" title="Memoria appresa: refusi corretti e alias-app">🧠 <span id="memcount">…</span></button>
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
+<button class="appsbtn" id="routbtn" title="Routine: una frase attiva una sequenza di comandi">⚡ Routine <span id="routcount"></span></button>
+<button class="appsbtn small" id="statsbtn" title="Dashboard latenze: whisper, qwen, tts, comandi">📊 <span id="statscmd">…</span></button>
 </div>
 <div class="app">
   <main class="main">
@@ -129,7 +131,7 @@
       <div class="col" id="col">
         <div class="hero" id="hero">
           <div class="logo">🎙️</div>
-          <h2>Ciao, sono Chicco</h2>
+          <h2>Ciao, sono Ugo</h2>
           <p>Il tuo assistente locale. Parla col microfono o scrivi: creo cartelle e file,<br>
              apro app e siti, faccio ricerche, regolo il volume.</p>
           <div class="sugg">
@@ -144,7 +146,7 @@
     </div>
     <div class="composer">
       <div class="inner">
-        <textarea id="text" rows="1" placeholder="Scrivi un messaggio a Chicco…"></textarea>
+        <textarea id="text" rows="1" placeholder="Scrivi un messaggio a Ugo…"></textarea>
         <button class="iconbtn mic" id="mic" title="Registra un comando vocale">
           <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
         </button>
@@ -152,7 +154,7 @@
           <svg viewBox="0 0 24 24"><path d="M2 21 23 12 2 3l4 8 12 1-12 1z"/></svg>
         </button>
       </div>
-      <div class="hint" id="status">Chicco può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.</div>
+      <div class="hint" id="status">Ugo può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.</div>
     </div>
   </main>
 </div>
@@ -422,12 +424,164 @@ function memRow(entry, kind) {
   r.append(ic, tx, del); return r;
 }
 
+// --- pagina Routine (macro vocali) --------------------------------------
+function routRow(r) {
+  const el = document.createElement('div'); el.className = 'mitem';
+  const ic = document.createElement('div'); ic.className = 'ic'; ic.textContent = '\u26a1';
+  const tx = document.createElement('div'); tx.className = 'tx';
+  const b = document.createElement('b'); b.textContent = r.name;
+  const s = document.createElement('small');
+  s.textContent = r.steps.join(' \u2192 ') + ' \u00b7 usata ' + (r.count || 0) + 'x';
+  tx.append(b, s);
+  const run = document.createElement('button'); run.className = 'memdel';
+  run.textContent = '\u25b6'; run.title = 'Esegui ora';
+  run.onclick = async (ev) => {
+    ev.stopPropagation();
+    run.textContent = '\u2026';
+    await fetch('/api/routines', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'run', id: r.id})});
+    openRoutines();
+  };
+  const del = document.createElement('button'); del.className = 'memdel';
+  del.textContent = '\u00d7'; del.title = 'Elimina';
+  del.onclick = async (ev) => {
+    ev.stopPropagation();
+    await fetch('/api/routines', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'delete', id: r.id})});
+    openRoutines();
+  };
+  el.append(ic, tx, run, del);
+  el.onclick = () => editRoutine(r);
+  return el;
+}
+
+function editRoutine(r) {
+  const isNew = !r;
+  const name = isNew ? '' : (r.name || '');
+  const stepsStr = isNew ? '' : (r.steps || []).join('\n');
+  const n = prompt(isNew ? 'Nome/trigger della routine (cosa dirai a voce):'
+                         : 'Nome/trigger:', name);
+  if (n === null) return openRoutines();
+  const nm = n.trim();
+  if (!nm) return openRoutines();
+  const st = prompt('Comandi, uno per riga (max 8):\nes. apri spotify\nvolume 80\nche tempo fa', stepsStr);
+  if (st === null) return openRoutines();
+  const steps = st.split('\n').map(x => x.trim()).filter(Boolean).slice(0, 8);
+  if (!steps.length) return openRoutines();
+  fetch('/api/routines', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action: isNew ? 'create' : 'update', id: isNew ? '' : r.id,
+                          name: nm, steps})}).then(openRoutines);
+}
+
+async function openRoutines() {
+  try {
+    const r = await fetch('/api/routines'); const d = await r.json();
+    const list = d.routines || [];
+    document.getElementById('routcount').textContent = list.length;
+    mtitle.textContent = '\u26a1 Routine';
+    mcount.textContent = 'una frase attiva una sequenza di comandi \u2014 ' +
+      'creale qui o a voce: \u201cUgo, quando dico modo gaming esegui apri steam; apri discord; volume 80\u201d';
+    msearch.style.display = 'none';
+    mlist.innerHTML = '';
+    if (!list.length) {
+      const e = document.createElement('div'); e.className = 'mitem';
+      e.innerHTML = '<div class="tx"><small>Nessuna routine: creala col \u2795 o a voce.</small></div>';
+      mlist.appendChild(e);
+    }
+    for (const r of list) mlist.appendChild(routRow(r));
+    const add = document.createElement('div'); add.className = 'mitem click';
+    add.innerHTML = '<div class="ic">\u2795</div><div class="tx"><b>Nuova routine</b>' +
+      '<small>es. \u201cmodo gaming\u201d \u2192 apri steam, apri discord, volume 80</small></div>';
+    add.onclick = () => editRoutine(null);
+    mlist.appendChild(add);
+    ovl.classList.add('open');
+  } catch {}
+}
+document.getElementById('routbtn').onclick = openRoutines;
+
+// --- dashboard latenze (📊) --------------------------------------------
+const STAGE_LABEL = {
+  vosk: 'Vosk (fastlane pre-lettura)', fastlane: 'Fastlane (match comandi)',
+  whisper: 'Whisper (trascrizione)', qwen_normalize: 'Qwen (correzione STT)',
+  qwen_intent: 'Qwen (interpretazione intent)', qwen_suggest: 'Qwen (suggerimento app)',
+  tts_piper: 'TTS Piper (Paola)', tts_sapi: 'TTS di sistema',
+  command: '⏱ Comando completo (voce → risposta)'
+};
+let statsTimer = null;
+
+async function refreshStats() {
+  try {
+    const d = await (await fetch('/api/stats')).json();
+    const cmd = (d.stages || []).find(s => s.stage === 'command');
+    document.getElementById('statscmd').textContent =
+      cmd ? cmd.avg.toFixed(1) + 's' : '…';
+    if (!ovl.classList.contains('open')) {
+      if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+      return;
+    }
+    mtitle.textContent = '📊 Dashboard latenze';
+    mcount.textContent = 'ultimi 50 comandi per fase · modelli: STT ' + d.models.stt +
+      ' · AI ' + d.models.llm + ' · TTS ' + d.models.tts;
+    msearch.style.display = 'none';
+    mlist.innerHTML = '';
+    if (!(d.stages || []).length) {
+      const e = document.createElement('div'); e.className = 'mitem';
+      e.innerHTML = '<div class="tx"><small>Nessun dato ancora: dai un comando a Ugo ' +
+        '(voce o testo) e i numeri compaiono qui in tempo reale.</small></div>';
+      mlist.appendChild(e);
+    }
+    const others = d.stages.filter(s => s.stage !== 'command');
+    const maxavg = Math.max(0.001, ...others.map(s => s.avg));
+    for (const s of d.stages) {
+      const el = document.createElement('div'); el.className = 'mitem';
+      const pct = s.stage === 'command' ? 100 :
+        Math.min(100, Math.round(s.avg / maxavg * 100));
+      const tx = document.createElement('div'); tx.className = 'tx';
+      const b = document.createElement('b'); b.textContent = STAGE_LABEL[s.stage] || s.stage;
+      const sm = document.createElement('small');
+      sm.textContent = 'media ' + s.avg.toFixed(2) + 's · p95 ' + s.p95.toFixed(2) +
+        's · max ' + s.max.toFixed(2) + 's · ' + s.n + ' campioni';
+      const bar = document.createElement('div');
+      bar.style.cssText = 'height:6px;background:var(--border);border-radius:3px;margin-top:5px;overflow:hidden';
+      const fill = document.createElement('div');
+      fill.style.cssText = 'height:100%;width:' + pct + '%;background:var(--acc)';
+      bar.appendChild(fill);
+      tx.append(b, sm, bar);
+      el.appendChild(tx);
+      mlist.appendChild(el);
+    }
+    if (d.process && d.process.rss_mb) {
+      const p = document.createElement('div'); p.className = 'mitem';
+      p.innerHTML = '<div class="tx"><small>processo server: ' + d.process.rss_mb +
+        ' MB RAM · cpu ' + d.process.cpu_pct + '% · ' + d.process.threads + ' thread</small></div>';
+      mlist.appendChild(p);
+    }
+    const tog = document.createElement('div'); tog.className = 'mitem click';
+    tog.innerHTML = '<div class="ic">' + (d.enabled ? '⏸' : '▶') + '</div><div class="tx"><b>' +
+      (d.enabled ? 'Sospendi la raccolta dati' : 'Riprendi la raccolta dati') +
+      '</b><small>il pannello continua a mostrare gli ultimi valori raccolti</small></div>';
+    tog.onclick = async () => {
+      await fetch('/api/stats', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({enabled: !d.enabled})});
+      refreshStats();
+    };
+    mlist.appendChild(tog);
+  } catch {}
+}
+
+function openStats() {
+  ovl.classList.add('open');
+  refreshStats();
+  if (!statsTimer) statsTimer = setInterval(refreshStats, 3000);
+}
+document.getElementById('statsbtn').onclick = openStats;
+
 async function openMem() {
   try {
     const r = await fetch('/api/memory'); const d = await r.json();
     document.getElementById('memcount').textContent = d.fixes.length + d.apps.length;
     mtitle.textContent = 'Memoria appresa';
-    mcount.textContent = 'ci\u00f2 che Chicco ha imparato dai tuoi comandi \u2014 click per correggere, \u00d7 per eliminare';
+    mcount.textContent = 'ci\u00f2 che Ugo ha imparato dai tuoi comandi \u2014 click per correggere, \u00d7 per eliminare';
     msearch.style.display = 'none';
     mlist.innerHTML = '';
     const h1 = document.createElement('div'); h1.className = 'mcat';
@@ -478,7 +632,7 @@ async function maybeShowList() {
 }
 
 function scroll() { chat.scrollTop = chat.scrollHeight; }
-function setStatus(s) { statusEl.textContent = s || 'Chicco può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.'; }
+function setStatus(s) { statusEl.textContent = s || 'Ugo può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.'; }
 
 function add(role, text, meta, raw) {
   hero && hero.remove();
@@ -504,7 +658,7 @@ function add(role, text, meta, raw) {
 async function sendText() {
   const t = textEl.value.trim(); if (!t) return;
   textEl.value = ''; textEl.style.height = 'auto';
-  add('you', t); setStatus('Chicco sta elaborando…');
+  add('you', t); setStatus('Ugo sta elaborando…');
   try {
     const r = await fetch('/api/text', {method:'POST', headers:{'Content-Type':'application/json'},
                                         body:JSON.stringify({text:t})});

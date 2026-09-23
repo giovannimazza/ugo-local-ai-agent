@@ -30,7 +30,8 @@ dependencies = [
 ]
 
 [project.scripts]
-chicco = "chicco_agent.cli:main"
+ugo = "chicco_agent.cli:main"
+chicco = "chicco_agent.cli:main"   # alias legacy
 
 [tool.setuptools]
 packages = ["chicco_agent"]

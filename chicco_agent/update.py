@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Controllo versione su GitHub e auto-aggiornamento di Chicco.
+"""Controllo versione su GitHub e auto-aggiornamento di Ugo.
 
-All'avvio (`chicco run` o doppio click su chicco_app.py) verifica se su
+All'avvio (`ugo run` o doppio click su chicco_app.py) verifica se su
 GitHub c'e' codice piu' recente: per un clone git fa un `fetch` (usa le
 credenziali salvate, funziona anche con repo PRIVATE) e conta i commit di
 distacco; per un'installazione pip senza clone confronta la versione nel
 pyproject remoto (repo pubbliche). Se c'e' qualcosa di nuovo:
-  - da terminale (`chicco run`): chiede conferma
+  - da terminale (`ugo run`): chiede conferma
   - dal doppio click (niente console): aggiorna in silenzio
 Offline o repo non raggiungibile: controllo saltato, mai un blocco.
 """
@@ -17,9 +17,9 @@ import sys
 import urllib.request
 from pathlib import Path
 
-REPO_URL = "https://github.com/giovannimazza/chicco-local-ai-agent.git"
+REPO_URL = "https://github.com/giovannimazza/ugo-local-ai-agent.git"
 RAW_URL = ("https://raw.githubusercontent.com/giovannimazza/"
-           "chicco-local-ai-agent/main/pyproject.toml")
+           "ugo-local-ai-agent/main/pyproject.toml")
 ROOT = Path(__file__).resolve().parent.parent
 _VER_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.M)
 
@@ -120,7 +120,7 @@ def apply_update() -> bool:
 def check_update(interactive: bool = True) -> bool:
     """Controlla e aggiorna se serve. Ritorna True se ha aggiornato.
 
-    interactive=True  -> chiede conferma a terminale (chicco run)
+    interactive=True  -> chiede conferma a terminale (ugo run)
     interactive=False -> aggiorna in automatico (widget/doppio click)
     """
     try:

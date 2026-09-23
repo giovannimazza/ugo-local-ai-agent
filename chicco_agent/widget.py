@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Widget desktop flottante dell'assistente vocale (Chicco).
+Widget desktop flottante dell'assistente vocale (Ugo).
 
 Finestrella senza barra titolo, sempre in primo piano, TRASCINABILE ovunque:
   - cerchio microfono: 1 click = registra, 2o click = invia
     (in hover si gonfia come una bollicina, alla pressione si schiaccia,
      durante la registrazione pulsa un anello rosso)
-  - pillola "Scrivi a Chicco...": appare in hover, invio con Enter o col tasto
+  - pillola "Scrivi a Ugo...": appare in hover, invio con Enter o col tasto
   - bolla di risposta arrotondata che compare/svanisce in dissolvenza + voce TTS
   - doppio click sul cerchio = info trascrittore
   - click destro sul cerchio = chiudi il widget
@@ -729,7 +729,7 @@ entry_frame.bind("<Motion>", lambda e: _send_hover(_in_send(e.x, e.y)))
 entry_frame.bind("<Button-1>", _pill_click)
 
 # placeholder (tk.Entry non ce l'ha)
-PLACEHOLDER = "Scrivi a Chicco…"
+PLACEHOLDER = "Scrivi a Ugo…"
 ph = {"on": False}
 _NAV_KEYS = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Left", "Right",
              "Up", "Down", "Home", "End", "Tab", "Escape", "Return", "Caps_Lock", "Win_L", "Win_R"}
@@ -902,7 +902,7 @@ def toggle_listen(_e=None):
         stop_tts()
         bubble.show("Ascolto passivo disattivato.")
     else:
-        bubble.show("Ascolto passivo attivo: dimmi 'Chicco'.")
+        bubble.show("Ascolto passivo attivo: dimmi 'Ugo'.")
         threading.Thread(target=_passive_loop, daemon=True).start()
 
 
@@ -971,8 +971,8 @@ def _post_json(path, payload):
         return json.loads(r.read().decode())
 
 
-def _post_wav(wav: bytes):
-    req = urllib.request.Request(ROOT_URL + "/api/listen_wav", data=wav,
+def _post_wav(wav: bytes, wake: int = 0):
+    req = urllib.request.Request(ROOT_URL + f"/api/listen_wav?wake={wake}", data=wav,
                                  headers={"Content-Type": "audio/wav"})
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.loads(r.read().decode())
@@ -1116,9 +1116,8 @@ import unicodedata
 
 # grafie tutte normalizzate (minuscolo, senza accenti ne' punteggiatura);
 # 'qui quo' e 'kiriko' sono storpiature REALI viste da Vosk
-_WAKE_TOK = ("chicco", "chikko", "chiko", "chico", "chiacco", "chichico",
-             "cicco", "cikko", "cico", "kicco", "kikko", "kiko",
-             "kiriko", "qui quo")
+_WAKE_TOK = ("ugo", "ugo'", "hugo", "sugo", "wugo", "yugo", "jugo", "ughigo",
+             "ugoo", "uugo", "uhgo", "riugo", "truogo", "fuoco")
 _WAKE_FILLERS = ("ehi", "hey", "oh", "ehila", "ciao", "su", "a", "allora")
 _WAKE_PUNCT = str.maketrans("", "", "!.,;:?\"'`’")
 _PLOG = BASE / "passive_log.txt"
@@ -1175,11 +1174,21 @@ def _passive_send_wav(pcm: bytes):
         w.setframerate(SR)
         w.writeframes(pcm)
     try:
-        res = _post_wav(buf.getvalue())
+        res = _post_wav(buf.getvalue(), wake=1)   # il server verifica 'Ugo' con Whisper
+        if res.get("silent"):
+            # wake-guard: il server non ha sentito la wake word nella frase ->
+            # falso positivo del rilevatore economico: taccio tutto e svanisco
+            _plog(f"guard: falso positivo scartato ({(res.get('user') or '')!r})")
+            ui(lambda: bubble.hide())
+            return
         ui(lambda: _show_entry(res))
+        _plog(f"risposta: {(res.get('assistant') or res.get('error') or '?')!r} "
+              f"[{res.get('intent', '-')} / {res.get('detector', '-')} / "
+              f"{res.get('ms', 0)} ms]")
     except Exception as exc:
         msg = f"Errore server: {exc}"
         ui(lambda: bubble.show(msg))
+        _plog(f"ERRORE server: {exc}")
 
 
 def _ensure_mic_volume(mic_dev) -> None:
@@ -1251,8 +1260,34 @@ def _passive_loop():
         since_voice = 0.0
         quiet_until = 0.0    # immunita' all'eco: niente wake subito dopo una risposta
         last_status = 0.0    # per lo stato periodico nel ramo non-armed
+        # wake word neurale (openWakeWord): PRIMARIA se il modello custom esiste,
+        # Vosk resta fallback per la wake e motore per endpointing/trascrizione
+        oww_model, oww_key, oww_thr, oww_hits = None, "", 0.0, 0
+        try:
+            mpath = BASE / "ww_ugo.onnx"
+            meta = {}
+            try:
+                meta = json.loads((BASE / "ww_ugo.json").read_text())
+            except Exception:
+                pass
+            # si attiva SOLO se il modello custom ha superato la validazione
+            # streaming (TPR >= 60% a FPR 0): altrimenti e' un rumore in piu'
+            if mpath.exists() and float(meta.get("stream_tpr", 0)) >= 0.6:
+                from openwakeword.model import Model as OwwModel
+                oww_model = OwwModel(wakeword_models=[str(mpath)],
+                                     inference_framework="onnx")
+                oww_key = list(oww_model.models.keys())[0]
+                oww_thr = float(meta.get("threshold", 0.7))
+                _plog(f"OWW attivo: {mpath.name} (soglia {oww_thr:.2f}, "
+                      f"TPR {meta.get('stream_tpr')})")
+            elif mpath.exists():
+                _plog(f"OWW custom non valido (TPR {meta.get('stream_tpr')}): "
+                      "uso solo Vosk + guard Whisper")
+        except Exception as exc:
+            _plog(f"OWW non disponibile ({exc}): solo Vosk")
         VOICE_LEVEL = 60     # sotto: silenzio (fondo ~2-20); la voce e' oltre ~100
-        END_SIL = 1.0        # secondi di silenzio prima di considerare il comando finito
+        # fine comando: dopo una frase completata secondo Vosk bastano 0.3 s di
+        # silenzio; senza segnale esplicito si attende 0.7 s (prima: sempre 1.0 s)
         PRE_WAKE = 12        # chunk (1.2 s) di audio pre-wake inviati al server
         # AGC: se sei lontano dal microfono il segnale e' debole -> guadagno
         # software progressivo (con limitatore) prima di Vosk/Whisper
@@ -1281,11 +1316,31 @@ def _passive_loop():
                     if noise * g > NOISE_CEIL:  # il fondo non deve esplodere
                         g = min(g, NOISE_CEIL / max(noise, 1.0))
                     agc_gain = 0.85 * agc_gain + 0.15 * g
+                oww_s = 0.0
+                if oww_model is not None:
+                    try:
+                        oww_s = float(oww_model.predict(
+                            audio[:, 0].astype(np.float32)).get(oww_key, 0.0))
+                    except Exception:
+                        pass
                 if armed:
+                    sent_done = rec.AcceptWaveform(pcm)  # Vosk: frase completata?
                     chunks.append(pcm)
                     since_voice = 0.0 if level > thr else since_voice + 0.1
+                    spoke_s += 0.1 if level > thr else 0.0  # voce REALE dopo la wake
                     dur = sum(len(c) for c in chunks) / 2 / SR
-                    if dur >= 8 or (dur > 0.6 and since_voice > END_SIL):
+                    if dur >= 8 or (dur > 0.6 and since_voice > (0.3 if sent_done else 0.7)):
+                        if spoke_s < 0.25:
+                            # solo la wake word (o rumore): niente comando detto ->
+                            # non inviare nulla: Whisper/Qwen inventerebbero un comando
+                            _plog(f"SKIP: solo wake, {spoke_s:.1f}s di voce dopo la wake")
+                            ui(lambda: bubble.hide())
+                            quiet_until = time.time() + 4.0
+                            armed, chunks = False, []
+                            rec = KaldiRecognizer(model, SR)
+                            if oww_model is not None:
+                                oww_model.reset()
+                            continue
                         # taglio il silenzio di coda: Whisper non lo serve e la
                         # sua latenza scala con la durata dell'audio
                         cut = 0
@@ -1306,9 +1361,13 @@ def _passive_loop():
                         _passive_send_wav(trimmed)
                         armed, chunks = False, []
                         rec = KaldiRecognizer(model, SR)
+                        if oww_model is not None:
+                            oww_model.reset()
                     elif dur < 0.6 and since_voice >= 2.0:
                         armed, chunks = False, []  # nessuno ha parlato dopo la wake word
                         rec = KaldiRecognizer(model, SR)
+                        if oww_model is not None:
+                            oww_model.reset()
                         ui(lambda: bubble.show("Non ho sentito niente."))
                     continue
                 chunks.append(pcm)
@@ -1321,11 +1380,26 @@ def _passive_loop():
                     last_status = time.time()
                     _plog(f"vivo: livello {level:.0f} soglia {thr:.0f} "
                           f"guadagno {agc_gain:.1f}x fondo {noise:.0f}")
-                if txt and time.time() >= quiet_until and _wake_hit(txt):
-                    _plog(f"WAKE: {txt!r}")
+                wake = None
+                if time.time() >= quiet_until:
+                    if txt and _wake_hit(txt):
+                        wake = f"vosk {txt!r}"
+                    elif oww_model is not None:
+                        # patience=2: due predizioni di fila sopra soglia (~200 ms),
+                        # scarta i picchi sporadici di rumore
+                        oww_hits = oww_hits + 1 if oww_s >= oww_thr else 0
+                        if oww_hits >= 2:
+                            wake = f"oww {oww_s:.2f}"
+                else:
+                    oww_hits = 0
+                if wake:
+                    _plog(f"WAKE[{wake}]")
                     chunks = chunks[-PRE_WAKE:] + [pcm]  # wake + poco contesto
-                    armed, since_voice = True, 0.0
+                    armed, since_voice, spoke_s = True, 0.0, 0.0
                     rec = KaldiRecognizer(model, SR)
+                    oww_hits = 0
+                    if oww_model is not None:
+                        oww_model.reset()
                     ui(lambda: (set_mic_color(RED),
                                 bubble.show("\U0001F3A4 Ti ascolto…", sticky=True)))
     except Exception as exc:
@@ -1348,6 +1422,8 @@ def _ensure_passive():
 
 if not listen_disabled["on"]:
     root.after(1200, lambda: threading.Thread(target=_passive_loop, daemon=True).start())
+else:
+    _plog("ascolto passivo OFF all'avvio (pulsante microfono barrato): la wake word non ascolta")
 
 
 def toggle_recording():

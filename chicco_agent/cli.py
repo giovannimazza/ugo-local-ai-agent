@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Interfaccia a riga di comando di Chicco.
+Interfaccia a riga di comando di Ugo.
 
-  chicco setup   -> installa/verifica TUTTO (Ollama, modelli, dipendenze)
-  chicco run     -> avvia server + widget (installa cio' che manca prima)
-  chicco doctor  -> diagnostica: cosa e' installato, cosa manca
+  ugo setup   -> installa/verifica TUTTO (Ollama, modelli, dipendenze)
+  ugo run     -> avvia server + widget (installa cio' che manca prima)
+  ugo doctor  -> diagnostica: cosa e' installato, cosa manca
 
 Uso tipico su una macchina nuova:
-  pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
-  chicco run
+  pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+  ugo run
 """
 import json
 import os
@@ -230,7 +230,7 @@ def ensure_path() -> None:
     su Windows aggiunge la dir Scripts di pip al PATH utente (con broadcast
     WM_SETTINGCHANGE, niente riavvio), su macOS/Linux crea uno shim in
     ~/.local/bin."""
-    _step("Comando 'chicco' nel PATH")
+    _step("Comando 'ugo' nel PATH")
     # pip puo' mettere l'exe nello Scripts globale o in quello utente:
     # aggiungo entrambi se mancano
     dirs = {Path(sysconfig.get_path("scripts"))}
@@ -275,13 +275,14 @@ def ensure_path() -> None:
 
 
 def _make_shim_windows() -> None:
-    """Alternativa al PATH: chicco.bat che chiama il python giusto."""
+    """Alternativa al PATH: ugo.bat (+ chicco.bat legacy) che chiama il python giusto."""
     target = Path.home() / ".local" / "bin"
     try:
         target.mkdir(parents=True, exist_ok=True)
-        bat = target / "chicco.bat"
-        bat.write_text(f'@echo off\r\n"{sys.executable}" -m chicco_agent.cli %*\r\n')
-        _ok(f"shim creato: {bat} (richiede {target} nel PATH)")
+        for name in ("ugo.bat", "chicco.bat"):
+            bat = target / name
+            bat.write_text(f'@echo off\r\n"{sys.executable}" -m chicco_agent.cli %*\r\n')
+        _ok(f"shim creati: {target / 'ugo.bat'} + chicco.bat")
     except Exception as exc:
         _warn(f"shim non creato ({exc}); usa: \"{sys.executable}\" -m chicco_agent.cli")
 
@@ -291,7 +292,12 @@ def _make_shim_unix() -> None:
     target = Path.home() / ".local" / "bin"
     try:
         target.mkdir(parents=True, exist_ok=True)
-        sh = target / "chicco"
+        sh = target / "ugo"
+        sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m chicco_agent.cli "$@"\n')
+        sh.chmod(0o755)
+        legacy = target / "chicco"
+        legacy.write_text(sh.read_text())
+        legacy.chmod(0o755)
         sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m chicco_agent.cli "$@"\n')
         sh.chmod(0o755)
         _ok(f"launcher creato: {sh}")
@@ -322,7 +328,7 @@ def install_vosk() -> None:
 # comandi
 # ---------------------------------------------------------------------------
 def cmd_setup() -> int:
-    print("Chicco setup — installo tutto il necessario\n")
+    print("Ugo setup — installo tutto il necessario\n")
     install_pip_deps()
     ensure_path()
     install_ollama()
@@ -332,13 +338,55 @@ def cmd_setup() -> int:
     _step("Voce naturale Piper (TTS locale, ~85 MB)")
     from . import piper_tts
     _ok("voce naturale pronta") if piper_tts.install_sync() else _warn("si scarichera' al primo avvio")
-    print("\nSetup completato. Avvia con:  chicco run")
+    print("\nSetup completato. Avvia con:  ugo run")
     print("Se il terminale non trova 'chicco', aprine uno nuovo.")
     return 0
 
 
+def cmd_log() -> int:
+    """Apre un terminale che mostra in diretta cosa sente l'ascolto passivo."""
+    log = (Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "chicco"
+           / "passive_log.txt")
+    if not log.exists():
+        print("Nessun log: il widget non ha ancora ascoltato (prova: ugo run).")
+        return 1
+    if pu.IS_WINDOWS and shutil.which("powershell"):
+        ps = ("$host.UI.RawUI.WindowTitle='Ugo - ascolto passivo'; "
+              f"Get-Content -Path '{log}' -Wait -Tail 15")
+        try:
+            subprocess.Popen(["powershell", "-NoProfile", "-NoExit", "-Command", ps],
+                             creationflags=0x00000010)  # CREATE_NEW_CONSOLE
+            print("Terminale aperto: vedi in diretta cosa sente Ugo (Ctrl+C o X per chiudere).")
+            return 0
+        except Exception:
+            pass
+    if pu.IS_MAC and shutil.which("osascript"):
+        try:
+            subprocess.run(["osascript", "-e",
+                            f'tell application "Terminal" to do script "tail -f -n 15 {log}"'],
+                           check=True)
+            return 0
+        except Exception:
+            pass
+    # fallback multipiattaforma: segue il file qui, nel terminale corrente
+    print(f"--- cosa sente Ugo ({log}) — Ctrl+C per uscire ---")
+    print("\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]))
+    try:
+        with open(log, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(0, os.SEEK_END)
+            while True:
+                ln = f.readline()
+                if ln.endswith("\n"):
+                    print(ln, end="", flush=True)
+                else:
+                    time.sleep(0.3)
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def cmd_doctor() -> int:
-    print("Chicco doctor — stato dell'installazione\n")
+    print("Ugo doctor — stato dell'installazione\n")
     checks = [
         ("Dipendenze Python (fastapi)", py_import("fastapi") and py_import("uvicorn")),
         ("Laya (intent)", py_import("laya")),
@@ -348,16 +396,16 @@ def cmd_doctor() -> int:
         ("Ollama installato", OLLAMA_EXE.exists()),
         ("Ollama attivo", ollama_ok()),
         ("Qwen2.5 0.5B", qwen_ok()),
-        ("Server Chicco attivo", server_up()),
+        ("Server Ugo attivo", server_up()),
     ]
     for name, okflag in checks:
         (_ok if okflag else _warn)(f"{name}")
     missing = [n for n, o in checks if not o]
     print()
     if missing:
-        print("Mancanze: " + ", ".join(missing) + "\nRimedio con:  chicco setup")
+        print("Mancanze: " + ", ".join(missing) + "\nRimedio con:  ugo setup")
     else:
-        print("Tutto pronto! Avvia con:  chicco run")
+        print("Tutto pronto! Avvia con:  ugo run")
     return 0
 
 
@@ -399,6 +447,8 @@ def main() -> int:
         return cmd_doctor()
     if cmd == "stop":
         return cmd_stop()
+    if cmd == "log":
+        return cmd_log()
     if cmd == "update":
         try:
             from . import update
@@ -407,7 +457,7 @@ def main() -> int:
         loc, rem = update.local_version(), update.remote_version(timeout=5)
         print(f"versione installata: {loc or '?'}   su GitHub: {rem or '? (offline?)'}")
         if update.check_update(interactive=True):
-            print("Riavvia i componenti:  chicco stop && chicco run")
+            print("Riavvia i componenti:  ugo stop && ugo run")
         else:
             print("Niente da aggiornare.")
         return 0

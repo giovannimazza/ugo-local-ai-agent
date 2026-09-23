@@ -1,4 +1,4 @@
-# 🎙️ Chicco — Local AI Voice Agent
+# 🎙️ Ugo — Local AI Voice Agent
 
 Assistente vocale **100% locale e offline** — nato su Windows, ora anche su macOS
 e Linux (vedi [Compatibilità](#-compatibilità-multipiattaforma)): parli col microfono, capisce,
@@ -51,7 +51,7 @@ libreria. Quando una correzione viene applicata, nella bolla del widget e nella 
 compare la trascrizione originale in piccolo (🎧 "…").
 
 **Conferma vocale**: se Qwen riscrive la trascrizione in modo radicalmente diverso
-(similarità sotto soglia), Chicco non esegue nulla e chiede *'Hai detto …? Rispondi
+(similarità sotto soglia), Ugo non esegue nulla e chiede *'Hai detto …? Rispondi
 sì o no'* — un sì vocale (anche storto: 'confirmo' vale) esegue il comando proposto,
 un no annulla; dopo 90 secondi la richiesta scade e il comando successivo parte
 normale.
@@ -78,8 +78,8 @@ livelli:
 1. **Fastlane** (Vosk, ~0,3 s, prima ancora di Whisper): "apri spotifi" viene
    riscritto in "apri Spotify" dalla memoria ed eseguito subito (detector
    `fastlane`) — quando il nome risolve inequivocabilmente nell'indice app
-2. **Fase pre-intent**: i residui di wake word ("chicco apri spotify",
-   "ehi chicco apri steam") vengono ripuliti (`_strip_wake`), i refusi noti
+2. **Fase pre-intent**: i residui di wake word ("ugo apri spotify",
+   "ehi ugo apri steam") vengono ripuliti (`_strip_wake`), i refusi noti
    riscritti e se il nome risolve nell'indice il comando parte in ~ms senza
    Whisper né Qwen (detector `learned`)
 3. **Dentro `open_app`**: il fuzzy-match sull'indice riceve già il nome corretto
@@ -91,6 +91,15 @@ parole) sono riconosciute solo quando non contengono un verbo d'azione — prima
 "vai e apri spotify" veniva scambiato per una conferma a causa di "vai" e la
 frase spariva senza eseguire nulla. Ora le frasi con apri/chiudi/crea/cerca…
 non sono mai conferme.
+
+**Scelta vocale numerata**: quando il nome detto è ambiguo (più app molto
+simili: Steam/Stremio/Stream Deck, o alternative proposte da Qwen) la risposta
+è un menu — *"Quale intendevi: 1) Stremio o 2) Steam o 3) Stream Deck?"* — e
+rispondi **"primo", "seconda", "numero 3", "ultimo"**… Il sistema apre l'app
+e **impara l'alias**, così la prossima volta il refuso apre direttamente.
+Il "sì" secco accetta la prima opzione; il "no" annulla; un comando nuovo fa
+decadere il menu; se c'è una domanda in attesa il wake-guard lascia passare la
+risposta breve anche senza wake word.
 
 ---
 
@@ -162,7 +171,7 @@ scansione indici su runner Windows, macOS e Linux a ogni push.
 | Elencare processi | tasklist | psutil | psutil |
 | Siti e ricerche web | browser predefinito | browser predefinito | browser predefinito |
 | Cartelle dati | `%LOCALAPPDATA%\chicco` | `~/Library/Application Support/chicco` | `~/.local/share/chicco` |
-| Installazione Ollama (`chicco setup`) | winget | brew | script ufficiale |
+| Installazione Ollama (`ugo setup`) | winget | brew | script ufficiale |
 
 Nota: la repo Systran ufficiale del modello è risultata inaccessibile, quindi si usa
 la conversione CT2 di riferimento della community (`deepdml/faster-whisper-large-v3-turbo-ct2`).
@@ -170,7 +179,7 @@ Con GPU NVIDIA aggiungi i CUDA cuDNN (vedi sotto) per l'accelerazione; altriment
 
 ## 📦 Installazione — un solo comando
 
-`chicco run` fa **tutto in automatico**: installa le dipendenze mancanti, Ollama
+`ugo run` fa **tutto in automatico**: installa le dipendenze mancanti, Ollama
 (via winget su Windows, brew su macOS, script ufficiale su Linux), i modelli Qwen
 (1.5b predefinito + 0.5b di riserva), Whisper large-v3-turbo CTranslate2 (~1,6 GB,
 tutti gli OS) e Vosk di fallback, poi avvia server e widget.
@@ -178,15 +187,15 @@ tutti gli OS) e Vosk di fallback, poi avvia server e widget.
 ### Windows
 
 ```bat
-pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
-chicco run
+pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+ugo run
 ```
 
 ### macOS
 
 ```bash
-pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
-chicco run
+pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+ugo run
 ```
 
 Prima volta su macOS: se `brew` manca installalo da [brew.sh](https://brew.sh),
@@ -196,8 +205,8 @@ poi serve la concessione microfono quando macOS la chiede al primo avvio.
 
 ```bash
 sudo apt install python3-pip espeak-ng libportaudio2
-pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
-chicco run
+pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+ugo run
 ```
 
 `espeak-ng` fornisce la voce TTS, `libportaudio2` il microfono; su distro non-Debian
@@ -207,23 +216,23 @@ Comandi disponibili:
 
 | Comando | Effetto |
 |---|---|
-| `chicco` | come `chicco run` |
-| `chicco run` | avvia tutto (installa prima ciò che manca) |
-| `chicco run server` | solo il server, senza widget |
-| `chicco setup` | solo installazione, senza avviare |
-| `chicco doctor` | diagnostica: cosa è installato e cosa manca |
-| `chicco stop` | ferma widget e server |
-| `chicco update` | controlla GitHub e aggiorna all'ultima versione |
-| `chicco version` | mostra la versione installata |
+| `chicco` | alias legacy, come `ugo run` |
+| `ugo run` | avvia tutto (installa prima ciò che manca) |
+| `ugo run server` | solo il server, senza widget |
+| `ugo setup` | solo installazione, senza avviare |
+| `ugo doctor` | diagnostica: cosa è installato e cosa manca |
+| `ugo stop` | ferma widget e server |
+| `ugo update` | controlla GitHub e aggiorna all'ultima versione |
+| `ugo version` | mostra la versione installata |
 
-Al primo `setup`/`run` la CLI aggiunge automaticamente il comando `chicco` al
+Al primo `setup`/`run` la CLI aggiunge automaticamente il comando `ugo` al
 PATH (directory Scripts di pip su Windows, con notifica ai processi — apri un
 terminale nuovo; su macOS/Linux crea un launcher in `~/.local/bin`), così puoi
 richiamarlo da qualsiasi cartella.
 
 ### Aggiornamenti automatici
 
-A ogni avvio (`chicco run` o doppio click su `chicco_app.py`) Chicco verifica
+A ogni avvio (`ugo run` o doppio click su `chicco_app.py`) Ugo verifica
 su GitHub se esiste una versione più recente. Per un clone git il confronto è
 sui **commit** (`git fetch` con le tue credenziali: funziona anche con repo
 private); per installazioni pip diretta confronta la versione nel
@@ -235,7 +244,7 @@ private); per installazioni pip diretta confronta la versione nel
 - Le modifiche locali non committate vengono messe da parte (stash) e
   **ripristinate** dopo l'aggiornamento, mai perse
 - Offline o repo non raggiungibile: il controllo viene saltato, mai un blocco
-- Aggiornamenti manuali comunque possibili: `chicco update`
+- Aggiornamenti manuali comunque possibili: `ugo update`
 
 ### Installazione manuale (alternativa)
 
@@ -249,7 +258,7 @@ ollama pull qwen2.5:1.5b
 ollama pull qwen2.5:0.5b
 
 :: 3. Whisper large-v3-turbo CTranslate2 (~1,6 GB, tutti gli OS)
-:: scaricato automaticamente anche da `chicco setup`/`chicco run`
+:: scaricato automaticamente anche da `ugo setup`/`ugo run`
 huggingface-cli download deepdml/faster-whisper-large-v3-turbo-ct2 ^
   --local-dir %USERPROFILE%\.cache\whisper\faster-whisper-large-v3-turbo
 ```
@@ -291,11 +300,24 @@ vengono chiusi e ne resta uno.
 
 ### Usare il widget
 - **Click** sul cerchio → registra; **secondo click** → invia
-- **Ascolto passivo** 🎙️: di' **"Chicco"** (o *ehi/oh/a Chicco*) e subito il comando
-  — *"Chicco apri Spotify"* — senza toccare nulla. Vosk in streaming, quasi zero CPU;
+- **Ascolto passivo** 🎙️: di' **"Ugo"** (o *ehi/oh/a Ugo*) e subito il comando
+  — *"Ugo apri Spotify"* — senza toccare nulla. Vosk in streaming, quasi zero CPU;
   si mette in pausa durante la registrazione manuale e per qualche secondo dopo ogni
-  risposta (così la voce di Chicco non si riattiva da sola). Il pulsante microfono
+  risposta (così la voce di Ugo non si riattiva da sola). Il pulsante microfono
   barrato (accanto al mute TTS, in mouse over) disattiva/riattiva l'ascolto passivo
+- **Wake-guard con Whisper**: il rilevatore economico nel widget (Vosk) può
+  scambiare TV, conversazioni o rumore per la wake word. Il server verifica con
+  **Whisper large-v3-turbo** che nella frase ci sia davvero "Ugo" (o una sua
+  storpiatura: *uga, oga, u go, sugo…*) **prima di eseguire**; i falsi positivi
+  vengono scartati in silenzio (niente bolla né voce). Attivo solo sugli invii
+  dell'ascolto passivo (`?wake=1`): dettatura e microfono manuale non cambiano
+- **Wake word neurale (sperimentale)**: `python -m chicco_agent.ww_collect`
+  registra ~40 "Ugo" + ~40 frasi negative della tua voce (ogni positiva viene
+  verificata con Whisper, fuzzy match distanza ≤ 2); `python -m chicco_agent.ww_train`
+  addestra un classificatore openWakeWord custom (ONNX, input `(N,16,96)`) su
+  reali + sintetici Piper e sceglie la soglia in streaming. Il widget lo carica
+  **solo** se supera la validazione (TPR ≥ 60% a FPR 0, dichiarata in
+  `ww_ugo.json`): altrimenti resta il duo Vosk + wake-guard Whisper
 - **Microfono scelto in automatico**: se il dispositivo predefinito è muto (es.
   interfaccia audio senza input collegato), il widget sonda gli input e usa quello
   vivo; la scelta resta memorizzata
@@ -312,6 +334,24 @@ elenchi (giochi, app) aprono una **modale** con la lista completa; il pulsante
 **🗂️ App e giochi** (fisso in alto a destra) apre la libreria completa con
 categorie **comprimibili** (Giochi / Applicazioni / Strumenti di sistema) e
 **ricerca per nome**.
+
+### Routine (macro vocali) ⚡
+Una frase di attivazione esegue una sequenza di comandi in ordine:
+
+- **A voce**: *"Ugo, quando dico modo gaming esegui apri steam; apri discord; volume 80"*
+  (separatori: `;`, "e poi", "poi" — max 8 passi). Poi *"modo gaming"* esegue tutto.
+- **Da web**: pulsante **⚡ Routine** → crea, modifica, esegui (▶) ed elimina.
+- Vivono nella stessa memoria su disco dei refusi/alias (sezione `__routines__`):
+  sopravvivono ai riavvii e sono condivise tra voce e interfaccia.
+- Prima di ogni risposta l'esecutore consulta le routine: il trigger può avere
+  coda ("modo gaming attivato") e vince il trigger più lungo in caso di overlap.
+
+### Dashboard latenze 📊
+Il pulsante **📊** in alto mostra in tempo reale (refresh 3 s) dove va il tempo
+su ogni fase: Vosk pre-lettura, fastlane, Whisper, Qwen (correzione/intent/
+suggerimento), TTS Piper e il **totale comando completo** — media, p95, max e
+numero campioni (ultimi 50 per fase), con barre comparative, modelli attivi e
+stato del processo (RAM/CPU/thread). Raccolta sospendibile dal pannello stesso.
 
 ### API
 ```bash
@@ -330,6 +370,8 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 | `GET /api/stt` | trascrittore attivo (motore, modello, dispositivo) |
 | `POST /api/normalize` | corregge una trascrizione con Qwen senza eseguirla: `{raw, text, corrected}` |
 | `GET/POST /api/model` | modello LLM attivo / cambia modello (persistito, menu nel widget e nella UI) |
+| `GET/POST /api/routines` | routine (macro vocali): elenco / create·update·delete·run |
+| `GET/POST /api/stats` | dashboard latenze (medie/p95 per fase, modelli attivi, processo) / pausa-riprendi raccolta |
 | `GET /_tts_reply.wav` | ultima risposta vocale |
 
 ## 📁 Struttura del progetto
@@ -339,7 +381,7 @@ chicco_agent/
 ├── server.py         # FastAPI: STT (faster-whisper/Vosk), intent, LLM, esecuzione, TTS, API
 ├── widget.py         # widget desktop Tkinter (trasparente, trascinabile)
 ├── ui.html           # UI web stile ChatGPT
-├── cli.py            # comandi chicco run/setup/doctor/stop
+├── cli.py            # comandi ugo run/setup/doctor/stop
 ├── platform_utils.py # astrazioni OS: cartelle, TTS, open, volume, subprocess
 ├── appindex.py       # libreria app: lnk/Store/portabili, /Applications, .desktop
 └── games.py          # librerie giochi: Steam (win/mac/linux), Epic, GOG

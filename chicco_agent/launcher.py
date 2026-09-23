@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Avvio unificato di Chicco: server + widget con un solo comando.
+Avvio unificato di Ugo: server + widget con un solo comando.
 
   python chicco_app.py          (dalla cartella del progetto)
   pythonw chicco_app.py         (senza finestra console)
@@ -11,8 +11,8 @@ pulito (l'utente ha chiesto sempre una istanza fresca); i widget desktop
 duplicati vengono chiusi e ne viene avviato uno solo. La terminazione avviene
 solo se il processo che occupa la porta e' un python: mai un programma estraneo.
 
-La stessa logica e' usata da `chicco run` (con riutilizzo del server gia'
-attivo) e da `chicco stop` (solo arresto mirato, senza ammazzare tutti i
+La stessa logica e' usata da `ugo run` (con riutilizzo del server gia'
+attivo) e da `ugo stop` (solo arresto mirato, senza ammazzare tutti i
 pythonw di sistema).
 """
 import subprocess
@@ -48,7 +48,7 @@ def server_up(timeout: float = 2.0) -> bool:
 
 
 def _server_pid() -> int | None:
-    """PID del processo in ascolto sulla porta di Chicco, se individuabile."""
+    """PID del processo in ascolto sulla porta di Ugo, se individuabile."""
     try:
         if pu.IS_WINDOWS:
             r = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
@@ -100,7 +100,7 @@ def _kill_pid(pid: int) -> bool:
 
 
 def _widget_pids() -> list:
-    """PID dei widget Chicco attivi (solo quelli, non tutti i python)."""
+    """PID dei widget Ugo attivi (solo quelli, non tutti i python)."""
     try:
         if pu.IS_WINDOWS:
             ps = ("Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
@@ -124,7 +124,7 @@ def _is_python(name: str) -> bool:
 
 
 def stop_all(verbose: bool = True) -> None:
-    """Arresto mirato: widget Chicco + processo in ascolto sulla porta."""
+    """Arresto mirato: widget Ugo + processo in ascolto sulla porta."""
     for pid in _widget_pids():
         if _kill_pid(pid) and verbose:
             _ok(f"widget fermato (PID {pid})")
@@ -209,6 +209,6 @@ def start_all(reuse: bool = False, skip_widget: bool = False) -> int:
         pu.popen_hidden([str(exe), str(PKG / "widget.py")], cwd=str(PKG.parent))
         _ok("widget avviato (guarda nell'angolo dello schermo)")
 
-    print("\nChicco e' pronto. Parla col microfono o scrivi nella pillola.")
-    print("Chiudi il widget: click destro sul cerchio.  Stop server:  chicco stop")
+    print("\nUgo e' pronto. Parla col microfono o scrivi nella pillola.")
+    print("Chiudi il widget: click destro sul cerchio.  Stop server:  ugo stop")
     return 0

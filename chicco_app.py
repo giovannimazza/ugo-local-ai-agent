@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Avvio di Chicco con un solo file: apre server E widget insieme.
+Avvio di Ugo con un solo file: apre server E widget insieme.
 
   - doppio click su questo file (Windows: lo apre senza finestra)
   - oppure:  python chicco_app.py          (niente console con: pythonw chicco_app.py)
   - se una istanza precedente e' attiva (porta occupata, widget gia' in esecuzione)
     viene terminata in automatico e tutto riparte pulito.
 
-Per avere il comando `chicco` globale:  chicco setup   (o chicco run)
+Per avere il comando `chicco` globale:  ugo setup   (o ugo run)
 """
 import runpy
 import sys

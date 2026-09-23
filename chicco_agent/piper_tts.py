@@ -50,6 +50,9 @@ else:
     _EXE_NAME = "piper"
 PIPER_URL = f"https://github.com/rhasspy/piper/releases/download/{PIPER_RELEASE}/{_asset}"
 
+# niente finestra console a ogni sintesi (Windows)
+_NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if _sys == "Windows" else {}
+
 _lock = threading.Lock()
 _state = {"downloading": False}
 
@@ -173,7 +176,7 @@ def ensure_started() -> None:
 
 
 def install_sync() -> bool:
-    """Installazione bloccante per 'chicco setup'. True se pronto alla fine."""
+    """Installazione bloccante per 'ugo setup'. True se pronto alla fine."""
     with _lock:
         if is_ready():
             return True
@@ -197,7 +200,7 @@ def synthesize(text: str, out_wav: Path) -> bool:
            "--sentence_silence", "0.25"]
     try:
         r = subprocess.run(cmd, input=text.encode("utf-8"),
-                           capture_output=True, timeout=120)
+                           capture_output=True, timeout=120, **_NOWIN)
         if r.returncode == 0 and out_wav.exists() and out_wav.stat().st_size > 1000:
             return True
         print(f"[piper] sintesi fallita ({r.stderr.decode(errors='replace')[:200]}); "

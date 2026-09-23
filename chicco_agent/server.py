@@ -49,6 +49,30 @@ except ImportError:
 import laya
 import pyttsx3
 import send2trash
+
+# ---------------------------------------------------------------------------
+# subprocess SENZA finestra: su Windows qualunque console (taskkill, powershell,
+# ffmpeg, piper...) fa lampeggiare un terminale nero se non lo si nasconde
+# ---------------------------------------------------------------------------
+_WFLAGS = {
+    "creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+} if pu.IS_WINDOWS else {}
+
+
+def _run(cmd, **kw):
+    """subprocess.run senza finestra console (Windows)."""
+    kw.setdefault("capture_output", True)
+    kw.setdefault("text", True)
+    kw.update(_WFLAGS)
+    return subprocess.run(cmd, **kw)
+
+
+def _popen(cmd, **kw):
+    """subprocess.Popen senza finestra console (Windows)."""
+    kw.update(_WFLAGS)
+    return subprocess.Popen(cmd, **kw)
+
+
 from fastapi import FastAPI, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from vosk import KaldiRecognizer, Model as VoskModel
@@ -190,6 +214,27 @@ _stt = {"model": None, "recognizer": None}
 _laya_router = None
 
 # ---------------------------------------------------------------------------
+# Dashboard latenze: per ogni fase della pipeline (whisper, vosk, qwen,
+# tts, fastlane, wakeup-guard, comando) misuriamo durate e teniamo gli
+# ultimi 50 campi. La UI li mostra con media/p95 e modelli attivi.
+# ---------------------------------------------------------------------------
+_stats_lock = threading.Lock()
+_stats: dict[str, list[float]] = {}
+_stats_enabled = {"on": True}   # la UI puo' sospendere la raccolta
+
+
+def _track(stage: str, dt: float) -> None:
+    """Registra la durata (secondi) di una fase; i contatori globali di
+    processo (rss, cpu) vengono campionati al momento della richiesta stats."""
+    if not _stats_enabled["on"]:
+        return
+    with _stats_lock:
+        buf = _stats.setdefault(stage, [])
+        buf.append(dt)
+        if len(buf) > 50:
+            del buf[:-50]
+
+# ---------------------------------------------------------------------------
 # Whisper via faster-whisper (CTranslate2): CUDA/CPU su Windows, Metal/CPU su
 # macOS, CUDA/CPU su Linux — stesso motore ovunque. Il modello e' SCEGLIBILE
 # da web UI /api/stt/models (download on-demand) e la scelta resta su disco.
@@ -262,9 +307,11 @@ def _pick_voice(engine) -> None:
 def speak(text: str) -> str:
     """Riproduce la risposta a voce e ritorna il path del file wav generato."""
     out = BASE / "_tts_reply.wav"
+    t0 = time.time()
     with _tts_lock:
         try:
             if piper_tts.synthesize(text, out):
+                _track("tts_piper", time.time() - t0)
                 return str(out)          # voce naturale: fatta
         except Exception as exc:
             print(f"[piper] inatteso ({exc}); passo alla voce di sistema")
@@ -274,6 +321,7 @@ def speak(text: str) -> str:
             engine.setProperty("rate", 175)
             engine.save_to_file(text, str(out))
             engine.runAndWait()
+            _track("tts_sapi", time.time() - t0)
         except Exception as exc:
             # fuori da Windows pyttsx3 usa espeak/NSSpeechSynthesizer: se mancano,
             # la risposta resta scritta (bolla/UI) invece di rompere la pipeline
@@ -349,17 +397,23 @@ def _whisper_transcribe(pcm16: bytes) -> str:
     """PCM s16le 16k mono -> testo con Whisper turbo."""
     a = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
     lang = os.environ.get("WHISPER_LANG", "it")  # "auto" per il rilevamento automatico
+    t0 = time.time()
     segments, _info = get_whisper().transcribe(
         a, language=None if lang == "auto" else lang,
         beam_size=1, vad_filter=True, condition_on_previous_text=False)
-    return " ".join(s.text for s in segments).strip()
+    text = " ".join(s.text for s in segments).strip()
+    _track("whisper", time.time() - t0)
+    return text
 
 
 def _vosk_transcribe(pcm: bytes) -> str:
     """Trascrive PCM s16le 16 kHz mono con Vosk; riconoscitore fresco per richiesta."""
+    t0 = time.time()
     rec = KaldiRecognizer(get_stt(), 16000)
     rec.AcceptWaveform(pcm)
-    return json.loads(rec.FinalResult()).get("text", "").strip()
+    txt = json.loads(rec.FinalResult()).get("text", "").strip()
+    _track("vosk", time.time() - t0)
+    return txt
 
 
 def transcribe(pcm: bytes) -> str:
@@ -534,8 +588,10 @@ def normalize_stt(text: str) -> str | None:
         }).encode()
         req = urllib.request.Request(OLLAMA_URL, data=payload,
                                      headers={"Content-Type": "application/json"})
+        _q0 = time.time()
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode())
+        _track("qwen_normalize", time.time() - _q0)
         out = (data.get("response") or "").strip().strip('"').strip()
         # difese: vuoto, delirio troppo lungo o multilinea -> meglio l'originale
         if not out or "\n" in out or len(out) > len(text) * 3 + 80:
@@ -550,6 +606,72 @@ SITI_NOTI = ("youtube", "google", "gmail", "maps", "amazon", "netflix", "twitch"
              "github", "reddit", "facebook", "instagram", "whatsapp", "spotify",
              "wikipedia", "chatgpt", "steam", "discord")
 LUOGHI = ("desktop", "scrivania", "documenti", "download")
+
+
+# ---------------------------------------------------------------------------
+# Routine (macro vocali): frase di attivazione -> sequenza di comandi eseguiti
+# in ordine. Vanno nella STESSA memoria su disco (sezione __routines__), sono
+# creabili a voce ("quando dico X esegui Y; Z") o dalla pagina Routine web.
+# ---------------------------------------------------------------------------
+ROUTINE_MAX_STEPS = 8
+
+
+def _find_routine(text: str) -> dict | None:
+    """Matcha la frase contro trigger e nomi delle routine (substring sui token
+    normalizzati, con tolleranza per code tipo 'modo gaming attivato')."""
+    t = _norm(_strip_wake(text))
+    if not t:
+        return None
+    rs = _learned_load().get("__routines__", {})
+    best = None
+    for r in rs.values():
+        cands = [_norm(r.get("trigger", "")), _norm(r.get("name", ""))]
+        for c in cands:
+            if len(c) < 3:
+                continue                 # trigger troppo corti: falsi positivi
+            ctoks = c.split()
+            head = " ".join(ctoks[:3])   # 'modo gaming' per 'modo gaming attivato'
+            hit = (re.search(r"(?<!\S)" + re.escape(c) + r"(?!\S)", t)
+                   or (len(ctoks) >= 2 and head and
+                       re.search(r"(?<!\S)" + re.escape(head) + r"(?!\S)", t)))
+            if hit:
+                if best is None or len(c) > best[1]:
+                    best = (r, len(c))
+                break
+    return best[0] if best else None
+
+
+def _routine_execute(r: dict) -> list[str]:
+    """Esegue i passi in ordine con la pipeline comandi esistente (senza
+    parlare a ogni passo): ritorna i testi di risposta per il riassunto."""
+    replies = []
+    for s in (r.get("steps") or [])[:ROUTINE_MAX_STEPS]:
+        st = (s or "").strip()
+        if not st:
+            continue
+        try:
+            intent = detect_intent(st)[0]
+        except Exception:
+            intent = "-"
+        try:
+            replies.append(run_command(st, intent))
+        except Exception as exc:
+            replies.append(f"{st}: errore ({type(exc).__name__})")
+    return replies
+
+
+def _routine_bump(rid: str) -> None:
+    """Conta l'utilizzo della routine (statistica nel pannello web)."""
+    with _learned_lock:
+        data = _learned_load()
+        rs = data.get("__routines__", {})
+        if rid in rs:
+            rs[rid]["count"] = rs[rid].get("count", 0) + 1
+            try:
+                LEARNED_FILE.write_text(json.dumps(
+                    data, ensure_ascii=False, indent=1), encoding="utf-8")
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -754,8 +876,10 @@ def ollama_parse(text: str) -> dict | None:
         }).encode()
         req = urllib.request.Request(OLLAMA_URL, data=payload,
                                      headers={"Content-Type": "application/json"})
+        _q0 = time.time()
         with urllib.request.urlopen(req, timeout=30) as r:
             data = json.loads(r.read().decode())
+        _track("qwen_intent", time.time() - _q0)
         spec = json.loads(data.get("response") or "{}")
         if not isinstance(spec, dict):
             return None
@@ -1255,7 +1379,7 @@ def _get_app_volume(app_name: str) -> str:
             else f"Volume di {proc} al {cur} per cento.")
 
 
-# processi che Chicco si rifiuta di chiudere (sistema o se stesso)
+# processi che Ugo si rifiuta di chiudere (sistema o se stesso)
 _CLOSE_PROTECTED = {"explorer", "winlogon", "csrss", "dwm", "system", "idle",
                     "python", "pythonw", "ollama", "audiodg", "svchost", "services"}
 
@@ -1271,7 +1395,7 @@ def _running_processes() -> list:
         except Exception:
             return []
     try:
-        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
+        r = _run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
                            text=True, timeout=15,
                            creationflags=subprocess.CREATE_NO_WINDOW)
         out = []
@@ -1296,7 +1420,7 @@ def _still_running(img: str) -> bool:
         except Exception:
             return False
     try:
-        r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {img}"],
+        r = _run(["tasklist", "/FI", f"IMAGENAME eq {img}"],
                            capture_output=True, text=True, timeout=15,
                            creationflags=subprocess.CREATE_NO_WINDOW if pu.IS_WINDOWS else 0)
         return img.lower() in (r.stdout or "").lower()
@@ -1319,7 +1443,7 @@ def _kill_by_image(base: str, force: bool = False, display: str | None = None) -
     if not pu.IS_WINDOWS:
         # mac / Linux: pkill prima educato (SIGTERM), poi forzato (SIGKILL)
         try:
-            r = subprocess.run(["pkill", "-f" if force else "-x", base],
+            r = _run(["pkill", "-f" if force else "-x", base],
                                capture_output=True, text=True, timeout=15)
             return (f"Ho chiuso {nome}." if r.returncode == 0
                     else f"Non vedo {nome} tra i programmi aperti.")
@@ -1330,11 +1454,11 @@ def _kill_by_image(base: str, force: bool = False, display: str | None = None) -
     flags = subprocess.CREATE_NO_WINDOW if pu.IS_WINDOWS else 0
     try:
         if force:
-            r = subprocess.run(["taskkill", "/IM", img, "/F"], capture_output=True,
+            r = _run(["taskkill", "/IM", img, "/F"], capture_output=True,
                                text=True, timeout=15, creationflags=flags)
             return (f"Ho chiuso {nome} (forzato)." if r.returncode == 0
                     else f"Non vedo {nome} tra i programmi aperti.")
-        r = subprocess.run(["taskkill", "/IM", img], capture_output=True,
+        r = _run(["taskkill", "/IM", img], capture_output=True,
                            text=True, timeout=15, creationflags=flags)
         if r.returncode == 0:
             # le app UWP possono ignorare il segnale 'educato': verifico davvero
@@ -1342,7 +1466,7 @@ def _kill_by_image(base: str, force: bool = False, display: str | None = None) -
             if not _still_running(img):
                 return f"Ho chiuso {nome}."
             print(f"[close_app] {img} resisteva alla chiusura educata: forzo")
-        r2 = subprocess.run(["taskkill", "/IM", img, "/F"], capture_output=True,
+        r2 = _run(["taskkill", "/IM", img, "/F"], capture_output=True,
                             text=True, timeout=15, creationflags=flags)
         if r2.returncode == 0:
             time.sleep(0.5)
@@ -1510,7 +1634,7 @@ def run_command(text: str, intent: str) -> str:
             if alias in rest or rest.startswith(alias):
                 try:
                     if isinstance(cmd, list):
-                        subprocess.Popen(cmd, shell=True)
+                        _popen(cmd, shell=True)
                     else:
                         os.startfile(cmd)  # noqa: S606 - intenzionale, comando utente
                     return f"Sto aprendo {alias}."
@@ -1531,6 +1655,25 @@ def run_command(text: str, intent: str) -> str:
         # diventa 'apri lo Spotify' prima ancora di cercare nell'indice
         rest = _learned_token_fix(rest)
         hits = appindex.search(rest, limit=3)
+        if not hits and rest:
+            # nessun hit: i "fratelli" simili (Steam/SteamVR, Code/Code - Insiders)
+            # diventano un menu a scelta numerata invece del primo del pattern
+            close_all = difflib.get_close_matches(
+                appindex._norm(rest),
+                [appindex._norm(a["name"]) for a in appindex.get_apps()],
+                n=3, cutoff=0.55)
+            if len(close_all) >= 2:
+                by_n = {appindex._norm(a["name"]): a for a in appindex.get_apps()}
+                menu = [by_n[c]["name"] for c in close_all if c in by_n][:3]
+                with _log_lock:
+                    _pending["app"] = None
+                    _pending["raw_said"] = rest
+                    _pending["text"] = None
+                    _pending["ts"] = time.time()
+                    _pending_choices["menu"] = menu
+                opts = " o ".join(f"{i + 1}) {n}" for i, n in enumerate(menu))
+                return (f'Non ho nessuna app chiamata {rest}. Vuoi {opts}? '
+                        'Dimmi primo, secondo o terzo.')
         if not hits:
             # fallback fuzzy: il nome era storpiato ('spotrifyt' -> 'Spotify')
             close = difflib.get_close_matches(
@@ -1545,6 +1688,17 @@ def run_command(text: str, intent: str) -> str:
             # ultimo grado: chiede a Qwen tra le app installate e CONFERMA
             # prima di avviare ('stimolo' -> 'Intendavi Steam?')
             sugg = qwen_app_suggest(rest)
+            if sugg and "qwen_menu" in sugg:
+                menu = sugg["qwen_menu"][:3]
+                with _log_lock:
+                    _pending["app"] = None
+                    _pending["raw_said"] = rest
+                    _pending["text"] = None
+                    _pending["ts"] = time.time()
+                    _pending_choices["menu"] = menu
+                opts = " o ".join(f"{i + 1}) {n}" for i, n in enumerate(menu))
+                return (f'Quale delle due intendevi per {rest}: {opts}? '
+                        'Dimmi primo o secondo.')
             if sugg:
                 with _log_lock:
                     _pending["app"] = sugg["name"]
@@ -1576,14 +1730,14 @@ def run_command(text: str, intent: str) -> str:
                     sh = win32com.client.Dispatch("WScript.Shell")
                     target = sh.CreateShortCut(str(lnk)).Targetpath
                     if target:
-                        subprocess.Popen([target], shell=True)
+                        _popen([target], shell=True)
                         return f"Sto aprendo {lnk.stem}."
                 except Exception:
                     pass
         # 3) eseguibile nel PATH (notepad, calc...)
         exe = shutil.which(rest) or shutil.which(rest + ".exe")
         if exe:
-            subprocess.Popen([exe])
+            _popen([exe])
             return f"Sto aprendo {rest}."
         # 4) ultimo tentativo: apertura col programma predefinito del sistema
         try:
@@ -1680,11 +1834,11 @@ def run_command(text: str, intent: str) -> str:
             except Exception as exc:
                 print(f"[volume] errore pycaw (muto): {exc}; uso fallback tasti")
             if pu.IS_WINDOWS:
-                subprocess.Popen(["powershell", "-NoProfile", "-Command",
+                _popen(["powershell", "-NoProfile", "-Command",
                                   "$w=New-Object -ComObject WScript.Shell; $w.SendKeys('{VK_VOLUME_MUTE}')"],
                                  creationflags=subprocess.CREATE_NO_WINDOW)
             elif pu.IS_LINUX:
-                subprocess.Popen(["sh", "-c", pu.pactl_or_alsa("mute")],
+                _popen(["sh", "-c", pu.pactl_or_alsa("mute")],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return "Comando muto inviato."
         level, mode = _parse_volume(t)
@@ -1722,7 +1876,7 @@ def run_command(text: str, intent: str) -> str:
             if steps:
                 ps = (f"$w=New-Object -ComObject WScript.Shell; "
                       f"1..{steps} | ForEach-Object {{ $w.SendKeys('{key}') }}")
-                subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                _popen(["powershell", "-NoProfile", "-Command", ps],
                                  creationflags=subprocess.CREATE_NO_WINDOW)
         elif pu.IS_LINUX:
             pu.press_media_keys(steps if mode == "up" else 0,
@@ -1747,11 +1901,34 @@ def run_command(text: str, intent: str) -> str:
 # Pipeline completa
 # ---------------------------------------------------------------------------
 # Conferma vocale delle correzioni 'molto diverse': se Qwen riscrive la
-# trascrizione radicalmente, Chicco chiede 'Hai detto ...?' ed esegue solo
+# trascrizione radicalmente, Ugo chiede 'Hai detto ...?' ed esegue solo
 # dopo un si' vocale (o annulla con no). Scopo dopo PENDING_TTL secondi.
 CONFIRM_RATIO = 0.55
 PENDING_TTL = 90.0
 _pending = {"text": None, "app": None, "ts": 0.0}
+_pending_choices = {"menu": None}   # lista nomi app per la scelta vocale numerata
+_ORDINALS = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5,
+             "primo": 0, "prima": 0, "secondo": 1, "seconda": 1,
+             "terzo": 2, "terza": 2, "quarto": 3, "quarta": 3,
+             "quinto": 4, "quinta": 4, "sesto": 5, "sesta": 5,
+             "ultimo": -1, "ultima": -1}
+
+
+def _pick_ordinal(text: str) -> int | None:
+    """Indice 0-based se la frase E' solo una scelta numerata ('primo',
+    'la seconda', 'numero 3', 'sugo' no): None altrimenti."""
+    tokens = re.findall(r"[a-z0-9à-ù]+", (text or "").lower().strip())
+    if not tokens or len(tokens) > 2:
+        return None
+    fill = {"il", "la", "lo", "l", "numero", "n", "scelgo", "scelta",
+            "quello", "quella"}
+    core = [t for t in tokens if t not in fill]
+    if len(core) != 1 or core[0] not in _ORDINALS:
+        return None
+    i = _ORDINALS[core[0]]
+    if i == -1:  # 'ultimo': si risolve al momento dell'uso
+        return -1
+    return i
 _YES = {"si", "sì", "ok", "okay", "confermo", "conferma", "esatto", "esatta",
         "giusto", "giusta", "certo", "certamente", "appunto", "sicuro",
         "corretto", "corretta", "esegui", "vai", "yes", "sure", "quoto"}
@@ -1794,6 +1971,11 @@ def _yes_no(text: str):
 
 def qwen_app_suggest(name: str) -> dict | None:
     """Suggerisce quale app installata intendeva l'utente quando ricerca e
+    fuzzy non hanno trovato nulla. Ritorna UNA app ('qwen_pick') oppure, se
+    c'e' ambiguita', il menu dei candidati per la scelta vocale numerata
+    ('qwen_menu'). Difesa: difflib candidati vicini, Qwen sceglie tra nomi
+    reali, il pick deve essere uno dei candidati."""
+    """Suggerisce quale app installata intendeva l'utente quando ricerca e
     fuzzy non hanno trovato nulla (es. 'stimolo' -> Steam).
     Struttura a difesa: 1) difflib produce i candidati piu' vicini; 2) se il
     migliore e' troppo lontano non si propone nulla (garbage in -> niente);
@@ -1830,15 +2012,27 @@ def qwen_app_suggest(name: str) -> dict | None:
         }).encode()
         req = urllib.request.Request(OLLAMA_URL, data=payload,
                                      headers={"Content-Type": "application/json"})
+        _q0 = time.time()
         with urllib.request.urlopen(req, timeout=15) as r:
             out = (json.loads(r.read().decode()).get("response") or "").strip().strip('"').strip()
+        _track("qwen_suggest", time.time() - _q0)
         if not out or "\n" in out or len(out) > 60:
             return None
         low = out.lower()
+        picked = None
         for app in appindex.search(out, limit=5):
             if app["name"].lower() == low and app["name"] in cand_names:
-                return app  # valido solo se e' ESATTAMENTE uno dei candidati
-        return None
+                picked = app  # valido solo se e' ESATTAMENTE uno dei candidati
+                break
+        if picked is None:
+            return None
+        by_name = {a["name"]: a for a in apps}
+        alt = [by_name[c] for c in cand_names if c != picked["name"] and c in by_name]
+        if len(alt) >= 1 and difflib.SequenceMatcher(
+                None, norm(picked["name"]), norm(alt[0]["name"])).ratio() >= 0.62:
+            # ambiguo: torna il menu completo (pick + alternative vicine)
+            return {"qwen_menu": [picked["name"]] + [a["name"] for a in alt[:2]]}
+        return picked
     except Exception as exc:
         print(f"[open_app] qwen_app_suggest errore: {exc}")
         return None
@@ -1869,6 +2063,39 @@ def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
 
 def process(text: str, source: str) -> dict:
     raw_stt, corrected = text, None
+    # --- scelta numerata in attesa ('primo', 'la seconda', 'numero 3') ---
+    # prima del si/no: 'sì' non è un numero e viceversa, ma l'ordine conta
+    # per il menu che sopravvive alla risposta sbagliata
+    pick = _pick_ordinal(text or "")
+    if pick is not None and _pending_choices["menu"]:
+        with _log_lock:
+            menu = list(_pending_choices["menu"])
+            pend_said = _pending.get("raw_said")
+            pend_ts = _pending["ts"]
+            _pending["text"] = _pending["app"] = None
+            _pending["raw"] = None
+            _pending["raw_said"] = None
+            _pending_choices["menu"] = None
+        if pend_ts and time.time() - pend_ts <= PENDING_TTL:
+            if pick == -1:
+                pick = len(menu) - 1            # 'ultimo'
+            if 0 <= pick < len(menu):
+                app_name = menu[pick]
+                print(f"[confirm] scelta numerata {pick + 1}: {app_name!r}")
+                if pend_said:  # impara: quella parola strana -> l'app scelta
+                    _learn_app_alias(pend_said, app_name)
+                reply = run_command(f"apri {app_name}", "open_app")
+                return _emit(f"apri {app_name}", reply, "open_app", "guard-scelta",
+                             source, 0)
+            reply = (f"C'e' solo {'una' if len(menu) == 1 else str(len(menu))} "
+                     f"scelta: riprova.")
+            return _emit(text, reply, "confirm", "guard-scelta", source, 0)
+        reply = "Non c'e' piu' nessuna scelta in attesa."
+        return _emit(text, reply, "confirm", "guard-scelta", source, 0)
+    if pick is not None and not _pending_choices["menu"]:
+        # numero detto senza menu aperto: ambiguo ('due' potrebbe essere volume)
+        # -> si comporterà come comando normale (prosegue sotto)
+        pass
     # --- conferma in attesa ('si' esegue, 'no' annulla) ---
     # NOTA: il controllo va SEMPRE prima della normalizzazione Qwen, che
     # riscriverebbe 'si confermo' in 'Conferma.' mandando in crash la logica
@@ -1882,6 +2109,18 @@ def process(text: str, source: str) -> dict:
             _pending["raw"] = None
             _pending["raw_said"] = None
         if pend_ts and time.time() - pend_ts <= PENDING_TTL:
+            if decision is True and not pend_app and not pend_text and _pending_choices["menu"]:
+                # 'si' alla domanda col menu: accetta la prima scelta (opzione
+                # raccomandata da Qwen); il menu resta il posto del "sì" secco
+                menu = list(_pending_choices["menu"])
+                _pending_choices["menu"] = None
+                app_name = menu[0]
+                print(f"[confirm] menu confermato col si: {app_name!r}")
+                if pend_said:
+                    _learn_app_alias(pend_said, app_name)
+                reply = run_command(f"apri {app_name}", "open_app")
+                return _emit(f"apri {app_name}", reply, "open_app", "guard-scelta",
+                             source, 0)
             if decision is True and (pend_app or pend_text):
                 if pend_app:  # 'intendavi X?' confermato: avvio E imparo l'alias
                     if pend_said:
@@ -1904,6 +2143,7 @@ def process(text: str, source: str) -> dict:
             if decision is False:
                 if pend_app and pend_said:
                     _learn_app_forget(pend_said)  # il suggerimento era sbagliato
+                _pending_choices["menu"] = None   # annulla anche un menu aperto
                 return _emit(text or "no", "Va bene, annullato.", "confirm", "guard", source, 0)
         # si/no ma conferma assente o scaduta: NON e' mai un comando (prima
         # 'si' veniva classificato 'chiudi sihost' e si tentava il force-kill!)
@@ -1917,8 +2157,47 @@ def process(text: str, source: str) -> dict:
                          "confirm", "guard", source, 0)
         with _log_lock:  # un nuovo comando fa decadere eventuali conferme
             _pending["text"] = _pending["app"] = None
+            _pending_choices["menu"] = None
 
     if text:
+        # fase -3: creazione vocale di una routine
+        # ("Ugo, quando dico modo gaming esegui apri steam; apri discord; volume 80")
+        mnew = re.search(r"quando dico\s+(.{2,60}?)(?:,\s*)?esegui\s+(.+)",
+                         _strip_wake(text), re.IGNORECASE)
+        if mnew:
+            trig = mnew.group(1).strip(" \"'").strip()
+            body = mnew.group(2).strip(" .!")
+            steps = [s.strip(" .!") for s in
+                     re.split(r"\s*(?:;|\be\s+poi\b|\bpoi\b)\s*", body) if s.strip()][:ROUTINE_MAX_STEPS]
+            if trig and steps:
+                rid = re.sub(r"[^a-z0-9]+", "_", _norm(trig))[:40] or f"r_{int(time.time())}"
+                with _learned_lock:
+                    data = _learned_load()          # UNA sola lettura: la scrittura
+                    rs = data.setdefault("__routines__", {})   # deve serializzare QUESTO dict
+                    old = rs.get(rid, {})
+                    rs[rid] = {"id": rid, "name": trig, "trigger": trig,
+                               "steps": steps, "created": old.get("created", time.time()),
+                               "count": old.get("count", 0)}
+                    try:
+                        LEARNED_FILE.write_text(json.dumps(
+                            data, ensure_ascii=False, indent=1), encoding="utf-8")
+                    except Exception:
+                        pass
+                reply = (f"Routine '{trig}' {'aggiornata' if old else 'creata'}: "
+                         f"{len(steps)} passi. La attivi dicendo '{trig}'.")
+                return _emit(text, reply, "routine_created", "macro", source, 0)
+        # fase -2: esecuzione routine (macro vocali): 'modo gaming', 'serata film'...
+        try:
+            rout = _find_routine(text)
+        except Exception:
+            rout = None
+        if rout:
+            replies = _routine_execute(rout)
+            _routine_bump(rout.get("id", ""))
+            name = rout.get("name") or "routine"
+            summary = " ".join(replies)[:220]
+            reply = f"Eseguo {name}. {summary}" if replies else f"{name}: nessun passo eseguibile."
+            return _emit(text, reply, "routine", "macro", source, 0)
         # fase -1: alias-app gia' confermati in passato -> apre SUBITO, senza
         # neppure chiedere a Qwen ('stimolo' -> Steam in ~40 ms, zero LLM)
         m = re.match(r"^(apri|lancia|avvia|chiudi)\s+(.{2,40})$",
@@ -1927,6 +2206,33 @@ def process(text: str, source: str) -> dict:
             target = re.sub(r"^(il|lo|la|l'|un|una|mi)\s+",
                             "", m.group(2).strip(" .!"))
             target = _strip_wake(target)  # 'chicco apri steam' -> 'apri steam'
+            # AMBIGUITA' pre-Qwen: piu' di un'app molto simile al target detto
+            # (Steam/SteamVR, Code/Code-Insiders) -> menu a scelta numerata;
+            # si puo' rispondere 'primo', 'la seconda'... (o sì = la prima)
+            verb = m.group(1)
+            if target and not _learned_app_lookup(target):
+                close_all = difflib.get_close_matches(
+                    appindex._norm(target),
+                    [appindex._norm(a["name"]) for a in appindex.get_apps()],
+                    n=3, cutoff=0.62)
+                if len(close_all) >= 2:
+                    # l'app esatta esiste gia' (match quasi perfetto)? niente menu
+                    best_ratio = difflib.SequenceMatcher(
+                        None, appindex._norm(target), close_all[0]).ratio()
+                    if best_ratio < 0.9:
+                        by_n = {appindex._norm(a["name"]): a
+                                for a in appindex.get_apps()}
+                        menu = [by_n[c]["name"] for c in close_all if c in by_n][:3]
+                        with _log_lock:
+                            _pending["app"] = None
+                            _pending["raw_said"] = target
+                            _pending["text"] = None
+                            _pending["ts"] = time.time()
+                            _pending_choices["menu"] = menu
+                        opts = " o ".join(f"{i + 1}) {n}" for i, n in enumerate(menu))
+                        return _emit(text, f'Quale intendevi: {opts}? '
+                                           'Dimmi primo, secondo o terzo.',
+                                     "open_app", "scelta", source, 0)
             # i refusi appresi si applicano gia' qui, pre-intent: il comando
             # girato viene riscritto e tutto il resto lo vede corretto
             fixed_target = _learned_token_fix(target)
@@ -2006,7 +2312,7 @@ async def api_listen(audio: UploadFile):
     data = await audio.read()
     # decodifica webm -> pcm 16k mono tramite ffmpeg (se presente)
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le",
              "-ac", "1", "-ar", "16000", "pipe:1"],
             input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True,
@@ -2018,11 +2324,14 @@ async def api_listen(audio: UploadFile):
 
 
 @app.post("/api/listen_wav")
-async def api_listen_wav(request: Request):
-    """Riceve un WAV PCM (widget desktop), lo trascrive con Vosk ed esegue (senza ffmpeg)."""
+async def api_listen_wav(request: Request, wake: int = 0):
+    """Riceve un WAV PCM (widget desktop), lo trascrive ed esegue.
+    Con wake=1 (ascolto passivo) PRIMA verifica con Whisper che nella frase
+    ci sia davvero la wake word: i falsipositivi del rilevatore economico
+    (Vosk/OWW sul rumore, TV, conversazioni) non eseguono piu' comandi."""
     data = await request.body()
     try:
-        return _handle_pcm(_wav_to_pcm16k(data))
+        return _handle_pcm(_wav_to_pcm16k(data), require_wake=bool(wake))
     except Exception as exc:
         return JSONResponse({"error": f"WAV non valido: {exc}"}, status_code=400)
 
@@ -2071,8 +2380,8 @@ _FAST_TAIL_NOISE = re.compile(
 # pre-intent lo vedrebbe come app "chicco apri spotify" -> nessuna app
 _WAKE_RESIDUE = re.compile(
     r"^\s*(?:(?:ehi|oh|hey|e|a|he)\s+)?"
-    r"(?:chicco|chikko|chiko|chico|chiacco|chichico|cicco|cikko|cico|"
-    r"kicco|kikko|kiko|kiriko|qui quo)\b[,\s]*", re.IGNORECASE)
+    r"(?:ugo|hugo|sugo|wugo|yugo|jugo|ugoo|uugo|uhgo|riugo|truogo|fuoco)\b[,\s]*",
+    re.IGNORECASE)
 
 
 def _strip_wake(text: str) -> str:
@@ -2141,18 +2450,75 @@ def _fast_command(text: str) -> dict | None:
     return None
 
 
-def _handle_pcm(pcm: bytes):
+_WAKE_FUZZY = ("ugo", "hugo", "sugo", "wugo", "yugo", "jugo")
+
+
+def _text_has_wake(text: str) -> bool:
+    """La trascrizione contiene la wake word? (fuzzy: Whisper la storcia
+    in 'uga', 'oga', 'u go'...). Controlla i primi token dopo gli eventuali
+    riempitivi, con distanza di edit limitata e lunghezza minima."""
+    toks = _norm(text).split()
+    fillers = {"ehi", "hey", "oh", "ehila", "ciao", "su", "allora", "a"}
+    toks = [t for t in toks if t not in fillers][:3]
+    for t in toks[:2]:
+        if len(t) < 2:
+            continue                                   # 'u' da solo: non basta
+        if t in _WAKE_FUZZY:
+            return True
+        for w in _WAKE_FUZZY:
+            d = _edit_distance(t, w)
+            if d <= 1 or (d <= 2 and len(t) >= 3):
+                return True
+    return False
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein classica (stringhe cortissime, costo trascurabile)."""
+    if abs(len(a) - len(b)) > 2:
+        return 9
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        cur = [i + 1]
+        for j, cb in enumerate(b):
+            cur.append(min(prev[j + 1] + 1, cur[j] + 1, prev[j] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _handle_pcm(pcm: bytes, require_wake: bool = False):
     if not pcm:
         return JSONResponse({"error": "audio vuoto"}, status_code=400)
     # corsia veloce: Vosk e' gia' pronto, per i comandi banali non aspetta Whisper
+    # (con verifica attiva la corsia vale solo se la wake e' visibile nel testo)
+    _tcmd = time.time()
     try:
-        fast = _fast_command(_vosk_transcribe(pcm))
+        vtxt = _vosk_transcribe(pcm)
+        _f0 = time.time()
+        fast = _fast_command(vtxt) if (not require_wake or _text_has_wake(vtxt)) else None
+        _track("fastlane", time.time() - _f0)
         if fast is not None:
             print("[fastlane] comando semplice eseguito senza Whisper")
+            _track("command", time.time() - _tcmd)
             return fast
     except Exception as exc:
         print(f"[fastlane] scartata ({exc}); passo alla pipeline completa")
+        vtxt = ""
     text = transcribe(pcm)
+    if require_wake and not _text_has_wake(text or ""):
+        # se c'e' una domanda in attesa (menu scelta o conferma sì/no) la
+        # risposta breve ('primo', 'si') non deve contenere la wake word
+        awaiting = bool(_pending_choices["menu"] or _pending.get("app")
+                        or _pending.get("text"))
+        if not awaiting:
+            entry = {"user": text, "assistant": "Non ho sentito 'Ugo': riprova "
+                     "dicendo prima la wake word.", "intent": "-", "detector": "wake-guard",
+                     "input": "voce", "ms": 0, "silent": True,
+                     "ts": datetime.now().isoformat(timespec="seconds")}
+            with _log_lock:
+                _history.append(entry)
+            print("[wake-guard] falso positivo scartato:", repr(text))
+            _track("command", time.time() - _tcmd)
+            return entry
     if not text:
         entry = {"user": "", "assistant": "Non ho sentito nulla, riprova.",
                  "intent": "-", "detector": "-", "input": "voce", "ms": 0,
@@ -2160,8 +2526,11 @@ def _handle_pcm(pcm: bytes):
         with _log_lock:
             _history.append(entry)
         speak(entry["assistant"])
+        _track("command", time.time() - _tcmd)
         return entry
-    return process(text, "voce")
+    res = process(text, "voce")
+    _track("command", time.time() - _tcmd)
+    return res
 
 
 @app.post("/api/text")
@@ -2307,6 +2676,65 @@ def api_memory_edit(payload: dict):
     return {"ok": True}
 
 
+@app.get("/api/routines")
+def api_routines_get():
+    """Elenco routine (macro vocali) per la pagina web."""
+    rs = _learned_load().get("__routines__", {})
+    items = sorted(rs.values(), key=lambda r: r.get("created", 0))
+    return {"routines": items}
+
+
+@app.post("/api/routines")
+def api_routines_edit(payload: dict):
+    """CRUD routine da web: create/update/delete/run. Stesso file di memoria:
+    una routine creata da web vale anche a voce, e viceversa."""
+    action = payload.get("action", "")
+    with _learned_lock:
+        data = _learned_load()
+        rs = data.setdefault("__routines__", {})
+        if action in ("create", "update"):
+            rid = (payload.get("id") or "").strip()
+            name = (payload.get("name") or "").strip()
+            steps = [re.sub(r"\s+", " ", s).strip(" .!")
+                     for s in (payload.get("steps") or [])
+                     if str(s).strip()][:ROUTINE_MAX_STEPS]
+            steps = [s for s in steps if s]
+            if not name or not steps:
+                return JSONResponse({"error": "nome o passi mancanti"}, status_code=400)
+            if not rid:
+                rid = re.sub(r"[^a-z0-9]+", "_", _norm(name))[:40] or f"r_{int(time.time())}"
+            if rid in rs and action == "create":
+                return JSONResponse({"error": "esiste gia' una routine con questo nome"}, status_code=400)
+            old = rs.get(rid, {})
+            rs[rid] = {"id": rid, "name": name, "trigger": name,
+                       "steps": steps, "created": old.get("created", time.time()),
+                       "count": old.get("count", 0)}
+        elif action == "delete" and payload.get("id"):
+            rs.pop(payload["id"], None)
+        elif action == "run" and payload.get("id"):
+            r = rs.get(payload["id"])
+            if not r:
+                return JSONResponse({"error": "routine inesistente"}, status_code=404)
+            replies = _routine_execute(r)
+            r["count"] = r.get("count", 0) + 1
+            reply = f"Eseguo {r.get('name')}. " + " ".join(replies)[:200]
+            _emit(payload.get("id"), reply, "routine", "macro-web", "web", 0)
+            try:
+                LEARNED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                        encoding="utf-8")
+            except Exception:
+                pass
+            return {"ok": True, "reply": reply}
+        else:
+            return JSONResponse({"error": "azione non valida"}, status_code=400)
+        try:
+            LEARNED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+    return {"ok": True}
+
+
 @app.get("/api/stt")
 def api_stt():
     """Quale trascrittore e' attivo (Whisper modello scelto, o fallback Vosk)."""
@@ -2397,6 +2825,51 @@ def api_tts_engine(payload: dict):
 def api_history():
     with _log_lock:
         return {"history": list(reversed(_history[-50:]))}
+
+
+@app.get("/api/stats")
+def api_stats():
+    """Dashboard latenze: medie/p95 per fase (ultimi 50 campi ciascuna),
+    modelli attivi e stato del processo. Leggero: nessun lavoro pesante."""
+    import os as _os
+    with _stats_lock:
+        snap = {k: list(v) for k, v in _stats.items()}
+    out = {}
+    for k, v in snap.items():
+        s = sorted(v)
+        p95 = s[min(len(s) - 1, int(round(0.95 * len(s))) - 1)] if s else 0.0
+        out[k] = {"n": len(v), "avg": round(sum(v) / len(v), 3),
+                  "p95": round(p95, 3), "max": round(max(v), 3),
+                  "last": round(v[-1], 3)}
+    # ordinamento di pipeline: prima la voce in ingresso, poi l'interpretazione,
+    # poi la voce in uscita e il totale
+    order = ["vosk", "fastlane", "whisper", "qwen_normalize", "qwen_intent",
+             "qwen_suggest", "tts_piper", "tts_sapi", "command"]
+    stages = [{"stage": k, **out[k]} for k in order if k in out]
+    stages += [{"stage": k, **v} for k, v in out.items() if k not in order]
+    proc = {}
+    try:
+        import psutil
+        p = psutil.Process()
+        mem = p.memory_info().rss
+        cpu = p.cpu_percent(interval=None)   # dall'ultimo campione
+        proc = {"rss_mb": round(mem / 1048576, 1), "cpu_pct": round(cpu, 1),
+                "threads": p.num_threads()}
+    except Exception:
+        proc = {}
+    return {"stages": stages, "process": proc,
+            "models": {"stt": _whisper_choice["name"],
+                       "llm": _llm_model(),
+                       "tts": "piper-paola" if piper_tts.is_ready() else "sistema"},
+            "enabled": _stats_enabled["on"],
+            "ts": datetime.now().isoformat(timespec="seconds")}
+
+
+@app.post("/api/stats")
+def api_stats_toggle(payload: dict):
+    """Attiva/sospende la raccolta (la UI la mette in pausa quando vuole)."""
+    _stats_enabled["on"] = bool(payload.get("enabled", True))
+    return {"ok": True, "enabled": _stats_enabled["on"]}
 
 
 @app.post("/api/reload_stt")
