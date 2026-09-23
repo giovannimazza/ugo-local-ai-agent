@@ -241,8 +241,17 @@ vengono chiusi e ne resta uno.
 
 ### Usare il widget
 - **Click** sul cerchio → registra; **secondo click** → invia
+- **Ascolto passivo** 🎙️: di' **"Chicco"** (o *ehi/oh/a Chicco*) e subito il comando
+  — *"Chicco apri Spotify"* — senza toccare nulla. Vosk in streaming, quasi zero CPU;
+  si mette in pausa durante la registrazione manuale e per qualche secondo dopo ogni
+  risposta (così la voce di Chicco non si riattiva da sola). Il pulsante microfono
+  barrato (accanto al mute TTS, in mouse over) disattiva/riattiva l'ascolto passivo
+- **Microfono scelto in automatico**: se il dispositivo predefinito è muto (es.
+  interfaccia audio senza input collegato), il widget sonda gli input e usa quello
+  vivo; la scelta resta memorizzata
 - **Doppio click** → info sul trascrittore attivo (Whisper/Vosk, modello, dispositivo)
-- **Mouse over** → appare pillola di input (Invio = manda) e **toggle mute TTS** 🔊/🔇
+- **Mouse over** → appare pillola di input (Invio = manda), **toggle mute TTS** 🔊/🔇
+  e **toggle ascolto passivo** 🎙️/🚫🎙️
 - **Trascina** il widget dove vuoi (la posizione si ricorda)
 - **Click destro** → chiudi
 
