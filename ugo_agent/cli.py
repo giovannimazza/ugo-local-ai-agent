@@ -5,6 +5,8 @@ Interfaccia a riga di comando di Ugo.
   ugo setup   -> installa/verifica TUTTO (Ollama, modelli, dipendenze)
   ugo run     -> avvia server + widget (installa cio' che manca prima)
   ugo doctor  -> diagnostica: cosa e' installato, cosa manca
+  ugo update  -> aggiorna all'ultima versione (canale dev o stable)
+  ugo channel -> canale di aggiornamento: dev (main) o stable (release tag)
 
 Uso tipico su una macchina nuova:
   pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
@@ -457,12 +459,37 @@ def main() -> int:
             from . import update
         except ImportError:
             from ugo_agent import update
-        loc, rem = update.local_version(), update.remote_version(timeout=5)
-        print(f"versione installata: {loc or '?'}   su GitHub: {rem or '? (offline?)'}")
+        ch = update.get_channel()
+        loc = update.local_version()
+        if ch == "stable":
+            rem = update.latest_tag() or "? (offline?)"
+        else:
+            rem = update.remote_version(timeout=5) or "? (offline?)"
+        print(f"versione installata: {loc or '?'}   "
+              f"su GitHub ({ch}): {rem}")
         if update.check_update(interactive=True):
             print("Riavvia i componenti:  ugo stop && ugo run")
         else:
             print("Niente da aggiornare.")
+        return 0
+    if cmd == "channel":
+        try:
+            from . import update
+        except ImportError:
+            from ugo_agent import update
+        if len(sys.argv) > 2 and sys.argv[2].lower() in update.CHANNELS:
+            update.set_channel(sys.argv[2].lower())
+            print(f"canale di aggiornamento: {sys.argv[2].lower()}")
+        else:
+            cur = update.get_channel()
+            print(f"canale di aggiornamento: {cur}   "
+                  f"(alterna con:  ugo channel dev|stable)")
+            if cur == "stable":
+                tag = update.latest_tag()
+                print("ultimo rilascio su GitHub: "
+                      f"{tag or ('nessuno ancora' if tag == '' else 'offline?')}")
+            else:
+                print("aggiornamento: ultimo codice su main (repo privata OK)")
         return 0
     if cmd in ("version", "--version"):
         try:

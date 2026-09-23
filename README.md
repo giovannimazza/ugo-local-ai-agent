@@ -222,6 +222,7 @@ Comandi disponibili:
 | `ugo doctor` | diagnostica: cosa è installato e cosa manca |
 | `ugo stop` | ferma widget e server |
 | `ugo update` | controlla GitHub e aggiorna all'ultima versione |
+| `ugo channel` | mostra/cambia il canale di aggiornamento (`dev` o `stable`) |
 | `ugo version` | mostra la versione installata |
 
 Al primo `setup`/`run` la CLI aggiunge automaticamente il comando `ugo` al
@@ -244,6 +245,19 @@ private); per installazioni pip diretta confronta la versione nel
   **ripristinate** dopo l'aggiornamento, mai perse
 - Offline o repo non raggiungibile: il controllo viene saltato, mai un blocco
 - Aggiornamenti manuali comunque possibili: `ugo update`
+
+### Canali di aggiornamento e release
+
+| Canale | Cosa ricevi | Comando |
+|---|---|---|
+| `dev` (predefinito) | l'ultimo codice su `main`, a ogni avvio | `ugo channel dev` |
+| `stable` | solo le release ufficiali (tag `v*`): zero sorprese, rollback facile | `ugo channel stable` |
+
+Ogni release nasce pushando un tag allineato alla versione del pyproject
+(`git tag v0.3.0 && git push origin v0.3.0`): un workflow GitHub crea la
+release con le note automatiche e nel canale stable `ugo update` porta il
+codice esattamente a quel tag. Per tornare a seguire lo sviluppo:
+`ugo channel dev`.
 
 ### Installazione manuale (alternativa)
 

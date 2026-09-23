@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # il pacchetto e' Python puro: il "manufatto" della release e' il tag
+      # stesso; qui verifichiamo solo che la versione nel pyproject coincida
+      - name: Verifica coerenza versione/pyproject
+        run: |
+          python - <<'EOF'
+          import re, sys
+          tag = "${{ github.ref_name }}".lstrip("v")
+          m = re.search(r'^version\s*=\s*"([^"]+)"', open("pyproject.toml", encoding="utf-8").read(), re.M)
+          assert m, "versione non trovata nel pyproject"
+          assert m.group(1) == tag, f"pyproject dice {m.group(1)} ma il tag e' {tag}: allineare prima di rilasciare"
+          print(f"release {tag}: versione allineata")
+          EOF
+
+      - name: Crea la GitHub Release con note automatiche
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ugo ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            Installazione / aggiornamento a questa versione:
+            ```
+            ugo channel stable
+            ugo update
+            ```
+            (o da zero: `pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git@${{ github.ref_name }}`)

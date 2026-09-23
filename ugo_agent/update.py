@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """Controllo versione su GitHub e auto-aggiornamento di Ugo.
 
-All'avvio (`ugo run` o doppio click su chicco_app.py) verifica se su
-GitHub c'e' codice piu' recente: per un clone git fa un `fetch` (usa le
-credenziali salvate, funziona anche con repo PRIVATE) e conta i commit di
-distacco; per un'installazione pip senza clone confronta la versione nel
-pyproject remoto (repo pubbliche). Se c'e' qualcosa di nuovo:
-  - da terminale (`ugo run`): chiede conferma
-  - dal doppio click (niente console): aggiorna in silenzio
+Due canali di aggiornamento:
+  - dev     (default): ultimo codice su main, controllo via git fetch (funziona
+            anche con repo PRIVATE, usa le credenziali salvate)
+  - stable: ultimo tag v* pubblicato come release — ugo update porta il codice
+            esattamente a quel tag (rollback facile, nessuna sorpresa)
+
+Comandi: `ugo channel` mostra/cambia canale; la scelta vive in
+<data_dir>/update_channel.json. Il fallback per installazioni pip senza clone
+confronta la versione nel pyproject remoto (solo repo pubbliche).
 Offline o repo non raggiungibile: controllo saltato, mai un blocco.
 """
+import json
 import os
 import re
 import subprocess
@@ -17,11 +20,22 @@ import sys
 import urllib.request
 from pathlib import Path
 
-REPO_URL = "https://github.com/giovannimazza/chicco-local-ai-agent.git"
+try:  # pacchetto (pip install / -m) O script diretto (python ugo_agent/...)
+    from . import platform_utils as pu
+except ImportError:
+    if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from ugo_agent import platform_utils as pu
+
+REPO_URL = "https://github.com/giovannimazza/ugo-local-ai-agent.git"
 RAW_URL = ("https://raw.githubusercontent.com/giovannimazza/"
-           "chicco-local-ai-agent/main/pyproject.toml")
+           "ugo-local-ai-agent/main/pyproject.toml")
 ROOT = Path(__file__).resolve().parent.parent
+CHANNEL_FILE = pu.data_dir() / "update_channel.json"
+CHANNELS = ("dev", "stable")
+DEFAULT_CHANNEL = "dev"
 _VER_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.M)
+_TAG_RE = re.compile(r"^v?(\d+(?:\.\d+)*)$")
 
 
 def _ver_tuple(v: str) -> tuple:
@@ -39,7 +53,7 @@ def local_version() -> str:
         pass
     try:
         from importlib.metadata import version
-        return version("chicco-agent")
+        return version("ugo-agent")
     except Exception:
         return ""
 
@@ -53,6 +67,25 @@ def _git(*args: str, timeout: int = 15) -> str | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# canale di aggiornamento
+# ---------------------------------------------------------------------------
+def get_channel() -> str:
+    try:
+        c = json.loads(CHANNEL_FILE.read_text(encoding="utf-8")).get("channel", "")
+    except Exception:
+        c = ""
+    return c if c in CHANNELS else DEFAULT_CHANNEL
+
+
+def set_channel(name: str) -> str:
+    if name not in CHANNELS:
+        raise ValueError(f"canale sconosciuto: {name} (validi: {', '.join(CHANNELS)})")
+    CHANNEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CHANNEL_FILE.write_text(json.dumps({"channel": name}), encoding="utf-8")
+    return name
+
+
 def remote_version(timeout: float = 2.5) -> str:
     """Versione pubblicata su GitHub ('' se non raggiungibile; solo repo pubbliche)."""
     try:
@@ -61,6 +94,19 @@ def remote_version(timeout: float = 2.5) -> str:
         return m.group(1) if m else ""
     except Exception:
         return ""
+
+
+def latest_tag(timeout: int = 20) -> str | None:
+    """Ultimo tag v* su GitHub, in ordine di versione ('' se nessuno)."""
+    if _git("fetch", "--quiet", "--tags", timeout=timeout) is None:
+        return None  # offline / credenziali mancanti
+    tags = _git("tag", "--list", "v*", "--sort=-v:refname") or ""
+    return tags.splitlines()[0] if tags else ""
+
+
+def _tag_version(tag: str) -> str:
+    m = _TAG_RE.match(tag or "")
+    return m.group(1) if m else ""
 
 
 def commits_behind() -> int | None:
@@ -74,16 +120,30 @@ def commits_behind() -> int | None:
 
 
 def update_available() -> tuple[str, str] | None:
-    """Informazioni sull'aggiornamento disponibile (None se aggiornati)."""
+    """Informazioni sull'aggiornamento disponibile (None se aggiornati).
+
+    canale dev:     confronto con main via commit di distacco (repo private OK)
+    canale stable:  confronto versione locale vs ultimo tag v* pubblicato
+    """
+    loc = local_version()
+    if get_channel() == "stable":
+        tag = latest_tag()
+        if tag is None:
+            return None  # offline: niente controllo
+        rem = _tag_version(tag)
+        if loc and rem and _ver_tuple(rem) > _ver_tuple(loc):
+            return loc, f"{tag} (canale stable)"
+        return None
+    # --- canale dev (comportamento storico) ---
     behind = commits_behind()
     if behind:  # >0: siamo indietro; None: non un clone / offline
-        loc = local_version() or (_git("rev-parse", "--short", "HEAD") or "?")
+        shown = loc or (_git("rev-parse", "--short", "HEAD") or "?")
         rem = _git("rev-parse", "--short", "@{u}") or "GitHub"
-        return loc, f"{rem} ({behind} commit indietro)"
+        return shown, f"{rem} ({behind} commit indietro)"
     if behind == 0:  # clone aggiornato
         return None
     # non-clone: confronto versioni via raw (richiede repo pubblica)
-    loc, rem = local_version(), remote_version()
+    rem = remote_version()
     if loc and rem and _ver_tuple(rem) > _ver_tuple(loc):
         return loc, rem
     return None
@@ -92,6 +152,8 @@ def update_available() -> tuple[str, str] | None:
 def apply_update() -> bool:
     """Aggiorna il codice: git pull (se e' un clone) + reinstall del pacchetto.
 
+    Nel canale stable il pull porta esattamente all'ultimo tag (detached HEAD
+    con checkout v*, niente tracking branch da gestire).
     Su un'installazione pip diretta (senza clone locale) reinstalla dalla repo.
     """
     def run(cmd):
@@ -104,9 +166,16 @@ def apply_update() -> bool:
             # modifiche locali: le meto da parte per il pull e le rimetto dopo
             if _git("stash", "--include-untracked", "-q") is not None:
                 stashed = True
-        r = run(["git", "-C", str(ROOT), "pull", "--ff-only"])
-        print((r.stdout or r.stderr).strip())
-        ok &= r.returncode == 0
+        if get_channel() == "stable":
+            tag = latest_tag()
+            if tag:
+                r = run(["git", "-C", str(ROOT), "checkout", tag])
+                print((r.stdout or r.stderr).strip())
+                ok &= r.returncode == 0
+        else:
+            r = run(["git", "-C", str(ROOT), "pull", "--ff-only"])
+            print((r.stdout or r.stderr).strip())
+            ok &= r.returncode == 0
         if stashed:
             _git("stash", "pop", "-q")  # le modifiche locali tornano
     r = run([sys.executable, "-m", "pip", "install", "-e", str(ROOT), "--quiet"])
