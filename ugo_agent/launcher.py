@@ -2,9 +2,9 @@
 """
 Avvio unificato di Ugo: server + widget con un solo comando.
 
-  python chicco_app.py          (dalla cartella del progetto)
-  pythonw chicco_app.py         (senza finestra console)
-  doppio click su chicco_app.py (se .py e' associato a Python)
+  python ugo_app.py            (dalla cartella del progetto)
+  pythonw ugo_app.py           (senza finestra console)
+  doppio click su ugo_app.py   (se .py e' associato a Python)
 
 Comportamento: se il server e' gia' attivo sulla porta lo TERMINA e riparte
 pulito (l'utente ha chiesto sempre una istanza fresca); i widget desktop
@@ -26,7 +26,7 @@ try:
 except ImportError:  # eseguito come script diretto
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from chicco_agent import platform_utils as pu
+    from ugo_agent import platform_utils as pu
 
 PKG = Path(__file__).resolve().parent
 PORT = 8123
@@ -104,14 +104,14 @@ def _widget_pids() -> list:
     try:
         if pu.IS_WINDOWS:
             ps = ("Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
-                  "Where-Object { $_.CommandLine -match 'chicco_agent' "
+                  "Where-Object { $_.CommandLine -match 'ugo_agent' "
                   "-and $_.CommandLine -match 'widget.py' } | "
                   "Select-Object -ExpandProperty ProcessId")
             r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                                capture_output=True, text=True, timeout=20,
                                creationflags=_NO_WINDOW)
             return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
-        r = subprocess.run(["pgrep", "-f", "chicco_agent/widget.py"],
+        r = subprocess.run(["pgrep", "-f", "ugo_agent/widget.py"],
                            capture_output=True, text=True, timeout=10)
         return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
     except Exception:
@@ -153,7 +153,7 @@ def start_all(reuse: bool = False, skip_widget: bool = False) -> int:
     try:
         from . import update
     except ImportError:
-        from chicco_agent import update
+        from ugo_agent import update
     update.auto_check_and_restart()
 
     widgets = _widget_pids()

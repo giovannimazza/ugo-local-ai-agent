@@ -24,7 +24,12 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
+try:
+    from . import platform_utils as _pu
+except ImportError:  # importato come modulo top-level (server avviato come script)
+    import platform_utils as _pu
+
+BASE = _pu.data_dir()
 PIPER_DIR = BASE / "piper"
 VOICES_DIR = BASE / "piper_voices"
 PREFS_FILE = BASE / "tts_engine.json"

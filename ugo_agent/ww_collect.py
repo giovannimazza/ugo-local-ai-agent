@@ -8,7 +8,7 @@ separa bene (AUC ~0.74). 30-40 "Ugo" della tua voce + negativi reali cambiano
 completamente il modello.
 
 Uso:
-    python -m chicco_agent.ww_collect
+    python -m ugo_agent.ww_collect
 
 Flusso (tutto nel terminale):
     1. countdown 3-2-1 -> registra 2 s dal microfono predefinito
@@ -146,7 +146,7 @@ def main() -> int:
         nn = _count("neg")
         if np_ >= TARGET_POS and nn >= TARGET_NEG:
             print("\nCOMPLETO! Chiudi questa finestra e lancia:")
-            print("  python -m chicco_agent.ww_train")
+            print("  python -m ugo_agent.ww_train")
             return 0
         kind = "pos" if np_ < TARGET_POS else "neg"
         script = POS[np_ % len(POS)] if kind == "pos" else NEG[nn % len(NEG)]
@@ -157,7 +157,7 @@ def main() -> int:
             try:
                 input("  INVIO per registrare, 's' per saltare, 'q' per uscire > ")
             except (EOFError, KeyboardInterrupt):
-                print("\nInterrotto: riprendi con  python -m chicco_agent.ww_collect")
+                print("\nInterrotto: riprendi con  python -m ugo_agent.ww_collect")
                 return 1
         time.sleep(0.2)
         print("  3..."); time.sleep(0.5)

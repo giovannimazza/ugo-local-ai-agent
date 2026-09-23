@@ -7,7 +7,7 @@ Interfaccia a riga di comando di Ugo.
   ugo doctor  -> diagnostica: cosa e' installato, cosa manca
 
 Uso tipico su una macchina nuova:
-  pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
+  pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
   ugo run
 """
 import json
@@ -26,8 +26,8 @@ try:
 except ImportError:  # eseguito come script diretto
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from chicco_agent import platform_utils as pu
-from chicco_agent import piper_tts
+    from ugo_agent import platform_utils as pu
+from ugo_agent import piper_tts
 
 DATA = pu.data_dir()
 FW_DIR = Path.home() / ".cache" / "whisper" / "faster-whisper-large-v3-turbo"
@@ -281,10 +281,10 @@ def _make_shim_windows() -> None:
         target.mkdir(parents=True, exist_ok=True)
         for name in ("ugo.bat", "chicco.bat"):
             bat = target / name
-            bat.write_text(f'@echo off\r\n"{sys.executable}" -m chicco_agent.cli %*\r\n')
+            bat.write_text(f'@echo off\r\n"{sys.executable}" -m ugo_agent.cli %*\r\n')
         _ok(f"shim creati: {target / 'ugo.bat'} + chicco.bat")
     except Exception as exc:
-        _warn(f"shim non creato ({exc}); usa: \"{sys.executable}\" -m chicco_agent.cli")
+        _warn(f"shim non creato ({exc}); usa: \"{sys.executable}\" -m ugo_agent.cli")
 
 
 def _make_shim_unix() -> None:
@@ -293,18 +293,18 @@ def _make_shim_unix() -> None:
     try:
         target.mkdir(parents=True, exist_ok=True)
         sh = target / "ugo"
-        sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m chicco_agent.cli "$@"\n')
+        sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m ugo_agent.cli "$@"\n')
         sh.chmod(0o755)
         legacy = target / "chicco"
         legacy.write_text(sh.read_text())
         legacy.chmod(0o755)
-        sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m chicco_agent.cli "$@"\n')
+        sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m ugo_agent.cli "$@"\n')
         sh.chmod(0o755)
         _ok(f"launcher creato: {sh}")
         if str(target) not in os.environ.get("PATH", ""):
             _warn(f"aggiungi al PATH nel tuo .zshrc/.bashrc:  export PATH=\"{target}:$PATH\"")
     except Exception as exc:
-        _warn(f"launcher non creato ({exc}); usa: {sys.executable} -m chicco_agent.cli")
+        _warn(f"launcher non creato ({exc}); usa: {sys.executable} -m ugo_agent.cli")
 
 
 def install_vosk() -> None:
@@ -339,14 +339,17 @@ def cmd_setup() -> int:
     from . import piper_tts
     _ok("voce naturale pronta") if piper_tts.install_sync() else _warn("si scarichera' al primo avvio")
     print("\nSetup completato. Avvia con:  ugo run")
-    print("Se il terminale non trova 'chicco', aprine uno nuovo.")
+    print("Se il terminale non trova 'ugo', aprine uno nuovo.")
     return 0
 
 
 def cmd_log() -> int:
     """Apre un terminale che mostra in diretta cosa sente l'ascolto passivo."""
-    log = (Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "chicco"
-           / "passive_log.txt")
+    try:
+        from . import platform_utils as pu
+    except ImportError:  # modulo top-level
+        import platform_utils as pu
+    log = pu.data_dir() / "passive_log.txt"
     if not log.exists():
         print("Nessun log: il widget non ha ancora ascoltato (prova: ugo run).")
         return 1
@@ -424,7 +427,7 @@ def cmd_run(only: str | None = None) -> int:
     try:
         from . import launcher
     except ImportError:
-        from chicco_agent import launcher
+        from ugo_agent import launcher
     return launcher.start_all(reuse=True,
                               skip_widget=(only == "server"))
 
@@ -434,7 +437,7 @@ def cmd_stop() -> int:
     try:
         from . import launcher
     except ImportError:
-        from chicco_agent import launcher
+        from ugo_agent import launcher
     launcher.stop_all()
     return 0
 
@@ -453,7 +456,7 @@ def main() -> int:
         try:
             from . import update
         except ImportError:
-            from chicco_agent import update
+            from ugo_agent import update
         loc, rem = update.local_version(), update.remote_version(timeout=5)
         print(f"versione installata: {loc or '?'}   su GitHub: {rem or '? (offline?)'}")
         if update.check_update(interactive=True):
@@ -465,8 +468,8 @@ def main() -> int:
         try:
             from . import update
         except ImportError:
-            from chicco_agent import update
-        print(f"chicco-agent {update.local_version() or '?'}")
+            from ugo_agent import update
+        print(f"ugo-agent {update.local_version() or '?'}")
         return 0
     if cmd in ("run", "start"):
         only = sys.argv[2].lower() if len(sys.argv) > 2 else None

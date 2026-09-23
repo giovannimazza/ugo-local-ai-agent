@@ -25,16 +25,16 @@ jobs:
           pip install -e .
 
       - name: Compila tutti i moduli (errori di sintassi)
-        run: python -m compileall -q chicco_agent
+        run: python -m compileall -q ugo_agent
 
       - name: Import dei moduli cross-platform (senza avviare server/GUI)
-        run: python -c "import chicco_agent.platform_utils as pu; import chicco_agent.appindex; import chicco_agent.games; import chicco_agent.cli; print('OS:', pu.OS_NAME, '| dati:', pu.data_dir())"
+        run: python -c "import ugo_agent.platform_utils as pu; import ugo_agent.appindex; import ugo_agent.games; import ugo_agent.cli; print('OS:', pu.OS_NAME, '| dati:', pu.data_dir())"
 
       - name: Sanity check percorsi e indici
         run: |
           python -c "
-          import chicco_agent.appindex as ai
-          import chicco_agent.games as g
+          import ugo_agent.appindex as ai
+          import ugo_agent.games as g
           apps = ai.get_apps()
           print('app indicizzate:', len(apps))
           games = g.get_games()

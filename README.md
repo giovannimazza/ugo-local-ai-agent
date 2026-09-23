@@ -57,7 +57,7 @@ un no annulla; dopo 90 secondi la richiesta scade e il comando successivo parte
 normale.
 
 **Memoria dei refusi**: ogni correzione applicata — o confermata dall'utente — viene
-salvata in `%LOCALAPPDATA%\chicco\learned_fixes.json` (max ~200 voci, ordinate per
+salvata in `%LOCALAPPDATA%\ugo\learned_fixes.json` (max ~200 voci, ordinate per
 frequenza) e riusata due volte: come correzione **istantanea** quando il refuso
 ricompare (zero chiamate a Qwen, quindi ~0 ms invece di ~500) e come **esempi
 few-shot** nel prompt di Qwen, che così applica sempre le stesse correzioni che tu
@@ -108,7 +108,7 @@ risposta breve anche senza wake word.
 ```
  ┌────────────────┐  WAV    ┌──────────────────────────┐
  │ Widget Tkinter  │ ──────▶ │  Server FastAPI           │
- │ (chicco_agent/  │         │  :8123                    │
+ │ (ugo_agent/  │         │  :8123                    │
  │  widget.py)     │ ◀────── │                           │
  └────────────────┘  testo  │ 1. STT: Whisper           │
       ▲   bolla             │    large-v3-turbo         │
@@ -152,7 +152,7 @@ risposta breve anche senza wake word.
 
 ## 🌍 Compatibilità multipiattaforma
 
-Tutte le differenze di sistema operativo sono incapsulate in `chicco_agent/platform_utils.py`
+Tutte le differenze di sistema operativo sono incapsulate in `ugo_agent/platform_utils.py`
 (cartelle dati, TTS, avvio file, volume, flag subprocess): il resto del codice non fa mai
 branch su `sys.platform` direttamente. La CI verifica installazione, compilazione e
 scansione indici su runner Windows, macOS e Linux a ogni push.
@@ -170,7 +170,7 @@ scansione indici su runner Windows, macOS e Linux a ogni push.
 | Chiudere app | taskkill | `pkill` | `pkill` |
 | Elencare processi | tasklist | psutil | psutil |
 | Siti e ricerche web | browser predefinito | browser predefinito | browser predefinito |
-| Cartelle dati | `%LOCALAPPDATA%\chicco` | `~/Library/Application Support/chicco` | `~/.local/share/chicco` |
+| Cartelle dati | `%LOCALAPPDATA%\ugo` | `~/Library/Application Support/ugo` | `~/.local/share/ugo` |
 | Installazione Ollama (`ugo setup`) | winget | brew | script ufficiale |
 
 Nota: la repo Systran ufficiale del modello è risultata inaccessibile, quindi si usa
@@ -187,14 +187,14 @@ tutti gli OS) e Vosk di fallback, poi avvia server e widget.
 ### Windows
 
 ```bat
-pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
+pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
 ugo run
 ```
 
 ### macOS
 
 ```bash
-pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
+pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
 ugo run
 ```
 
@@ -205,7 +205,7 @@ poi serve la concessione microfono quando macOS la chiede al primo avvio.
 
 ```bash
 sudo apt install python3-pip espeak-ng libportaudio2
-pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
+pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
 ugo run
 ```
 
@@ -216,7 +216,6 @@ Comandi disponibili:
 
 | Comando | Effetto |
 |---|---|
-| `chicco` | alias legacy, come `ugo run` |
 | `ugo run` | avvia tutto (installa prima ciò che manca) |
 | `ugo run server` | solo il server, senza widget |
 | `ugo setup` | solo installazione, senza avviare |
@@ -232,7 +231,7 @@ richiamarlo da qualsiasi cartella.
 
 ### Aggiornamenti automatici
 
-A ogni avvio (`ugo run` o doppio click su `chicco_app.py`) Ugo verifica
+A ogni avvio (`ugo run` o doppio click su `ugo_app.py`) Ugo verifica
 su GitHub se esiste una versione più recente. Per un clone git il confronto è
 sui **commit** (`git fetch` con le tue credenziali: funziona anche con repo
 private); per installazioni pip diretta confronta la versione nel
@@ -272,18 +271,18 @@ huggingface-cli download deepdml/faster-whisper-large-v3-turbo-ct2 ^
 
 ```bat
 :: un solo comando: pulisce le istanze precedenti e apre server + widget
-doppio click su chicco_app.py     (oppure: python chicco_app.py)
+doppio click su ugo_app.py     (oppure: python ugo_app.py)
 
 :: con la console si vedono i messaggi di avvio:
-python chicco_app.py
+python ugo_app.py
 :: solo server, senza widget:
-python chicco_app.py --server
+python ugo_app.py --server
 :: riavvio pulito del server ma riuso di quello attivo se sano:
-python chicco_app.py --reuse
+python ugo_app.py --reuse
 
 :: alternativa a mano:
-python chicco_agent\server.py     :: terminale 1
-pythonw chicco_agent\widget.py    :: terminale 2
+python ugo_agent\server.py     :: terminale 1
+pythonw ugo_agent\widget.py    :: terminale 2
 ```
 
 Se la porta 8123 è occupata da un'istanza precedente questa viene **terminata
@@ -293,10 +292,10 @@ vengono chiusi e ne resta uno.
 
 > I vecchi script `voice_assistant_server.py` e `assistant_widget.py` alla radice
 > sono shim retrocompatibili che puntano al pacchetto. Su macOS/Linux: `python3
-> chicco_agent/server.py` e `python3 chicco_agent/widget.py`.
+> ugo_agent/server.py` e `python3 ugo_agent/widget.py`.
 >
-> File runtime (cache indici, wav, posizioni): `%LOCALAPPDATA%\chicco` su Windows,
-> `~/Library/Application Support/chicco` su macOS, `~/.local/share/chicco` su Linux.
+> File runtime (cache indici, wav, posizioni): `%LOCALAPPDATA%\ugo` su Windows,
+> `~/Library/Application Support/ugo` su macOS, `~/.local/share/ugo` su Linux.
 
 ### Usare il widget
 - **Click** sul cerchio → registra; **secondo click** → invia
@@ -311,9 +310,9 @@ vengono chiusi e ne resta uno.
   storpiatura: *uga, oga, u go, sugo…*) **prima di eseguire**; i falsi positivi
   vengono scartati in silenzio (niente bolla né voce). Attivo solo sugli invii
   dell'ascolto passivo (`?wake=1`): dettatura e microfono manuale non cambiano
-- **Wake word neurale (sperimentale)**: `python -m chicco_agent.ww_collect`
+- **Wake word neurale (sperimentale)**: `python -m ugo_agent.ww_collect`
   registra ~40 "Ugo" + ~40 frasi negative della tua voce (ogni positiva viene
-  verificata con Whisper, fuzzy match distanza ≤ 2); `python -m chicco_agent.ww_train`
+  verificata con Whisper, fuzzy match distanza ≤ 2); `python -m ugo_agent.ww_train`
   addestra un classificatore openWakeWord custom (ONNX, input `(N,16,96)`) su
   reali + sintetici Piper e sceglie la soglia in streaming. Il widget lo carica
   **solo** se supera la validazione (TPR ≥ 60% a FPR 0, dichiarata in
@@ -377,7 +376,7 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 ## 📁 Struttura del progetto
 
 ```
-chicco_agent/
+ugo_agent/
 ├── server.py         # FastAPI: STT (faster-whisper/Vosk), intent, LLM, esecuzione, TTS, API
 ├── widget.py         # widget desktop Tkinter (trasparente, trascinabile)
 ├── ui.html           # UI web stile ChatGPT
@@ -387,8 +386,8 @@ chicco_agent/
 └── games.py          # librerie giochi: Steam (win/mac/linux), Epic, GOG
 ```
 
-File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows),
-`~/Library/Application Support/chicco` (macOS) o `~/.local/share/chicco` (Linux).
+File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\ugo` (Windows),
+`~/Library/Application Support/ugo` (macOS) o `~/.local/share/ugo` (Linux).
 
 ## 🍎 Note per piattaforma
 
@@ -413,9 +412,9 @@ File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows)
 
 ## 🛠️ Estendere
 
-- **Nuove app/siti**: dizionari `APP_ALIAS` / `SITE_ALIAS` in `chicco_agent/server.py`
+- **Nuove app/siti**: dizionari `APP_ALIAS` / `SITE_ALIAS` in `ugo_agent/server.py`
 - **Nuovi comandi**: aggiungi parole chiave in `KEYWORDS` + un ramo in `run_command()`
-- **Altri launcher di gioco**: aggiungi un collector in `chicco_agent/games.py`
+- **Altri launcher di gioco**: aggiungi un collector in `ugo_agent/games.py`
 - **Disattivare Whisper**: variabile d'ambiente `WHISPER=0` (usa solo Vosk)
 - **Dispositivo/compute Whisper**: env `WHISPER_DEVICE`, `WHISPER_COMPUTE`, `WHISPER_LANG` (vedi Note per piattaforma)
 - **Microfono/latenza**: il modello Whisper resta residente in RAM/VRAM; avvio a freddo ~1 s

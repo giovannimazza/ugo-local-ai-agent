@@ -11,7 +11,7 @@ ONNX nel formato openwakeword.Model: input (N, 16, 96), output (N, 1).
 La SOGLIA viene scelta sulla validazione STREAMING (le finestre scorrono
 sull'audio come nel widget) e il patience consigliato e' testato qui.
 
-Uso:  python -m chicco_agent.ww_train [--rigenera]
+Uso:  python -m ugo_agent.ww_train [--rigenera]
 Esito: %LOCALAPPDATA%/chicco/ww_ugo.onnx (+ .json di metadati)
 """
 import json
@@ -30,8 +30,13 @@ try:
 except ImportError:
     sys.exit("serve scipy:  pip install scipy")
 
-BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "chicco"
-PIPER = BASE / "piper" / "piper" / "piper.exe"
+try:
+    from . import platform_utils as _pu
+except ImportError:  # importato come modulo top-level
+    import platform_utils as _pu
+
+BASE = _pu.data_dir()
+PIPER = BASE / "piper" / "piper" / ("piper.exe" if os.name == "nt" else "piper")
 OUT = Path.home() / ".cache" / "ww_ugo"
 CLIP = 3 * 16000
 SR = 16000

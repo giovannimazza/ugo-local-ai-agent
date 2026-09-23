@@ -23,13 +23,48 @@ OS_NAME = "windows" if IS_WINDOWS else "macos" if IS_MAC else "linux" if IS_LINU
 # ---------------------------------------------------------------------------
 # Cartelle utente e dati applicazione
 # ---------------------------------------------------------------------------
-def data_dir() -> Path:
-    """Cartella dei file runtime (cache indici, wav, preferenze)."""
+_MIGRATED_MARKER = ".migrated_from_chicco"
+
+
+def _legacy_data_dir() -> Path:
+    """Vecchia cartella dati (pre-rinomina Ugo): source della migrazione."""
     if IS_WINDOWS:
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "chicco"
     if IS_MAC:
         return Path.home() / "Library" / "Application Support" / "chicco"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "chicco"
+
+
+def _migrate_legacy_data(new: Path) -> None:
+    """Prima esecuzione post-rinomina: copia la vecchia cartella dati 'chicco'
+    nella nuova 'ugo' (memoria refusi/alias, preferenze widget, indice app,
+    voci Piper, log). Una sola volta: il marker evita le ricopie. La vecchia
+    cartella NON viene cancellata (rollback immediato con la versione prima)."""
+    try:
+        old = _legacy_data_dir()
+        if not old.is_dir() or not any(old.iterdir()):
+            return                              # niente da migrare
+        (new / _MIGRATED_MARKER).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(old, new, dirs_exist_ok=True)
+        (new / _MIGRATED_MARKER).write_text(
+            "migrazione dati da chicco eseguita il " + platform.platform())
+    except Exception as exc:                    # mai bloccare l'avvio per questo
+        print(f"[migr] copia dati non riuscita ({exc}): uso solo la nuova cartella")
+
+
+def data_dir() -> Path:
+    """Cartella dei file runtime (memoria, preferenze, voci Piper, log).
+    Dalla rinomina a Ugo e' '<dati>/ugo'; al primo avvio copia al suo interno
+    il contenuto della vecchia '<dati>/chicco' preservando memoria e prefs."""
+    if IS_WINDOWS:
+        d = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ugo"
+    elif IS_MAC:
+        d = Path.home() / "Library" / "Application Support" / "ugo"
+    else:
+        d = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "ugo"
+    if not (d / _MIGRATED_MARKER).exists():
+        _migrate_legacy_data(d)
+    return d
 
 
 def user_folders() -> dict:

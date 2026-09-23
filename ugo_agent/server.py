@@ -37,14 +37,14 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-try:  # pacchetto (pip install / -m) O script diretto (python chicco_agent/server.py)
+try:  # pacchetto (pip install / -m) O script diretto (python ugo_agent/server.py)
     from . import platform_utils as pu
     from . import piper_tts
 except ImportError:
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from chicco_agent import platform_utils as pu
-    from chicco_agent import piper_tts
+    from ugo_agent import platform_utils as pu
+    from ugo_agent import piper_tts
 
 import laya
 import pyttsx3

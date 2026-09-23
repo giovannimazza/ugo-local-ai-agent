@@ -42,7 +42,7 @@ try:
 except ImportError:  # avviato come script diretto
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from chicco_agent import platform_utils as pu
+    from ugo_agent import platform_utils as pu
 
 PKG_DIR = Path(__file__).resolve().parent
 BASE = pu.data_dir()
