@@ -44,6 +44,25 @@ except ImportError:  # avviato come script diretto
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from ugo_agent import platform_utils as pu
 
+# DEVE avvenire PRIMA di creare qualsiasi finestra: se il processo non si
+# dichiara "DPI aware", su un monitor con scaling (125%/150%/200%, il caso
+# piu' comune oggi) Windows non lascia disegnare l'app alla risoluzione
+# fisica ma la fa renderizzare a bassa risoluzione e poi INGRANDISCE quel
+# bitmap gia' composito con un filtro di stretch. Per una finestra a
+# colore-chiave (-transparentcolor) questo produce esattamente l'alone/
+# anello sdoppiato e i pixel "sporchi" che si vedono attorno al cerchio:
+# non e' un problema di anti-aliasing nel disegno, e' lo stretch dell'OS
+# applicato DOPO che il colore-chiave e' gia' stato fissato.
+if pu.IS_WINDOWS:
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE_V2
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 PKG_DIR = Path(__file__).resolve().parent
 BASE = pu.data_dir()
 BASE.mkdir(parents=True, exist_ok=True)
@@ -70,11 +89,11 @@ ROOT_URL = f"http://127.0.0.1:{PORT}"
 # ---------------------------------------------------------------------------
 # Palette
 # ---------------------------------------------------------------------------
-ACCENT, RED = "#7c6cff", "#e5484d"          # viola normale, rosso registrazione
-CARD, TXT, MUT = "#181c2f", "#e8e9f3", "#8b90ad"
-PILL_BG = "#1b1f33"      # riempimento pillola = sfondo della Entry (devono coincidere)
-PILL_EDGE = "#30365a"    # bordo sottile della pillola e della bolla
-SPK_BG = "#2a2f4a"       # pulsante altoparlante (voce attiva)
+ACCENT, RED = "#e8963c", "#e5484d"          # arancione (come la UI web), rosso registrazione
+CARD, TXT, MUT = "#151827", "#e8e9f3", "#8b90ad"
+PILL_BG = "#191d30"      # riempimento pillola = sfondo della Entry (devono coincidere)
+PILL_EDGE = "#2e3350"    # bordo sottile della pillola e della bolla
+SPK_BG = "#262b46"       # pulsante altoparlante (voce attiva)
 TRANSPARENT = "#010101"  # colore-chiave: invisibile e click-through su Windows
 _KEY_RGB = (1, 1, 1)
 
@@ -106,7 +125,10 @@ SPK_X = PILL_X - GAP - SPK_D
 LISTEN_X = SPK_X - GAP - LISTEN_D
 WIN_H = PILL_Y + ENTRY_H + 4
 
-SS = 4  # supersampling per l'anti-alias
+SS = 6  # supersampling per l'anti-alias (piu' alto = bordi piu' lisci,
+        # importante perche' il colore-chiave di Windows taglia l'alpha in
+        # modo binario: senza abbastanza supersampling gli anelli sottili
+        # come l'alone dell'ascolto passivo mostrano una scalettatura visibile)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +230,26 @@ def _key(img: Image.Image, thr: int = 110) -> Image.Image:
     return Image.fromarray(out, "RGB")
 
 
+def _premul_resize(img: Image.Image, size) -> Image.Image:
+    """Ridimensiona un'immagine RGBA senza scurire il bordo verso il nero.
+
+    Image.resize normale interpola RGB e alpha in modo indipendente: un
+    pixel di bordo (alpha basso) viene mischiato con l'RGB (0,0,0) dello
+    sfondo trasparente, scurendo leggermente il contorno. Premoltiplicando
+    prima del resize e dividendo dopo si evita l'effetto.
+    """
+    r, g, b, a = img.split()
+    rgb = np.asarray(Image.merge("RGB", (r, g, b)), dtype=np.float32)
+    av = np.asarray(a, dtype=np.float32) / 255.0
+    premul = (rgb * av[..., None]).astype(np.uint8)
+    premul_small = Image.fromarray(premul, "RGB").resize(size, Image.LANCZOS)
+    a_small = a.resize(size, Image.LANCZOS)
+    pr = np.asarray(premul_small, dtype=np.float32)
+    ar = np.asarray(a_small, dtype=np.float32) / 255.0
+    out_rgb = np.clip(pr / np.clip(ar[..., None], 1e-3, 1.0), 0, 255).astype(np.uint8)
+    return Image.fromarray(np.dstack([out_rgb, np.asarray(a_small)]), "RGBA")
+
+
 def _rline(d, pts, width, fill=255) -> None:
     """Linea con estremi e giunti arrotondati."""
     d.line(pts, fill=fill, width=int(width), joint="curve")
@@ -250,7 +292,7 @@ def _glossy_ss(n: int, base, icon=None) -> Image.Image:
 
 
 def _glossy(d: int, base, icon=None) -> Image.Image:
-    return _glossy_ss(d * SS, base, icon).resize((d, d), Image.LANCZOS)
+    return _premul_resize(_glossy_ss(d * SS, base, icon), (d, d))
 
 
 # --- icone (disegnate in bianco su maschera, proporzioni relative al cerchio) ---
@@ -342,7 +384,7 @@ def _rounded_panel(w, h, radius, fill, edge, send_d=None) -> Image.Image:
         btn = _glossy_ss(send_d * SS, ACCENT, _icon_send)
         cx, cy = N - M / 2, M / 2  # concentrico al tappo destro
         img.alpha_composite(btn, (int(round(cx - btn.width / 2)), int(round(cy - btn.height / 2))))
-    return img.resize((w, h), Image.LANCZOS)
+    return _premul_resize(img, (w, h))
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +605,7 @@ def _disc(state, s100):
     if k not in _disc_cache:
         d = max(8, int(round(BD * s100 / 100)))
         frame = Image.new("RGBA", (C, C), (0, 0, 0, 0))
-        frame.alpha_composite(_mic_master[state].resize((d, d), Image.LANCZOS),
+        frame.alpha_composite(_premul_resize(_mic_master[state], (d, d)),
                               ((C - d) // 2, (C - d) // 2))
         _disc_cache[k] = frame
     return _disc_cache[k]
@@ -729,7 +771,7 @@ entry_frame.bind("<Motion>", lambda e: _send_hover(_in_send(e.x, e.y)))
 entry_frame.bind("<Button-1>", _pill_click)
 
 # placeholder (tk.Entry non ce l'ha)
-PLACEHOLDER = "Scrivi a Ugo…"
+PLACEHOLDER = "Scrivi a Ugo…"  # tradotto da _ph_show via W('placeholder')
 ph = {"on": False}
 _NAV_KEYS = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Left", "Right",
              "Up", "Down", "Home", "End", "Tab", "Escape", "Return", "Caps_Lock", "Win_L", "Win_R"}
@@ -739,7 +781,7 @@ def _ph_show():
     if not entry.get():
         ph["on"] = True
         entry.config(fg=MUT)
-        entry.insert(0, PLACEHOLDER)
+        entry.insert(0, W("placeholder"))
         entry.icursor(0)
 
 
@@ -887,7 +929,7 @@ def toggle_mute(_e=None):
     _spk_refresh()
     stop_tts()  # se sta parlando, zitta subito
     _save_prefs(muted=tts_muted["on"])
-    bubble.show("Voce disattivata." if tts_muted["on"] else "Voce riattivata.")
+    bubble.show(W("voice_off") if tts_muted["on"] else W("voice_on"))
 
 
 mute_btn.bind("<Button-1>", toggle_mute)
@@ -900,9 +942,9 @@ def toggle_listen(_e=None):
     if listen_disabled["on"]:
         _passive["on"] = False  # ferma DAVVERO il ciclo di ascolto (bug: prima continuava)
         stop_tts()
-        bubble.show("Ascolto passivo disattivato.")
+        bubble.show(W("listen_off"))
     else:
-        bubble.show("Ascolto passivo attivo: dimmi 'Ugo'.")
+        bubble.show(W("listen_on"))
         threading.Thread(target=_passive_loop, daemon=True).start()
 
 
@@ -920,9 +962,9 @@ def _set_model(name):
     def run():
         try:
             _post_json("/api/model", {"model": name})
-            ui(lambda: bubble.show("Modello AI: " + name.replace("qwen2.5:", "Qwen ")))
+            ui(lambda: bubble.show(W("ai_model", m=name.replace("qwen2.5:", "Qwen "))))
         except Exception as exc:
-            ui(lambda: bubble.show(f"Errore modello: {exc}"))
+            ui(lambda: bubble.show(W("ai_model_err", e=exc)))
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -931,12 +973,12 @@ def show_stt_popup():
     on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
 
     def work():
-        stt_text = "Trascrittore non disponibile"
+        stt_text = W("stt_unavail", e="?")
         try:
             info = _fetch_json("/api/stt")
             eng = info.get("engine", "?")
             name = {"whisper": "Whisper", "vosk": "Vosk"}.get(eng, eng)
-            stt_text = f"{name} · {info.get('model', '?')} · {info.get('device', '?')}"
+            stt_text = f"{W('stt')}: {name} · {info.get('model', '?')} · {W('device')}: {info.get('device', '?')}"
         except Exception:
             pass
         try:
@@ -950,7 +992,7 @@ def show_stt_popup():
                         activebackground=ACCENT, activeforeground="#ffffff")
             m.add_command(label="🎙️ " + stt_text, state="disabled")
             m.add_separator()
-            m.add_command(label="Modello AI:", state="disabled")
+            m.add_command(label=W("model") + " AI:", state="disabled")
             for name in available:
                 mark = "  ✓ " if name == current else "     "
                 m.add_command(label=f"{mark}{name.replace('qwen2.5:', 'Qwen ')}",
@@ -984,6 +1026,95 @@ def _meta_of(e):
     return ""
 
 
+# ---------------------------------------------------------------------------
+# i18n widget: la lingua vive nel server (bandiera web UI, /api/lang); il
+# widget la segue con un polling leggero e traduce le sue stringhe.
+# ---------------------------------------------------------------------------
+def _fetch_lang() -> str:
+    try:
+        with urllib.request.urlopen(ROOT_URL + "/api/lang", timeout=3) as r:
+            return (json.loads(r.read().decode()).get("lang") or "it").lower()[:2]
+    except Exception:
+        return "it"
+
+
+_WSTR = {
+    "it": {
+        "placeholder": "Scrivi a Ugo…",
+        "listen_click": "\U0001F3A4 Sto ascoltando... clicca di nuovo per inviare",
+        "transcribing": "Trascrivo…",
+        "understand": "Capisco…",
+        "i_listen": "\U0001F3A4 Ti ascolto…",
+        "nothing": "Non ho sentito niente.",
+        "nothing_rec": "Non ho registrato nulla.",
+        "mic_error": "Errore microfono: {e}",
+        "server_error": "Errore server: {e}",
+        "error": "Errore: {e}",
+        "starting": "Avvio del server…",
+        "ready": "Pronto.",
+        "srv_down": "Server non raggiungibile.",
+        "voice_off": "Voce disattivata.", "voice_on": "Voce riattivata.",
+        "listen_off": "Ascolto passivo disattivato.",
+        "listen_on": "Ascolto passivo attivo: dimmi 'Ugo'.",
+        "ai_model": "Modello AI: {m}", "ai_model_err": "Errore modello: {e}",
+        "vosk_missing": "Modello Vosk mancante: ascolto passivo non disponibile.",
+        "stt": "Trascrittore", "model": "Modello", "device": "Dispositivo",
+        "stt_unavail": "Trascrittore non disponibile ({e})",
+    },
+    "en": {
+        "placeholder": "Type to Ugo…",
+        "listen_click": "\U0001F3A4 Listening... click again to send",
+        "transcribing": "Transcribing…",
+        "understand": "Got it…",
+        "i_listen": "\U0001F3A4 I'm listening…",
+        "nothing": "I didn't hear anything.",
+        "nothing_rec": "I didn't record anything.",
+        "mic_error": "Microphone error: {e}",
+        "server_error": "Server error: {e}",
+        "error": "Error: {e}",
+        "starting": "Starting the server…",
+        "ready": "Ready.",
+        "srv_down": "Server unreachable.",
+        "voice_off": "Voice off.", "voice_on": "Voice on.",
+        "listen_off": "Passive listening off.",
+        "listen_on": "Passive listening on: say 'Ugo'.",
+        "ai_model": "AI model: {m}", "ai_model_err": "Model error: {e}",
+        "vosk_missing": "Vosk model missing: passive listening unavailable.",
+        "stt": "Transcriber", "model": "Model", "device": "Device",
+        "stt_unavail": "Transcriber unavailable ({e})",
+    },
+}
+
+
+def W(key: str, **kw) -> str:
+    lang = _lang_state["lang"] if _lang_state["lang"] in _WSTR else "it"
+    s = _WSTR[lang].get(key) or _WSTR["it"][key]
+    return s.format(**kw) if kw else s
+
+
+_lang_state = {"lang": "it"}
+
+
+def _lang_poller():
+    """Polling leggero della lingua: aggiorna placeholder e bolla se cambia."""
+    while True:
+        time.sleep(4)
+        nl = _fetch_lang()
+        if nl != _lang_state["lang"]:
+            _lang_state["lang"] = nl
+            def upd():
+                try:
+                    entry.config(font=FONT_UI)  # no-op per toccare il main thread
+                    _ph_clear()
+                    _ph_show()
+                except Exception:
+                    pass
+            ui(upd)
+
+
+threading.Thread(target=_lang_poller, daemon=True).start()
+
+
 def stop_tts():
     """Interrompe subito l'eventuale riproduzione vocale in corso."""
     pu.tts_stop()
@@ -1009,7 +1140,7 @@ def send_text_cmd():
             res = _post_json("/api/text", {"text": text})
             ui(lambda: _show_entry(res))
         except Exception as exc:
-            msg = f"Errore: {exc}"  # 'exc' non esiste piu' fuori dall'except
+            msg = W("error", e=exc)  # 'exc' non esiste piu' fuori dall'except
             ui(lambda: bubble.show(msg))
 
     threading.Thread(target=run, daemon=True).start()
@@ -1084,13 +1215,13 @@ def _rec_thread():
                 chunks.append(rec.record(numframes=SR // 10).copy())
     except Exception as exc:
         rec_flag.clear()
-        msg = f"Errore microfono: {exc}"
+        msg = W("mic_error", e=exc)
         ui(lambda: (set_mic_color(ACCENT), bubble.show(msg)))
         return
     audio = np.concatenate(chunks) if chunks else np.zeros((0, 1), np.float32)
     ui(lambda: set_mic_color(ACCENT))
     if audio.size == 0:
-        ui(lambda: bubble.show("Non ho registrato nulla."))
+        ui(lambda: bubble.show(W("nothing_rec")))
         return
     pcm = (np.clip(audio[:, 0], -1, 1) * 32767).astype("<i2").tobytes()
     buf = io.BytesIO()
@@ -1099,12 +1230,12 @@ def _rec_thread():
         w.setsampwidth(2)
         w.setframerate(SR)
         w.writeframes(pcm)
-    ui(lambda: bubble.show("Trascrivo…", sticky=True))
+    ui(lambda: bubble.show(W("transcribing"), sticky=True))
     try:
         res = _post_wav(buf.getvalue())
         ui(lambda: _show_entry(res))
     except Exception as exc:
-        msg = f"Errore server: {exc}"
+        msg = W("server_error", e=exc)
         ui(lambda: bubble.show(msg))
 
 
@@ -1186,7 +1317,7 @@ def _passive_send_wav(pcm: bytes):
               f"[{res.get('intent', '-')} / {res.get('detector', '-')} / "
               f"{res.get('ms', 0)} ms]")
     except Exception as exc:
-        msg = f"Errore server: {exc}"
+        msg = W("server_error", e=exc)
         ui(lambda: bubble.show(msg))
         _plog(f"ERRORE server: {exc}")
 
@@ -1240,7 +1371,7 @@ def _passive_loop():
         from vosk import KaldiRecognizer, Model as VoskModel
         vosk_dir = Path.home() / ".cache" / "vosk" / "vosk-model-small-it-0.22"
         if not vosk_dir.is_dir():
-            ui(lambda: bubble.show("Modello Vosk mancante: ascolto passivo non disponibile."))
+            ui(lambda: bubble.show(W("vosk_missing")))
             return
         model = VoskModel(str(vosk_dir))
         mic_dev = _pick_mic()
@@ -1356,7 +1487,7 @@ def _passive_loop():
                         _plog(f"SEND: {dur:.1f}s -> "
                               f"{len(trimmed) / 2 / SR:.1f}s dopo il taglio")
                         ui(lambda: (set_mic_color(ACCENT),
-                                    bubble.show("Capisco…", sticky=True)))
+                                    bubble.show(W("understand"), sticky=True)))
                         quiet_until = time.time() + 4.0  # la risposta parlata non deve riarmarmi
                         _passive_send_wav(trimmed)
                         armed, chunks = False, []
@@ -1368,7 +1499,7 @@ def _passive_loop():
                         rec = KaldiRecognizer(model, SR)
                         if oww_model is not None:
                             oww_model.reset()
-                        ui(lambda: bubble.show("Non ho sentito niente."))
+                        ui(lambda: bubble.show(W("nothing")))
                     continue
                 chunks.append(pcm)
                 if len(chunks) > 32:
@@ -1401,7 +1532,7 @@ def _passive_loop():
                     if oww_model is not None:
                         oww_model.reset()
                     ui(lambda: (set_mic_color(RED),
-                                bubble.show("\U0001F3A4 Ti ascolto…", sticky=True)))
+                                bubble.show(W("i_listen"), sticky=True)))
     except Exception as exc:
         _plog(f"ERRORE: {exc}")
         if _passive["on"]:
@@ -1433,7 +1564,7 @@ def toggle_recording():
     stop_tts()  # stai per parlare: zitta subito la voce
     rec_flag.set()
     set_mic_color(RED)
-    bubble.show("\U0001F3A4 Sto ascoltando... clicca di nuovo per inviare", sticky=True)
+    bubble.show(W("listen_click"), sticky=True)
     threading.Thread(target=_rec_thread, daemon=True).start()
 
 
@@ -1495,10 +1626,10 @@ canvas.bind("<Button-3>", _quit)  # click destro = chiudi
 def _boot():
     if server_up():
         return
-    ui(lambda: bubble.show("Avvio del server…", sticky=True))
+    ui(lambda: bubble.show(W("starting"), sticky=True))
     ensure_server()
     ok = server_up()
-    ui(lambda: bubble.show("Pronto." if ok else "Server non raggiungibile."))
+    ui(lambda: bubble.show(W("ready") if ok else W("srv_down")))
 
 
 root.after(30, _pump_ui)

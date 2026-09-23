@@ -179,6 +179,7 @@
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
 <button class="appsbtn" id="routbtn" title="Routine: una frase attiva una sequenza di comandi">⚡ Routine <span id="routcount"></span></button>
 <button class="appsbtn small" id="statsbtn" title="Dashboard latenze: whisper, qwen, tts, comandi">📊 <span id="statscmd">…</span></button>
+<button class="appsbtn small" id="langbtn" title="Lingua / Language">🌐 <span id="langname">IT</span></button>
 </div>
 <div class="app">
   <main class="main">
@@ -231,6 +232,228 @@ const textEl = document.getElementById('text'), micBtn = document.getElementById
 const ovl = document.getElementById('ovl'), mlist = document.getElementById('mlist');
 const mtitle = document.getElementById('mtitle'), mcount = document.getElementById('mcount');
 
+// --- i18n: bandiera IT/EN ------------------------------------------------
+// La lingua vive nel server (/api/lang): guida anche voce Piper, voce di
+// sistema e lingua di Whisper. I COMANDI dei suggerimenti restano italiani
+// (l'engine li esegue); cambia solo l'etichetta visibile.
+let LANG = 'it';
+const T = {
+it: {
+  hero_title: 'Ciao, sono Ugo',
+  hero_sub: 'Il tuo assistente locale. Parla col microfono o scrivi: creo cartelle e file,<br>apro app e siti, faccio ricerche, regolo il volume.',
+  placeholder: 'Scrivi un messaggio a Ugo…',
+  hint: 'Ugo può sbagliare. I comandi vengono eseguiti realmente sul tuo PC.',
+  sugg: ['📁 Crea una cartella','📝 Crea una nota','▶️ Apri YouTube','🔎 Cerca su Google','🕐 Che ore sono?'],
+  apps_btn: 'App e giochi', rout_btn: 'Routine',
+  tt_model: 'Modello AI per correzione e interpretazione',
+  tt_stt: 'Modello di trascrizione vocale (Whisper)',
+  tt_tts: 'Voce di risposta (TTS)',
+  tt_mem: 'Memoria appresa: refusi corretti e alias-app',
+  tt_apps: 'App e giochi installati sul PC',
+  tt_rout: 'Routine: una frase attiva una sequenza di comandi',
+  tt_stats: 'Dashboard latenze: whisper, qwen, tts, comandi',
+  tt_lang: 'Lingua / Language',
+  m_lang_sub: 'cambia voce, trascrizione e interfaccia — i comandi restano eseguiti dal motore italiano',
+  m_lang_switching: 'cambio in corso…',
+  lang_it: '🇮🇹 Italiano', lang_it_sub: 'voce Paola — UI in italiano',
+  lang_en: '🇬🇧 English', lang_en_sub: 'Amy voice — UI in English',
+  tt_mic: 'Registra un comando vocale', tt_send: 'Invia', tt_close: 'Chiudi',
+  search_ph: 'Cerca per nome…', voci: ' voci',
+  m_model: 'Modello AI', m_model_sub: 'correzione, interpretazione e suggerimenti',
+  err_model: 'cambio modello fallito',
+  m_stt: 'Trascrittore vocale', m_stt_sub: 'whisper: qualità vs velocità — vosk sempre come ripiego',
+  dl: ' ⏳ download…', notinst: '  ⬇ non installato',
+  msg_stt_dl: '⬇️ Scarico il modello ', msg_stt_dl2: ' (in background). Finché non è pronto si usa Vosk.',
+  msg_stt_ok: '✅ Trascrittore pronto: ', err_change: 'cambio fallito',
+  m_tts: 'Voce di risposta', m_tts_sub: 'piper: naturale e locale — sistema: sempre disponibile',
+  tts_piper: ' — Piper', tts_sys: 'Voce di sistema',
+  sub_piper: 'voce neurale naturale, locale (~63 MB)', sub_sapi: 'SAPI / voce di sistema',
+  msg_tts_dl: '⬇️ Scarico la voce naturale Piper (~85 MB, in background). Finché non è pronta risponde la voce di sistema.',
+  msg_tts_ok_pre: '✅ Voce naturale pronta: da ora risponde ',
+  msg_voice_dl: '⬇️ Scarico la voce inglese Amy (~63 MB, in background): appena pronta parla in inglese.',
+  m_mem: 'Memoria appresa',
+  m_mem_sub: 'ciò che Ugo ha imparato dai tuoi comandi — click per correggere, × per eliminare',
+  g_fixes: 'Refusi corretti', g_apps: 'Alias app',
+  no_fixes: 'Nessun refuso imparato (per ora).',
+  no_apps: 'Nessun alias: arrivano da “Intendavi X?” → sì.',
+  teach: 'Insegna un refuso nuovo', teach_sub: 'es. “spotifi” deve diventare “Spotify”',
+  p_raw: 'Il refuso (come lo detti/scrivi):', p_fixed: 'La forma corretta:',
+  typo: 'refuso', alias: 'alias app', used: ' · usato ', usedx: 'x',
+  edit_dst: 'Correggi la destinazione di "', tt_del: 'Elimina',
+  m_rout: '⚡ Routine',
+  m_rout_sub: 'una frase attiva una sequenza di comandi — creale qui o a voce: “Ugo, quando dico modo gaming esegui apri steam; apri discord; volume 80”',
+  no_rout: 'Nessuna routine: creala col ➕ o a voce.',
+  new_rout: 'Nuova routine', new_rout_sub: 'es. “modo gaming” → apri steam, apri discord, volume 80',
+  run_now: 'Esegui ora', used_r: ' · usata ',
+  p_name_new: 'Nome/trigger della routine (cosa dirai a voce):', p_name: 'Nome/trigger:',
+  p_steps: 'Comandi, uno per riga (max 8):\nes. apri spotify\nvolume 80\nche tempo fa',
+  g_games: 'Giochi', g_apps2: 'Applicazioni', g_sys: 'Strumenti di sistema',
+  list_games: 'Giochi e launcher installati', list_apps: 'Applicazioni installate',
+  m_stats: '📊 Dashboard latenze',
+  stats_sub: 'ultimi 50 comandi per fase · modelli: STT ',
+  no_data: 'Nessun dato ancora: dai un comando a Ugo (voce o testo) e i numeri compaiono qui in tempo reale.',
+  avg: 'media ', p95: ' · p95 ', maxs: 's · max ', camp1: ' campione', campn: ' campioni',
+  proc: 'processo server: ', sosp: 'Sospendi la raccolta dati', ripr: 'Riprendi la raccolta dati',
+  sosp_sub: 'il pannello continua a mostrare gli ultimi valori raccolti',
+  stats_tt_1: ' · ultimo comando ', stats_tt_none: ' · nessun comando registrato', stats_tt_pause: ' · raccolta sospesa',
+  elab: 'Ugo sta elaborando…', micdenied: 'Permesso microfono negato',
+  listening: '🔴 Sto ascoltando… clicca di nuovo per inviare', transcr: 'Trascrivo…',
+  no_server: 'Server non raggiungibile.',
+  raw_tt: 'Trascrizione originale corretta da Qwen',
+  st_vosk: 'Vosk (fastlane pre-lettura)', st_fastlane: 'Fastlane (match comandi)',
+  st_whisper: 'Whisper (trascrizione)', st_qn: 'Qwen (correzione STT)',
+  st_qi: 'Qwen (interpretazione intent)', st_qs: 'Qwen (suggerimento app)',
+  st_tts_piper: 'TTS Piper (Paola)', st_tts_sapi: 'TTS di sistema',
+  st_command: '⏱ Comando completo (voce → risposta)',
+},
+en: {
+  hero_title: 'Hi, I\u2019m Ugo',
+  hero_sub: 'Your local assistant. Talk with your microphone or type: I create folders and files,<br>open apps and websites, search the web, set the volume.',
+  placeholder: 'Type a message to Ugo…',
+  hint: 'Ugo can make mistakes. Commands are actually executed on your PC.',
+  sugg: ['📁 Create a folder','📝 Create a note','▶️ Open YouTube','🔎 Search Google','🕐 What time is it?'],
+  apps_btn: 'Apps & games', rout_btn: 'Routines',
+  tt_model: 'AI model for correction and intent parsing',
+  tt_stt: 'Speech transcription model (Whisper)',
+  tt_tts: 'Reply voice (TTS)',
+  tt_mem: 'Learned memory: fixed typos and app aliases',
+  tt_apps: 'Apps and games installed on this PC',
+  tt_rout: 'Routines: one phrase triggers a command sequence',
+  tt_stats: 'Latency dashboard: whisper, qwen, tts, commands',
+  tt_lang: 'Lingua / Language',
+  m_lang_sub: 'changes voice, transcription and interface — commands are still executed by the Italian engine',
+  m_lang_switching: 'switching…',
+  lang_it: '🇮🇹 Italiano', lang_it_sub: 'Paola voice — UI in italiano',
+  lang_en: '🇬🇧 English', lang_en_sub: 'Amy voice — UI in English',
+  tt_mic: 'Record a voice command', tt_send: 'Send', tt_close: 'Close',
+  search_ph: 'Search by name…', voci: ' items',
+  m_model: 'AI model', m_model_sub: 'correction, intent parsing and app suggestions',
+  err_model: 'model switch failed',
+  m_stt: 'Speech transcriber', m_stt_sub: 'whisper: quality vs speed — vosk always as fallback',
+  dl: ' ⏳ downloading…', notinst: '  ⬇ not installed',
+  msg_stt_dl: '⬇️ Downloading model ', msg_stt_dl2: ' (in background). Vosk is used until ready.',
+  msg_stt_ok: '✅ Transcriber ready: ', err_change: 'switch failed',
+  m_tts: 'Reply voice', m_tts_sub: 'piper: natural and local — system: always available',
+  tts_piper: ' — Piper', tts_sys: 'System voice',
+  sub_piper: 'natural neural voice, local (~63 MB)', sub_sapi: 'SAPI / system voice',
+  msg_tts_dl: '⬇️ Downloading the Piper natural voice (~85 MB, in background). The system voice replies until ready.',
+  msg_tts_ok_pre: '✅ Natural voice ready: from now on ',
+  msg_voice_dl: '⬇️ Downloading the English voice Amy (~63 MB, in background): it will speak English as soon as ready.',
+  m_mem: 'Learned memory',
+  m_mem_sub: 'what Ugo learned from your commands — click to fix, × to delete',
+  g_fixes: 'Fixed typos', g_apps: 'App aliases',
+  no_fixes: 'No learned typos (yet).',
+  no_apps: 'No aliases: they come from “Did you mean X?” → yes.',
+  teach: 'Teach a new typo', teach_sub: 'e.g. “spotifi” should become “Spotify”',
+  p_raw: 'The typo (as you say/write it):', p_fixed: 'The correct form:',
+  typo: 'typo', alias: 'app alias', used: ' · used ', usedx: 'x',
+  edit_dst: 'Fix the target of "', tt_del: 'Delete',
+  m_rout: '⚡ Routines',
+  m_rout_sub: 'one phrase triggers a command sequence — create here or by voice: “Ugo, when I say gaming mode run open steam; open discord; volume 80”',
+  no_rout: 'No routines: create one with ➕ or by voice.',
+  new_rout: 'New routine', new_rout_sub: 'e.g. “gaming mode” → open steam, open discord, volume 80',
+  run_now: 'Run now', used_r: ' · used ',
+  p_name_new: 'Routine name/trigger (what you will say):', p_name: 'Name/trigger:',
+  p_steps: 'Commands, one per line (max 8):\ne.g. apri spotify\nvolume 80\nche tempo fa',
+  g_games: 'Games', g_apps2: 'Applications', g_sys: 'System tools',
+  list_games: 'Games and launchers installed', list_apps: 'Installed applications',
+  m_stats: '📊 Latency dashboard',
+  stats_sub: 'last 50 commands per stage · models: STT ',
+  no_data: 'No data yet: give Ugo a command (voice or text) and numbers appear here in real time.',
+  avg: 'avg ', p95: ' · p95 ', maxs: 's · max ', camp1: ' sample', campn: ' samples',
+  proc: 'server process: ', sosp: 'Pause data collection', ripr: 'Resume data collection',
+  sosp_sub: 'the panel keeps showing the latest collected values',
+  stats_tt_1: ' · last command ', stats_tt_none: ' · no command recorded yet', stats_tt_pause: ' · collection paused',
+  elab: 'Ugo is thinking…', micdenied: 'Microphone permission denied',
+  listening: '🔴 Listening… click again to send', transcr: 'Transcribing…',
+  no_server: 'Server unreachable.',
+  raw_tt: 'Original transcript corrected by Qwen',
+  st_vosk: 'Vosk (fastlane pre-read)', st_fastlane: 'Fastlane (command match)',
+  st_whisper: 'Whisper (transcription)', st_qn: 'Qwen (STT correction)',
+  st_qi: 'Qwen (intent parsing)', st_qs: 'Qwen (app suggestions)',
+  st_tts_piper: 'TTS Piper (Paola)', st_tts_sapi: 'System TTS',
+  st_command: '⏱ Full command (voice → reply)',
+}
+};
+function t(k) { return (T[LANG] && T[LANG][k]) || T.it[k] || k; }
+
+function applyLang() {
+  document.getElementById('langname').textContent = LANG.toUpperCase();
+  const h2 = document.querySelector('#hero h2'), hp = document.querySelector('#hero p');
+  if (h2) h2.textContent = t('hero_title');
+  if (hp) hp.innerHTML = t('hero_sub');
+  textEl.placeholder = t('placeholder');
+  if (!statusEl.dataset.busy) statusEl.textContent = t('hint');
+  const sb = document.querySelectorAll('.sugg button');
+  t('sugg').forEach((s, i) => { if (sb[i]) sb[i].textContent = s; });
+  appsBtn.textContent = '🗂️ ' + t('apps_btn');
+  const rb = document.getElementById('routbtn');
+  const cnt = document.getElementById('routcount').textContent || '';
+  rb.innerHTML = '⚡ ' + t('rout_btn') + ' <span id="routcount">' + cnt + '</span>';
+  document.getElementById('modelbtn').title = t('tt_model');
+  document.getElementById('sttbtn').title = t('tt_stt');
+  document.getElementById('ttsbtn').title = t('tt_tts');
+  document.getElementById('membtn').title = t('tt_mem');
+  appsBtn.title = t('tt_apps');
+  rb.title = t('tt_rout');
+  document.getElementById('statsbtn').title = t('tt_stats');
+  document.getElementById('langbtn').title = t('tt_lang');
+  micBtn.title = t('tt_mic');
+  document.getElementById('send').title = t('tt_send');
+  document.getElementById('mclose').title = t('tt_close');
+  msearch.placeholder = t('search_ph');
+  refreshVoiceName();
+}
+
+async function refreshVoiceName() {
+  try {
+    const [lg, tts] = await Promise.all([fetch('/api/lang').then(r => r.json()),
+                                         fetch('/api/tts').then(r => r.json())]);
+    const a = tts.engines.find(m => m.active);
+    const el = document.getElementById('ttsname');
+    const nat = lg.lang === 'en' ? 'Amy' : 'Paola';
+    el.textContent = (!a || a.id !== 'piper') ? (LANG === 'en' ? 'system' : 'sistema')
+                    : (a.installed ? nat : (LANG === 'en' ? 'system (temp)' : 'sistema (temp)'));
+  } catch {}
+}
+
+document.getElementById('langbtn').onclick = async () => {
+  // menu di scelta lingua (come gli altri menu della topbar)
+  try {
+    const d = await (await fetch('/api/lang')).json();
+    mtitle.textContent = t('tt_lang');
+    mcount.textContent = t('m_lang_sub');
+    msearch.style.display = 'none';
+    mlist.innerHTML = '';
+    for (const opt of [{id: 'it', label: t('lang_it'), sub: t('lang_it_sub')},
+                       {id: 'en', label: t('lang_en'), sub: t('lang_en_sub')}]) {
+      const it = {title: opt.label, subtitle: opt.sub, kind: 'appx', _lang: opt.id};
+      const rowEl = row(it);
+      rowEl.classList.add('click');
+      if (opt.id === d.lang) {
+        const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713';
+        rowEl.appendChild(c);
+      }
+      rowEl.onclick = async () => {
+        if (opt.id === d.lang) { ovl.classList.remove('open'); return; }
+        rowEl.querySelector('.tx small').textContent = t('m_lang_switching');
+        const rr = await fetch('/api/lang', {method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({lang: opt.id})});
+        const dd = await rr.json();
+        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || t('err_change'))); return; }
+        LANG = dd.lang;
+        applyLang();
+        ovl.classList.remove('open');
+        if (dd.downloading) add('bot', t('msg_voice_dl'));
+      };
+      mlist.appendChild(rowEl);
+    }
+    ovl.classList.add('open');
+  } catch {}
+};
+(async () => { try { LANG = (await (await fetch('/api/lang')).json()).lang || 'it'; } catch {} applyLang(); })();
+
 const KIND_ICONS = {steam:'🎮', epic:'🟣', gog:'🟡', launcher:'🚀', appx:'🪟',
                     lnk:'🪟', portable:'📦', shell:'⚙️'};
 const KIND_LABEL = {steam:'Steam', epic:'Epic Games', gog:'GOG', launcher:'Launcher',
@@ -253,9 +476,9 @@ const collapsed = new Set();
 function renderItems(items, forceOpen) {
   mlist.innerHTML = '';
   const GROUPS = [
-    ['Giochi', k => ['steam','epic','gog','launcher'].includes(k)],
-    ['Applicazioni', k => ['lnk','appx','portable'].includes(k)],
-    ['Strumenti di sistema', k => k === 'shell']];
+    [t('g_games'), k => ['steam','epic','gog','launcher'].includes(k)],
+    [t('g_apps2'), k => ['lnk','appx','portable'].includes(k)],
+    [t('g_sys'), k => k === 'shell']];
   const rest = [...items];
   for (const [name, test] of GROUPS) {
     const grp = rest.filter(it => test(it.kind));
@@ -283,7 +506,7 @@ function renderItems(items, forceOpen) {
 function showList(title, items) {
   currentItems = items;
   mtitle.textContent = title;
-  mcount.textContent = items.length + ' voci';
+  mcount.textContent = items.length + t('voci');
   msearch.style.display = items.length > 15 ? '' : 'none';
   msearch.value = '';
   renderItems(items);
@@ -305,8 +528,8 @@ async function openModelMenu() {
   try {
     const r = await fetch('/api/model'); const d = await r.json();
     document.getElementById('modelname').textContent = d.active.replace('qwen2.5:', 'Qwen ');
-    mtitle.textContent = 'Modello AI';
-    mcount.textContent = 'correzione, interpretazione e suggerimenti';
+    mtitle.textContent = t('m_model');
+    mcount.textContent = t('m_model_sub');
     msearch.style.display = 'none';
     mlist.innerHTML = '';
     for (const name of d.available) {
@@ -324,7 +547,7 @@ async function openModelMenu() {
         const dd = await rr.json();
         if (dd.ok) { document.getElementById('modelname').textContent =
                        it._model.replace('qwen2.5:', 'Qwen '); ovl.classList.remove('open'); }
-        else add('bot', 'Errore: ' + (dd.error || 'cambio modello fallito'));
+        else add('bot', 'Errore: ' + (dd.error || t('err_model')));
       };
       mlist.appendChild(rowEl);
     }
@@ -335,13 +558,13 @@ document.getElementById('modelbtn').onclick = openModelMenu;
 async function openSttMenu() {
   try {
     const r = await fetch('/api/stt/models'); const d = await r.json();
-    mtitle.textContent = 'Trascrittore vocale';
-    mcount.textContent = 'whisper: qualita\u0300 vs velocita\u0300 — vosk sempre come ripiego';
+    mtitle.textContent = t('m_stt');
+    mcount.textContent = t('m_stt_sub');
     msearch.style.display = 'none';
     mlist.innerHTML = '';
     for (const m of d.models) {
       const short = m.id.replace('large-v3-turbo', 'large-v3-turbo');
-      const tag = m.downloading ? '\u23f3 download\u2026' : (m.installed ? '' : '  \u2b07 non installato');
+      const tag = m.downloading ? t('dl') : (m.installed ? '' : t('notinst'));
       const it = {title: short + tag, subtitle: m.label, kind: 'appx', _m: m};
       const rowEl = row(it);
       rowEl.classList.add('click');
@@ -354,18 +577,17 @@ async function openSttMenu() {
         const rr = await fetch('/api/stt/model', {method:'POST',
           headers:{'Content-Type':'application/json'}, body:JSON.stringify({model: m.id})});
         const dd = await rr.json();
-        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || 'cambio fallito')); return; }
+        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || t('err_change'))); return; }
         document.getElementById('sttname').textContent = short;
         ovl.classList.remove('open');
         if (dd.status === 'downloading') {
-          add('bot', '\u2b07\ufe0f Scarico il modello ' + short +
-              ' (in background). Finche\u0300 non e\u0300 pronto si usa Vosk.');
+          add('bot', t('msg_stt_dl') + short + t('msg_stt_dl2'));
           const poll = setInterval(async () => {
             try {
               const s = await (await fetch('/api/stt/models')).json();
               const me = s.models.find(x => x.id === m.id);
               if (me && me.installed) { clearInterval(poll);
-                add('bot', '\u2705 Trascrittore pronto: ' + short); }
+                add('bot', t('msg_stt_ok') + short); }
             } catch { clearInterval(poll); }
           }, 4000);
         }
@@ -384,14 +606,14 @@ document.getElementById('sttbtn').onclick = openSttMenu;
 async function openTtsMenu() {
   try {
     const d = await (await fetch('/api/tts')).json();
-    mtitle.textContent = 'Voce di risposta';
-    mcount.textContent = 'piper: naturale e locale — sistema: sempre disponibile';
+    mtitle.textContent = t('m_tts');
+    mcount.textContent = t('m_tts_sub');
     msearch.style.display = 'none';
     mlist.innerHTML = '';
-    const SUB = {piper: 'voce neurale naturale, locale (~63 MB)', sapi: 'Elsa SAPI / voce di sistema'};
+    const SUB = {piper: t('sub_piper'), sapi: t('sub_sapi')};
     for (const m of d.engines) {
-      const tag = m.downloading ? ' \u23f3 download\u2026' : (m.installed ? '' : '  \u2b07 non installato');
-      const it = {title: (m.id === 'piper' ? 'Paola — Piper' : 'Voce di sistema') + tag,
+      const tag = m.downloading ? t('dl') : (m.installed ? '' : t('notinst'));
+      const it = {title: (m.id === 'piper' ? ((LANG === 'en' ? 'Amy' : 'Paola') + t('tts_piper')) : t('tts_sys')) + tag,
                   subtitle: SUB[m.id] || '', kind: 'appx'};
       const rowEl = row(it);
       rowEl.classList.add('click');
@@ -404,23 +626,23 @@ async function openTtsMenu() {
         const rr = await fetch('/api/tts/engine', {method:'POST',
           headers:{'Content-Type':'application/json'}, body:JSON.stringify({engine: m.id})});
         const dd = await rr.json();
-        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || 'cambio fallito')); return; }
+        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || t('err_change'))); return; }
         ovl.classList.remove('open');
         const nameEl = document.getElementById('ttsname');
         if (dd.status === 'downloading') {
-          nameEl.textContent = 'sistema (temp)';
-          add('bot', '\u2b07\ufe0f Scarico la voce naturale Piper (~85 MB, in background). Finche\u0300 non e\u0300 pronta risponde la voce di sistema.');
+          nameEl.textContent = LANG === 'en' ? 'system (temp)' : 'sistema (temp)';
+          add('bot', t('msg_tts_dl'));
           const poll = setInterval(async () => {
             try {
               const s = await (await fetch('/api/tts')).json();
               const me = s.engines.find(x => x.id === 'piper');
               if (me && me.installed) { clearInterval(poll);
                 nameEl.textContent = 'Paola';
-                add('bot', '\u2705 Voce naturale pronta: da ora risponde Paola.'); }
+                add('bot', t('msg_tts_ok_pre') + 'Paola.'); }
             } catch { clearInterval(poll); }
           }, 4000);
         } else {
-          nameEl.textContent = m.id === 'piper' ? 'Paola' : 'sistema';
+          nameEl.textContent = m.id === 'piper' ? (LANG === 'en' ? 'Amy' : 'Paola') : (LANG === 'en' ? 'system' : 'sistema');
         }
       };
       mlist.appendChild(rowEl);

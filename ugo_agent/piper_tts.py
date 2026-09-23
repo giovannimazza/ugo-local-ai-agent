@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-TTS neurale locale con Piper (voce italiana Paola).
+TTS neurale locale con Piper (voce italiana Paola, inglese Amy).
 
-Piper e' un sintetizzatore neurale offile, velocissimo su CPU: la voce
-"Paola" (it_IT, medium ~63 MB) suona naturale, senza il timbro robotico
-delle voci SAPI. Tutto vive in %LOCALAPPDATA%/chicco (fuori dalla repo):
+Piper e' un sintetizzatore neurale offline, velocissimo su CPU: le voci
+"Paola" (it_IT, medium ~63 MB) e "Amy" (en_US, medium ~63 MB) suonano
+naturali, senza il timbro robotico delle voci SAPI. Tutto vive nella
+cartella dati (fuori dalla repo):
 
-  chicco/piper/            binario piper (scaricato al primo uso, ~21 MB)
-  chicco/piper_voices/     modello voce + config
-  chicco/tts_engine.json   motore scelto dall'utente ("piper" | "sapi")
+  piper/piper/             binario piper (scaricato al primo uso, ~21 MB)
+  piper/piper_voices/      modelli voce + config
+  piper/tts_engine.json    motore scelto ("piper" | "sapi") + lingua attiva
 
 Il download parte in background allo startup del server: finche' non e'
 completo si ricade automaticamente sulla voce di sistema (SAPI/Elsa),
@@ -33,12 +34,84 @@ BASE = _pu.data_dir()
 PIPER_DIR = BASE / "piper"
 VOICES_DIR = BASE / "piper_voices"
 PREFS_FILE = BASE / "tts_engine.json"
-VOICE_KEY = "it_IT-paola-medium"
-VOICE_ONNX = VOICES_DIR / f"{VOICE_KEY}.onnx"
-VOICE_JSON = VOICES_DIR / f"{VOICE_KEY}.onnx.json"
-VOICE_ONNX_URL = ("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/"
-                  "it/it_IT/paola/medium/it_IT-paola-medium.onnx")
-VOICE_JSON_URL = VOICE_ONNX_URL + ".json"
+
+# voci per lingua: la lingua attiva seleziona il modello usato da synthesize()
+VOICES = {
+    "it": {"key": "it_IT-paola-medium", "label": "Paola",
+           "url": ("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/"
+                   "it/it_IT/paola/medium/it_IT-paola-medium.onnx")},
+    "en": {"key": "en_US-amy-medium", "label": "Amy",
+           "url": ("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/"
+                   "en/en_US/amy/medium/en_US-amy-medium.onnx")},
+}
+DEFAULT_LANG = "it"
+_LANGS = {"it", "en"}
+
+
+def _voice_info(lang: str) -> dict:
+    return VOICES.get(lang or DEFAULT_LANG, VOICES[DEFAULT_LANG])
+
+
+def current_lang() -> str:
+    """Lingua attiva del TTS (persistita; 'it' di default)."""
+    lang = _load_prefs().get("lang", DEFAULT_LANG)
+    return lang if lang in _LANGS else DEFAULT_LANG
+
+
+def set_language(lang: str) -> None:
+    """Cambia la lingua del TTS (e quindi la voce di default accoppiata)."""
+    if lang not in _LANGS:
+        lang = DEFAULT_LANG
+    prefs = _load_prefs()
+    prefs["lang"] = lang
+    try:
+        BASE.mkdir(parents=True, exist_ok=True)
+        PREFS_FILE.write_text(json.dumps(prefs))
+    except Exception:
+        pass
+    if lang != "it":
+        ensure_voice(lang)  # scarica la voce EN in background se manca
+
+
+def voice_key_for(lang: str) -> str:
+    return _voice_info(lang)["key"]
+
+
+def _voice_paths(lang: str) -> tuple[Path, Path]:
+    key = voice_key_for(lang)
+    return VOICES_DIR / f"{key}.onnx", VOICES_DIR / f"{key}.onnx.json"
+
+
+def voice_ready(lang: str) -> bool:
+    onnx, js = _voice_paths(lang)
+    return onnx.exists() and js.exists()
+
+
+def ensure_voice(lang: str) -> threading.Thread | None:
+    """Scarica la voce della lingua data in background, se manca."""
+    if voice_ready(lang) or _state["downloading"]:
+        return None
+    def work():
+        with _lock:
+            if voice_ready(lang):
+                return
+            _state["downloading"] = True
+        try:
+            info = _voice_info(lang)
+            print(f"[piper] scarico la voce {info['label']} ({info['key']})...")
+            onnx, js = _voice_paths(lang)
+            if not onnx.exists():
+                _download(info["url"], onnx)
+            if not js.exists():
+                _download(info["url"] + ".json", js)
+            print(f"[piper] voce {info['label']} pronta.")
+        except Exception as exc:
+            print(f"[piper] download voce {lang} non riuscito ({exc}).")
+        finally:
+            _state["downloading"] = False
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    return t
 PIPER_RELEASE = "2023.11.14-2"
 
 _sys, _mach = platform.system(), platform.machine().lower()
@@ -102,16 +175,17 @@ def piper_exe() -> Path:
     return PIPER_DIR / "piper" / _EXE_NAME
 
 
-def is_ready() -> bool:
-    """True se binario + voce sono completi (o gia' usati con successo)."""
-    if _marker_ok(PIPER_DIR / ".done", _asset) and _marker_ok(VOICES_DIR / ".done", VOICE_KEY):
-        return True
-    return piper_exe().exists() and VOICE_ONNX.exists() and VOICE_JSON.exists()
+def is_ready(lang: str | None = None) -> bool:
+    """True se binario + voce della lingua (default: attiva) sono completi."""
+    lang = lang or current_lang()
+    return piper_exe().exists() and voice_ready(lang)
 
 
 def status() -> dict:
-    return {"piper_ready": is_ready(), "downloading": _state["downloading"],
-            "voice": VOICE_KEY}
+    lang = current_lang()
+    return {"piper_ready": is_ready(lang), "downloading": _state["downloading"],
+            "lang": lang, "voice": voice_key_for(lang),
+            "voices": {lg: voice_ready(lg) for lg in _LANGS}}
 
 
 def _download(url: str, dest: Path) -> None:
@@ -142,28 +216,32 @@ def _install_binary() -> None:
     _write_marker(PIPER_DIR / ".done", _asset)
 
 
-def _install_voice() -> None:
-    if not VOICE_ONNX.exists():
-        _download(VOICE_ONNX_URL, VOICE_ONNX)
-    if not VOICE_JSON.exists():
-        _download(VOICE_JSON_URL, VOICE_JSON)
-    _write_marker(VOICES_DIR / ".done", VOICE_KEY)
+def _install_voice(lang: str) -> None:
+    onnx, js = _voice_paths(lang)
+    url = _voice_info(lang)["url"]
+    if not onnx.exists():
+        _download(url, onnx)
+    if not js.exists():
+        _download(url + ".json", js)
+    _write_marker(VOICES_DIR / ".done", voice_key_for(lang))
 
 
 def download_async() -> threading.Thread:
-    """Scarica binario + voce in background (idempotente)."""
+    """Scarica binario + voce della lingua attiva in background (idempotente)."""
+    lang = current_lang()
     def work():
         with _lock:
-            if is_ready():
+            if is_ready(lang):
                 return
             _state["downloading"] = True
         try:
-            print("[piper] scarico la voce naturale (Piper ~21 MB + Paola ~63 MB)...")
+            info = _voice_info(lang)
+            print(f"[piper] scarico il sintetizzatore (Piper ~21 MB + {info['label']} ~63 MB)...")
             if not _marker_ok(PIPER_DIR / ".done", _asset) or not piper_exe().exists():
                 _install_binary()
-            if not VOICE_ONNX.exists() or not VOICE_JSON.exists():
-                _install_voice()
-            print("[piper] voce naturale pronta: da ora risponde Paola.")
+            if not voice_ready(lang):
+                _install_voice(lang)
+            print(f"[piper] voce naturale pronta: da ora risponde {info['label']}.")
         except Exception as exc:
             print(f"[piper] download non riuscito ({exc}); resta la voce di sistema.")
         finally:
@@ -183,25 +261,34 @@ def ensure_started() -> None:
 def install_sync() -> bool:
     """Installazione bloccante per 'ugo setup'. True se pronto alla fine."""
     with _lock:
-        if is_ready():
+        lang = current_lang()
+        if is_ready(lang):
             return True
         try:
-            print("  download Piper (binario ~21 MB + voce Paola ~63 MB)...")
+            info = _voice_info(lang)
+            print(f"  download Piper (binario ~21 MB + voce {info['label']} ~63 MB)...")
             if not piper_exe().exists():
                 _install_binary()
-            if not VOICE_ONNX.exists() or not VOICE_JSON.exists():
-                _install_voice()
-            return is_ready()
+            if not voice_ready(lang):
+                _install_voice(lang)
+            return is_ready(lang)
         except Exception as exc:
             print(f"  [piper] installazione non riuscita ({exc}); il server riprovera' in background")
             return False
 
 
-def synthesize(text: str, out_wav: Path) -> bool:
-    """Sintetizza text su out_wav (16-bit WAV). False se Piper non e' utilizzabile."""
-    if get_engine() != "piper" or not is_ready():
+def synthesize(text: str, out_wav: Path, lang: str | None = None) -> bool:
+    """Sintetizza text su out_wav (16-bit WAV) con la voce della lingua attiva
+    (o quella richiesta). False se Piper non e' utilizzabile per quella lingua:
+    il chiamante ricade sulla voce di sistema."""
+    lang = lang or current_lang()
+    if get_engine() != "piper" or not piper_exe().exists():
         return False
-    cmd = [str(piper_exe()), "-m", str(VOICE_ONNX), "-f", str(out_wav),
+    onnx, _js = _voice_paths(lang)
+    if not (onnx.exists() and _js.exists()):
+        ensure_voice(lang)  # manca: scarica in background e ripiega sotto
+        return False
+    cmd = [str(piper_exe()), "-m", str(onnx), "-f", str(out_wav),
            "--sentence_silence", "0.25"]
     try:
         r = subprocess.run(cmd, input=text.encode("utf-8"),

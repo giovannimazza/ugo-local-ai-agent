@@ -1,188 +1,195 @@
 # 🎙️ Ugo — Local AI Voice Agent
 
-Assistente vocale **100% locale e offline** — nato su Windows, ora anche su macOS
-e Linux (vedi [Compatibilità](#-compatibilità-multipiattaforma)): parli col microfono, capisce,
-esegue comandi reali sul PC (cartelle, file, app, siti, volume, ricerche web) e ti
-risponde a voce. Nessuna API key, nessun cloud, nessun costo per token.
+A **100% local and offline** voice assistant — born on Windows, now also on macOS
+and Linux (see [Compatibility](#-cross-platform-compatibility)): you talk into the
+microphone, it understands, executes real commands on your PC (folders, files, apps,
+websites, volume, web searches) and answers you by voice. No API keys, no cloud,
+no per-token cost.
 
-Il progetto nasce come dimostrazione di [Laya](https://pypi.org/project/laya/), un
-decision-engine non autoregressivo usato qui per la classificazione degli intent.
+The project started as a demo of [Laya](https://pypi.org/project/laya/), a
+non-autoregressive decision engine used here for intent classification.
 
 ![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-faster--whisper%20%7C%20CTranslate2-purple)
 
 ---
 
-## 🧩 Cosa fa
+## 🌐 Language
 
-| Comando a voce/testo | Risultato |
+The web UI has a **🌐 flag button** to switch between **Italiano** and **English**.
+The choice is global and persisted: it translates the web interface and the desktop
+widget (in sync), switches the Whisper transcription language and pairs the default
+Piper voice — **Italian → Paola**, **English → Amy** (Amy is auto-downloaded, ~63 MB,
+on first switch). English commands are translated into their Italian equivalents by
+Qwen before execution, and assistant replies are translated back into English, so the
+command engine stays uniform.
+
+## 🧩 What it does
+
+| Voice/text command | Result |
 |---|---|
-| *"Crea una cartella chiamata Prova sul desktop"* | cartella reale sul disco |
-| *"Elimina la cartella Prova"* | nel cestino (recuperabile) |
-| *"Crea un file di testo chiamata spesa con dentro latte e pane"* | file .txt con contenuto |
-| *"Aggiungi al file spesa la riga uova"* / *"Leggi il file spesa"* | append / lettura a voce |
-| *"Appunta che domani ho la dentista alle 15"* | nota in `Note.txt` sul desktop |
-| *"Apri Steam" / "Apri calcolatrice" / "Apri EarTrumpet"* | qualsiasi app: menu Start, Microsoft Store/AppX, eseguibili portabili, PATH |
-| *"Chiudi Spotify" / "chiudi il blocco note" / "chiudi calcolatrice forza"* | chiude l'app se è aperta (taskkill graduale → forzato, con verifica del processo); rifiuta i processi di sistema |
-| *"Apri youtube" / "Vai su gmail"* | browser **predefinito** (ShellExecute) |
-| *"Cerca gatti buffi su youtube"* | ricerca diretta su YouTube/Google |
-| *"Quali giochi ho su steam?"* / *"Quali app ho installato?"* | elenco parlato + **modale a schermo** con la lista completa |
-| *"Che ore sono? / Che giorno è oggi?"* | ora e data a voce |
-| *"Alza il volume / Muto"* | controllo audio reale (pycaw) |
-| *"Metti il volume al 30" / "al settanta" / "a metà" / "del 20"* | livello assoluto (cifre, parole o %) o relativo, con verifica del valore ottenuto |
-| *"Abbassa il volume di Discord al 30%"* | **volume per-app**: regola la sessione audio del singolo processo (il mixer di Windows), non il volume di sistema — solo se l'app ha l'audio attivo in quel momento |
-| *"Elenca i file sul desktop"* | lettura cartella reale |
+| *"Crea una cartella chiamata Prova sul desktop"* (Create a folder named Prova on the desktop) | real folder on disk |
+| *"Elimina la cartella Prova"* (Delete the Prova folder) | moved to trash (recoverable) |
+| *"Crea un file di testo chiamata spesa con dentro latte e pane"* (Create a text file called groceries with milk and bread in it) | .txt file with content |
+| *"Aggiungi al file spesa la riga uova"* / *"Leggi il file spesa"* (Add eggs to the grocery file / Read the grocery file) | append / spoken read-back |
+| *"Appunta che domani ho la dentista alle 15"* (Note that I have the dentist tomorrow at 3) | note in `Note.txt` on the desktop |
+| *"Apri Steam"* / *"Apri calcolatrice"* (Open Steam / Open Calculator) | any app: Start menu, Microsoft Store/AppX, portable executables, PATH |
+| *"Chiudi Spotify"* / *"chiudi il blocco note forza"* (Close Spotify / force-close Notepad) | closes the app if running (graceful → forced taskkill, with process verification); refuses system processes |
+| *"Apri youtube"* / *"Vai su gmail"* (Open YouTube / Go to Gmail) | **default** browser (ShellExecute) |
+| *"Cerca gatti buffi su youtube"* (Search funny cats on YouTube) | direct YouTube/Google search |
+| *"Quali giochi ho su steam?"* / *"Quali app ho installato?"* (What games do I have on Steam? / What apps are installed?) | spoken list + **on-screen modal** with the full list |
+| *"Che ore sono?"* (What time is it?) | time and date by voice |
+| *"Alza il volume"* (Turn the volume up) / *"Muto"* (Mute) | real audio control (pycaw) |
+| *"Metti il volume al 30"* (Set the volume to 30) | absolute level (digits, words or %) or relative, with verification of the achieved value |
+| *"Abbassa il volume di Discord al 30%"* (Lower Discord's volume to 30%) | **per-app volume**: adjusts the single process audio session (the Windows mixer), not the system volume — only if the app is currently playing audio |
+| *"Elenca i file sul desktop"* (List the files on the desktop) | reads the real folder |
 
-All'avvio il server indicizza in una **libreria** tutto il PC (collegamenti menu
-Start e desktop, app Microsoft Store/AppX, eseguibili portabili senza registro) e
-legge le **librerie native dei launcher di gioco**: manifest `.acf` di Steam,
-`.item` di Epic, `.info` di GOG, più i launcher Riot/EA/Ubisoft/Battle.net.
-La libreria dà contesto all'IA (per aprire l'app giusta) e alimenta il comando
-"quali giochi/app ho".
+At startup the server indexes the whole PC into a **library** (Start menu and desktop
+shortcuts, Microsoft Store/AppX apps, portable executables with no registry entry) and
+reads the **native libraries of game launchers**: Steam `.acf` manifests, Epic `.item`,
+GOG `.info`, plus Riot/EA/Ubisoft/Battle.net launchers. The library gives the AI context
+(to open the right app) and powers the "what games/apps do I have" command.
 
-Il widget desktop: cerchio flottante trasparente e trascinabile, pillola di input che
-appare al passaggio del mouse, toggle mute del TTS, risposte in una bolla a scomparsa.
+The desktop widget: transparent floating draggable circle, input pill that appears on
+mouse hover, TTS mute toggle, answers in a self-dismissing bubble.
 
-**Correzione automatica degli input**: ogni comando — detto *o scritto* — passa da
-Qwen prima dell'esecuzione, che ripulisce parole sentite/digitate male e nomi d'app
-storti (`apri spotrifyt` → `apri spotify`). Le correzioni che farebbero perdere un
-intent, un luogo (`desktop`, `documenti`…) o un sito noto vengono scartate; se il
-nome dell'app resta irrecuperabile, un fallback fuzzy trova l'app più vicina nella
-libreria. Quando una correzione viene applicata, nella bolla del widget e nella UI
-compare la trascrizione originale in piccolo (🎧 "…").
+**Automatic input correction**: every command — spoken *or typed* — goes through Qwen
+before execution, which cleans up misheard/mistyped words and garbled app names
+(`apri spotrifyt` → `apri spotify`). Corrections that would lose an intent, a location
+(`desktop`, `documenti`…) or a known site are rejected; if the app name is beyond
+repair, a fuzzy fallback finds the closest app in the library. When a correction is
+applied, the original transcript shows up small in the widget bubble and in the web UI
+(🎧 "…").
 
-**Conferma vocale**: se Qwen riscrive la trascrizione in modo radicalmente diverso
-(similarità sotto soglia), Ugo non esegue nulla e chiede *'Hai detto …? Rispondi
-sì o no'* — un sì vocale (anche storto: 'confirmo' vale) esegue il comando proposto,
-un no annulla; dopo 90 secondi la richiesta scade e il comando successivo parte
-normale.
+**Voice confirmation**: if Qwen rewrites the transcript so radically that it no longer
+resembles the original (similarity below threshold), Ugo executes nothing and asks
+*'Did you say …? Answer yes or no'* — a spoken yes (even garbled: 'confirmo' counts)
+executes the proposed command, a no cancels it; after 90 seconds the request expires
+and the next command goes through normally.
 
-**Memoria dei refusi**: ogni correzione applicata — o confermata dall'utente — viene
-salvata in `%LOCALAPPDATA%\ugo\learned_fixes.json` (max ~200 voci, ordinate per
-frequenza) e riusata due volte: come correzione **istantanea** quando il refuso
-ricompare (zero chiamate a Qwen, quindi ~0 ms invece di ~500) e come **esempi
-few-shot** nel prompt di Qwen, che così applica sempre le stesse correzioni che tu
-hai approvato. Il prompt di correzione riceve inoltre solo le **app rilevanti** per
-le parole dette (matching fuzzy sull'indice), invece di un sottoinsieme arbitrario
- della libreria.
+**Typo memory**: every applied correction — or user-confirmed one — is saved to
+`%LOCALAPPDATA%\ugo\learned_fixes.json` (max ~200 entries, sorted by frequency) and
+reused twice: as an **instant** correction when the same typo reappears (zero Qwen
+calls, ~0 ms instead of ~500) and as **few-shot examples** in Qwen's prompt, so it
+keeps applying the same corrections you approved. The correction prompt also receives
+only the **relevant apps** for the spoken words (fuzzy match on the index) instead of
+an arbitrary subset of the library.
 
-**Memoria degli alias-app**: quando Qwen chiede "Non ho nessuna app chiamata X.
-Intendavi Y?" e rispondi **sì**, la coppia *X → Y* viene memorizzata: la seconda
-volta "apri X" apre Y **direttamente** (~40 ms, zero LLM, detector `alias`). Un
-"no" alla domanda cancella l'alias se era stato salvato per errore. Gli alias
-vivono nella stessa sezione `__apps__` del file di memoria.
+**App-alias memory**: when Qwen says "I have no app called X. Did you mean Y?" and you
+answer **yes**, the pair *X → Y* is memorized: the second time, "open X" opens Y
+**directly** (~40 ms, zero LLM, `alias` detector). A "no" deletes the alias if it had
+been saved by mistake. Aliases live in the same `__apps__` section of the memory file.
 
-**Risoluzione pre-intent dalla memoria**: i refusi confermati non aspettano la
-pipeline completa. La memoria viene consultata **prima dell'intent**, su tre
-livelli:
+**Pre-intent memory resolution**: confirmed typos don't wait for the full pipeline.
+Memory is consulted **before the intent**, on three levels:
 
-1. **Fastlane** (Vosk, ~0,3 s, prima ancora di Whisper): "apri spotifi" viene
-   riscritto in "apri Spotify" dalla memoria ed eseguito subito (detector
-   `fastlane`) — quando il nome risolve inequivocabilmente nell'indice app
-2. **Fase pre-intent**: i residui di wake word ("ugo apri spotify",
-   "ehi ugo apri steam") vengono ripuliti (`_strip_wake`), i refusi noti
-   riscritti e se il nome risolve nell'indice il comando parte in ~ms senza
-   Whisper né Qwen (detector `learned`)
-3. **Dentro `open_app`**: il fuzzy-match sull'indice riceve già il nome corretto
-   dalla memoria (per-token, con matching a 0,82), quindi anche varianti mai
-   viste di un refuso noto vengono risolte in locale
+1. **Fastlane** (Vosk, ~0.3 s, even before Whisper): "apri spotifi" is rewritten to
+   "apri Spotify" from memory and executed immediately (`fastlane` detector) — when
+   the name resolves unambiguously in the app index
+2. **Pre-intent phase**: wake word residues ("ugo apri spotify", "ehi ugo apri steam")
+   are cleaned (`_strip_wake`), known typos rewritten and if the name resolves in the
+   index the command runs in ~ms without Whisper or Qwen (`learned` detector)
+3. **Inside `open_app`**: the fuzzy match on the index receives the already-corrected
+   name from memory (per-token, 0.82 matching), so even unseen variants of a known
+   typo resolve locally
 
-**Guardia sì/no**: le risposte di conferma ("sì", "no", "ok va bene", fino a 3
-parole) sono riconosciute solo quando non contengono un verbo d'azione — prima
-"vai e apri spotify" veniva scambiato per una conferma a causa di "vai" e la
-frase spariva senza eseguire nulla. Ora le frasi con apri/chiudi/crea/cerca…
-non sono mai conferme.
+**Yes/no guard**: confirmation answers ("yes", "no", "ok fine", up to 3 words) are
+recognized only when they contain no action verb — before, "vai e apri spotify" (go
+and open Spotify) was mistaken for a confirmation because of "vai" and the phrase
+vanished without executing anything. Sentences with open/close/create/search… are
+never confirmations.
 
-**Scelta vocale numerata**: quando il nome detto è ambiguo (più app molto
-simili: Steam/Stremio/Stream Deck, o alternative proposte da Qwen) la risposta
-è un menu — *"Quale intendevi: 1) Stremio o 2) Steam o 3) Stream Deck?"* — e
-rispondi **"primo", "seconda", "numero 3", "ultimo"**… Il sistema apre l'app
-e **impara l'alias**, così la prossima volta il refuso apre direttamente.
-Il "sì" secco accetta la prima opzione; il "no" annulla; un comando nuovo fa
-decadere il menu; se c'è una domanda in attesa il wake-guard lascia passare la
-risposta breve anche senza wake word.
+**Numbered voice choice**: when the spoken name is ambiguous (several very similar
+apps: Steam/Stremio/Stream Deck, or alternatives proposed by Qwen) the answer is a
+menu — *"Which one did you mean: 1) Stremio or 2) Steam or 3) Stream Deck?"* — and you
+answer **"primo", "seconda", "numero 3", "ultimo"** (first, second, number 3, last)…
+The system opens the app and **learns the alias**, so next time the typo opens it
+directly. A bare "yes" accepts the first option; "no" cancels; a new command expires
+the menu; if a question is pending the wake-guard lets short answers through even
+without the wake word.
 
 ---
 
-## 🏗️ Architettura / Stack
+## 🏗️ Architecture / Stack
 
 ```
  ┌────────────────┐  WAV    ┌──────────────────────────┐
- │ Widget Tkinter  │ ──────▶ │  Server FastAPI           │
+ │ Tkinter widget  │ ──────▶ │  FastAPI server           │
  │ (ugo_agent/  │         │  :8123                    │
  │  widget.py)     │ ◀────── │                           │
- └────────────────┘  testo  │ 1. STT: Whisper           │
-      ▲   bolla             │    large-v3-turbo         │
+ └────────────────┘  text   │ 1. STT: Whisper           │
+      ▲   bubble             │    large-v3-turbo         │
       │   TTS               │    (faster-whisper,       │
-      │                     │    CTranslate2: CUDA o    │
- ┌──────────────┐           │    CPU int8, tutti gli OS)│
- │ UI web       │           │    fallback: Vosk it      │
- │ (browser)    │           │ 2. Correzione STT:        │
- └──────────────┘           │    Qwen ripulisce la      │
-                            │    trascrizione           │
-                            │    (guardie anti-danno)   │
-                            │ 3. Intent: regole +       │
-                            │    Laya (3 livelli)       │
-                            │ 4. Comandi→JSON:          │
+      │                     │    CTranslate2: CUDA or   │
+ ┌──────────────┐           │    int8 CPU, every OS)    │
+ │ Web UI       │           │    fallback: Vosk it      │
+ │ (browser)    │           │ 2. STT correction:        │
+ └──────────────┘           │    Qwen cleans up the     │
+                            │    transcript             │
+                            │    (anti-damage guards)   │
+                            │ 3. Intent: rules +        │
+                            │    Laya (3 levels)        │
+                            │ 4. Commands→JSON:         │
                             │    Qwen2.5 1.5b           │
-                            │    (Ollama, locale)       │
-                            │ 5. Esecuzione reale       │
-                            │    sul PC + TTS           │
-                            │    (Piper, locale)        │
+                            │    (Ollama, local)        │
+                            │ 5. Real execution         │
+                            │    on the PC + TTS        │
+                            │    (Piper, local)         │
                             └──────────────────────────┘
 ```
 
-| Livello | Tecnologia | Ruolo |
+| Layer | Technology | Role |
 |---|---|---|
-| **STT** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) + `large-v3-turbo` CT2 (~1,6 GB): **CUDA** se hai NVIDIA, altrimenti **CPU int8** multi-thread — stesso motore su Windows, macOS e Linux. Benchmark su Ryzen 7800X3D: CPU int8 ~4 s per un comando vocale tipico (~2 s di audio). Fallback Vosk piccolo | trascrizione it/qualunque lingua (env `WHISPER_LANG=auto` per il rilevamento automatico); fallback Vosk |
-| **Intent** | regole testuali + [Laya](https://pypi.org/project/laya/) (ModernBERT, probabilità calibrate) | classificare il comando in ~20 ms, 3 livelli di fallback |
-| **LLM** | Qwen2.5 via [Ollama](https://ollama.com), dimensione **selezionabile** (0.5b / 1.5b / 3b — default 1.5b) | correzione della trascrizione (con guardie anti-danno: intent, luoghi, siti noti) + traduzione frasi libere in specifica JSON (`create_file{name,content}`…) + suggerimento 'Intendavi X?' per le app; fallback fuzzy `difflib` sui nomi d'app. Benchmark su Ryzen 7800X3D: 0.5b ~0,05 s/comando ma pasticcia le frasi corrette; 1.5b ~0,55 s e non tocca nulla di giusto; 3b uguale al 1.5b col doppio della RAM |
-| **Esecuzione** | Python (os, subprocess, send2trash, pycaw, webbrowser) | azioni reali: file system, app, siti, volume |
-| **Librerie app/giochi** | `appindex.py` + `games.py`: menu Start, Store/AppX, portabili, manifest Steam/Epic/GOG | contesto per l'IA, avvio app, elenchi su richiesta |
-| **TTS** | [Piper](https://github.com/rhasspy/piper) neurale locale — voce **Paola** it_IT-medium (~63 MB, auto-download in background); fallback pyttsx3/SAPI (Elsa) selezionabile dalla UI | risposta vocale naturale e offline, interrotta su nuovo input |
-| **GUI** | Tkinter stdlib + Pillow (icone anti-aliasate, keying trasparenza) | widget sempre-on-top trascinabile, zero dipendenze GUI |
+| **STT** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) + `large-v3-turbo` CT2 (~1.6 GB): **CUDA** on NVIDIA, otherwise multi-threaded **int8 CPU** — same engine on Windows, macOS and Linux. Benchmark on Ryzen 7800X3D: int8 CPU ~4 s for a typical voice command (~2 s of audio). Small Vosk fallback | transcription in the active language (`WHISPER_LANG=auto` env for automatic detection); Vosk fallback |
+| **Intent** | text rules + [Laya](https://pypi.org/project/laya/) (ModernBERT, calibrated probabilities) | classify the command in ~20 ms, 3 fallback levels |
+| **LLM** | Qwen2.5 via [Ollama](https://ollama.com), **selectable** size (0.5b / 1.5b / 3b — default 1.5b) | transcript correction (with anti-damage guards: intent, locations, known sites) + translation of free-form phrases into JSON specs (`create_file{name,content}`…) + 'Did you mean X?' app suggestions; fuzzy `difflib` fallback on app names. Benchmark on Ryzen 7800X3D: 0.5b ~0.05 s/command but garbles correct sentences; 1.5b ~0.55 s and never touches what's right; 3b equals 1.5b at double the RAM |
+| **Execution** | Python (os, subprocess, send2trash, pycaw, webbrowser) | real actions: file system, apps, sites, volume |
+| **App/game libraries** | `appindex.py` + `games.py`: Start menu, Store/AppX, portable, Steam/Epic/GOG manifests | AI context, app launching, on-demand lists |
+| **TTS** | [Piper](https://github.com/rhasspy/piper) local neural — **Paola** (it_IT-medium) and **Amy** (en_US-medium) voices (~63 MB each, auto-downloaded in background); selectable pyttsx3/SAPI fallback from the UI | natural offline voice reply, interrupted on new input |
+| **GUI** | Tkinter stdlib + Pillow (anti-aliased icons, transparency keying) | always-on-top draggable widget, zero GUI dependencies |
 
 ---
 
-## ⚙️ Requisiti
+## ⚙️ Requirements
 
-- **Windows 10/11** (esperienza completa) oppure **macOS 13+** / **Linux** (vedi Compatibilità)
-- **Python 3.10+** con pip
-- **GPU**: opzionale — con NVIDIA (CUDA) la trascrizione vola; su CPU pura int8 resta utilizzabile
-- ~3 GB di disco per i modelli
+- **Windows 10/11** (full experience) or **macOS 13+** / **Linux** (see Compatibility)
+- **Python 3.10+** with pip
+- **GPU**: optional — with NVIDIA (CUDA) transcription flies; on plain CPU int8 is still usable
+- ~3 GB of disk for the models
 
-## 🌍 Compatibilità multipiattaforma
+## 🌍 Cross-platform compatibility
 
-Tutte le differenze di sistema operativo sono incapsulate in `ugo_agent/platform_utils.py`
-(cartelle dati, TTS, avvio file, volume, flag subprocess): il resto del codice non fa mai
-branch su `sys.platform` direttamente. La CI verifica installazione, compilazione e
-scansione indici su runner Windows, macOS e Linux a ogni push.
+All OS differences are encapsulated in `ugo_agent/platform_utils.py` (data folders,
+TTS, file launching, volume, subprocess flags): the rest of the code never branches
+on `sys.platform` directly. CI verifies installation, compilation and index scanning
+on Windows, macOS and Linux runners at every push.
 
-| Funzione | Windows | macOS | Linux |
+| Feature | Windows | macOS | Linux |
 |---|---|---|---|
-| Server, pipeline, intent, correzione STT, UI web | ✅ | ✅ | ✅ |
-| STT Whisper (faster-whisper) | ✅ CUDA/CPU | ✅ CUDA/**Metal**/CPU | ✅ CUDA/CPU |
-| TTS italiano | ✅ **Piper (Paola)** + SAPI fallback | ✅ **Piper (Paola)** + NSSpeech fallback | ✅ **Piper (Paola)** + espeak-ng fallback |
-| Indice app | menu Start, Store/AppX, portabili | `/Applications` | `.desktop` (XDG) |
-| Librerie giochi | Steam, Epic, GOG, launcher | **Steam** (stesso formato `.acf`) | **Steam** (stesso formato) |
-| Widget | trasparente click-through | semi-trasparente (Aqua) | semi-trasparente |
-| Volume (master) | pycaw | — (non implementato) | pycaw / pactl / amixer (fallback) |
-| Volume **per-app** (mixer) | ✅ pycaw (sessioni audio) | — | — (limitazione API desktop) |
-| Chiudere app | taskkill | `pkill` | `pkill` |
-| Elencare processi | tasklist | psutil | psutil |
-| Siti e ricerche web | browser predefinito | browser predefinito | browser predefinito |
-| Cartelle dati | `%LOCALAPPDATA%\ugo` | `~/Library/Application Support/ugo` | `~/.local/share/ugo` |
-| Installazione Ollama (`ugo setup`) | winget | brew | script ufficiale |
+| Server, pipeline, intent, STT correction, web UI | ✅ | ✅ | ✅ |
+| Whisper STT (faster-whisper) | ✅ CUDA/CPU | ✅ CUDA/**Metal**/CPU | ✅ CUDA/CPU |
+| TTS | ✅ **Piper (Paola/Amy)** + SAPI fallback | ✅ **Piper (Paola/Amy)** + NSSpeech fallback | ✅ **Piper (Paola/Amy)** + espeak-ng fallback |
+| App index | Start menu, Store/AppX, portable | `/Applications` | `.desktop` (XDG) |
+| Game libraries | Steam, Epic, GOG, launchers | **Steam** (same `.acf` format) | **Steam** (same format) |
+| Widget | click-through transparent | semi-transparent (Aqua) | semi-transparent |
+| Master volume | pycaw | — (not implemented) | pycaw / pactl / amixer (fallback) |
+| **Per-app** volume (mixer) | ✅ pycaw (audio sessions) | — | — (desktop API limitation) |
+| Closing apps | taskkill | `pkill` | `pkill` |
+| Listing processes | tasklist | psutil | psutil |
+| Sites and web searches | default browser | default browser | default browser |
+| Data folders | `%LOCALAPPDATA%\ugo` | `~/Library/Application Support/ugo` | `~/.local/share/ugo` |
+| Ollama installation (`ugo setup`) | winget | brew | official script |
 
-Nota: la repo Systran ufficiale del modello è risultata inaccessibile, quindi si usa
-la conversione CT2 di riferimento della community (`deepdml/faster-whisper-large-v3-turbo-ct2`).
-Con GPU NVIDIA aggiungi i CUDA cuDNN (vedi sotto) per l'accelerazione; altrimenti CPU int8.
+Note: the official Systran model repo turned out to be unreachable, so we use the
+community reference CT2 conversion (`deepdml/faster-whisper-large-v3-turbo-ct2`).
+With an NVIDIA GPU add the CUDA cuDNN packages (see below) for acceleration;
+otherwise int8 CPU.
 
-## 📦 Installazione — un solo comando
+## 📦 Installation — one command
 
-`ugo run` fa **tutto in automatico**: installa le dipendenze mancanti, Ollama
-(via winget su Windows, brew su macOS, script ufficiale su Linux), i modelli Qwen
-(1.5b predefinito + 0.5b di riserva), Whisper large-v3-turbo CTranslate2 (~1,6 GB,
-tutti gli OS) e Vosk di fallback, poi avvia server e widget.
+`ugo run` does **everything automatically**: installs missing dependencies, Ollama
+(via winget on Windows, brew on macOS, official script on Linux), the Qwen models
+(1.5b default + 0.5b reserve), Whisper large-v3-turbo CTranslate2 (~1.6 GB, every OS)
+and the Vosk fallback, then starts the server and the widget.
 
 ### Windows
 
@@ -198,8 +205,8 @@ pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
 ugo run
 ```
 
-Prima volta su macOS: se `brew` manca installalo da [brew.sh](https://brew.sh),
-poi serve la concessione microfono quando macOS la chiede al primo avvio.
+First time on macOS: if `brew` is missing install it from [brew.sh](https://brew.sh),
+then grant microphone permission when macOS asks on first launch.
 
 ### Linux
 
@@ -209,188 +216,189 @@ pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
 ugo run
 ```
 
-`espeak-ng` fornisce la voce TTS, `libportaudio2` il microfono; su distro non-Debian
-usa l'equivalente del tuo gestore pacchetti.
+`espeak-ng` provides the TTS voice, `libportaudio2` the microphone; on non-Debian
+distros use your package manager's equivalent.
 
-Comandi disponibili:
+Available commands:
 
-| Comando | Effetto |
+| Command | Effect |
 |---|---|
-| `ugo run` | avvia tutto (installa prima ciò che manca) |
-| `ugo run server` | solo il server, senza widget |
-| `ugo setup` | solo installazione, senza avviare |
-| `ugo doctor` | diagnostica: cosa è installato e cosa manca |
-| `ugo stop` | ferma widget e server |
-| `ugo update` | controlla GitHub e aggiorna all'ultima versione |
-| `ugo channel` | mostra/cambia il canale di aggiornamento (`dev` o `stable`) |
-| `ugo version` | mostra la versione installata |
-| `ugo help` | lista completa dei comandi con spiegazioni ed esempi |
+| `ugo run` | starts everything (installs what's missing first) |
+| `ugo run server` | server only, no widget |
+| `ugo start` | synonym of `run` |
+| `ugo setup` | installation only, without starting |
+| `ugo doctor` | diagnostics: what's installed and what's missing |
+| `ugo stop` | stops the widget and the server |
+| `ugo log` | opens a terminal showing the passive listening live feed |
+| `ugo update` | checks GitHub and updates to the latest version of the channel |
+| `ugo channel` | shows/switches the update channel (`dev` or `stable`) |
+| `ugo version` | shows the installed version |
+| `ugo help` | full command list with explanations and examples |
 
-Al primo `setup`/`run` la CLI aggiunge automaticamente il comando `ugo` al
-PATH (directory Scripts di pip su Windows, con notifica ai processi — apri un
-terminale nuovo; su macOS/Linux crea un launcher in `~/.local/bin`), così puoi
-richiamarlo da qualsiasi cartella.
+On first `setup`/`run` the CLI automatically adds the `ugo` command to the PATH (pip
+Scripts directory on Windows, with a process notification — open a new terminal; on
+macOS/Linux it creates a launcher in `~/.local/bin`), so you can call it from any
+folder.
 
-### Aggiornamenti automatici
+### Automatic updates
 
-A ogni avvio (`ugo run` o doppio click su `ugo_app.py`) Ugo verifica
-su GitHub se esiste una versione più recente. Per un clone git il confronto è
-sui **commit** (`git fetch` con le tue credenziali: funziona anche con repo
-private); per installazioni pip diretta confronta la versione nel
-`pyproject.toml` remoto.
+At every start (`ugo run` or double-click on `ugo_app.py`) Ugo checks GitHub for a
+newer version. For a git clone the comparison is on **commits** (`git fetch` with your
+saved credentials: works with private repos too); for direct pip installations it
+compares versions in the remote `pyproject.toml`.
 
-- **Da terminale**: chiede conferma (`Aggiornare ora? [s/N]`) prima di fare
-  `git pull` + reinstall del pacchetto, poi riavvia i componenti col codice nuovo
-- **Doppio click** (niente console): aggiorna in silenzio e riparte da solo
-- Le modifiche locali non committate vengono messe da parte (stash) e
-  **ripristinate** dopo l'aggiornamento, mai perse
-- Offline o repo non raggiungibile: il controllo viene saltato, mai un blocco
-- Aggiornamenti manuali comunque possibili: `ugo update`
+- **From a terminal**: asks for confirmation (`Update now? [y/N]`) before
+  `git pull` + package reinstall, then restarts the components with the new code
+- **Double-click** (no console): updates silently and restarts by itself
+- Uncommitted local changes are stashed and **restored** after the update, never lost
+- Offline or unreachable repo: the check is skipped, never a blocker
+- Manual updates always possible: `ugo update`
 
-### Canali di aggiornamento e release
+### Update channels and releases
 
-| Canale | Cosa ricevi | Comando |
+| Channel | What you get | Command |
 |---|---|---|
-| `dev` (predefinito) | l'ultimo codice su `main`, a ogni avvio | `ugo channel dev` |
-| `stable` | solo le release ufficiali (tag `v*`): zero sorprese, rollback facile | `ugo channel stable` |
+| `dev` (default) | the latest code on `main`, at every start | `ugo channel dev` |
+| `stable` | official releases only (tag `v*`): zero surprises, easy rollback | `ugo channel stable` |
 
-Ogni release nasce pushando un tag allineato alla versione del pyproject
-(`git tag v0.3.0 && git push origin v0.3.0`): un workflow GitHub crea la
-release con le note automatiche e nel canale stable `ugo update` porta il
-codice esattamente a quel tag. Per tornare a seguire lo sviluppo:
-`ugo channel dev`.
+Every release is born by pushing a tag aligned with the pyproject version
+(`git tag v0.3.0 && git push origin v0.3.0`): a GitHub workflow creates the release
+with automatic notes, and on the stable channel `ugo update` brings the code exactly
+to that tag. To follow development again: `ugo channel dev`.
 
-#### Rollback a una versione precedente
+#### Rolling back to a previous version
 
-Il canale stable rende il rollback banale: ogni versione rilasciata resta
-taggata su GitHub e `ugo update` porta sempre all'ultima — per tornare
-indietro basta chiedere un tag specifico:
+The stable channel makes rollback trivial: every released version stays tagged on
+GitHub and `ugo update` always brings the latest — to go back, just check out a
+specific tag:
 
 ```bash
-# 1. ferma i componenti
+# 1. stop the components
 ugo stop
 
-# 2. porta il codice esattamente al tag della versione che vuoi (es. v0.3.0)
+# 2. bring the code exactly to the tag of the version you want (e.g. v0.3.0)
 git checkout v0.3.0
 
-# 3. reinstalla e riavvia
+# 3. reinstall and restart
 pip install -e .
 ugo run
 
-# per ripartire con l'ultima versione disponibile:
+# to get back to the latest available version:
 git checkout main && git pull
 ```
 
-Le modifiche locali non committate sopravvivono a tutti questi passaggi
-(stash/checkout le portano dietro); memoria refusi, routine e preferenze
-vivono in `%LOCALAPPDATA%/ugo` e non vengono toccate dal rollback.
+Uncommitted local changes survive all these steps (stash/checkout carry them along);
+typo memory, routines and preferences live in `%LOCALAPPDATA%/ugo` and are never
+touched by a rollback.
 
-### Installazione manuale (alternativa)
+### Manual installation (alternative)
 
 ```bat
-:: 1. dipendenze Python
+:: 1. Python dependencies
 pip install fastapi uvicorn laya pyttsx3 vosk soundcard numpy pillow send2trash faster-whisper pycaw comtypes
 
-:: 2. Ollama + modelli (1.5b e' il default, 0.5b la riserva)
+:: 2. Ollama + models (1.5b is the default, 0.5b the reserve)
 winget install Ollama.Ollama
 ollama pull qwen2.5:1.5b
 ollama pull qwen2.5:0.5b
 
-:: 3. Whisper large-v3-turbo CTranslate2 (~1,6 GB, tutti gli OS)
-:: scaricato automaticamente anche da `ugo setup`/`ugo run`
+:: 3. Whisper large-v3-turbo CTranslate2 (~1.6 GB, every OS)
+:: also downloaded automatically by `ugo setup`/`ugo run`
 huggingface-cli download deepdml/faster-whisper-large-v3-turbo-ct2 ^
   --local-dir %USERPROFILE%\.cache\whisper\faster-whisper-large-v3-turbo
 ```
 
-> Vosk (fallback STT) scarica il modello `vosk-model-small-it-0.22` in
-> `~/.cache/vosk/` al primo avvio se assente; senza il modello CT2 di Whisper si
-> usa solo Vosk. Con GPU NVIDIA installa i CUDA cuDNN per l'accelerazione:
+> Vosk (STT fallback) downloads the `vosk-model-small-it-0.22` model into
+> `~/.cache/vosk/` at first start if missing; without Whisper's CT2 model only Vosk
+> is used. With an NVIDIA GPU install the CUDA cuDNN packages for acceleration:
 > `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*`
 
-## 🚀 Avvio manuale (senza CLI)
+## 🚀 Manual start (without the CLI)
 
 ```bat
-:: un solo comando: pulisce le istanze precedenti e apre server + widget
-doppio click su ugo_app.py     (oppure: python ugo_app.py)
+:: one command: cleans up previous instances and opens server + widget
+double-click on ugo_app.py     (or: python ugo_app.py)
 
-:: con la console si vedono i messaggi di avvio:
+:: with the console you see the startup messages:
 python ugo_app.py
-:: solo server, senza widget:
+:: server only, no widget:
 python ugo_app.py --server
-:: riavvio pulito del server ma riuso di quello attivo se sano:
+:: clean server restart but reuse of the active one if healthy:
 python ugo_app.py --reuse
 
-:: alternativa a mano:
-python ugo_agent\server.py     :: terminale 1
-pythonw ugo_agent\widget.py    :: terminale 2
+:: manual alternative:
+python ugo_agent\server.py     :: terminal 1
+pythonw ugo_agent\widget.py    :: terminal 2
 ```
 
-Se la porta 8123 è occupata da un'istanza precedente questa viene **terminata
-in automatico** (solo se è un processo Python: un programma estraneo sulla porta
-viene rispettato e segnalato) e tutto riparte pulito; i widget desktop duplicati
-vengono chiusi e ne resta uno.
+If port 8123 is occupied by a previous instance it is **terminated automatically**
+(only if it's a Python process: a foreign program on the port is respected and
+reported) and everything restarts clean; duplicate desktop widgets are closed and a
+single one remains.
 
-> I vecchi script `voice_assistant_server.py` e `assistant_widget.py` alla radice
-> sono shim retrocompatibili che puntano al pacchetto. Su macOS/Linux: `python3
-> ugo_agent/server.py` e `python3 ugo_agent/widget.py`.
+> The old root scripts `voice_assistant_server.py` and `assistant_widget.py` are
+> backward-compatible shims pointing at the package. On macOS/Linux: `python3
+> ugo_agent/server.py` and `python3 ugo_agent/widget.py`.
 >
-> File runtime (cache indici, wav, posizioni): `%LOCALAPPDATA%\ugo` su Windows,
-> `~/Library/Application Support/ugo` su macOS, `~/.local/share/ugo` su Linux.
+> Runtime files (index caches, wav, positions): `%LOCALAPPDATA%\ugo` on Windows,
+> `~/Library/Application Support/ugo` on macOS, `~/.local/share/ugo` on Linux.
 
-### Usare il widget
-- **Click** sul cerchio → registra; **secondo click** → invia
-- **Ascolto passivo** 🎙️: di' **"Ugo"** (o *ehi/oh/a Ugo*) e subito il comando
-  — *"Ugo apri Spotify"* — senza toccare nulla. Vosk in streaming, quasi zero CPU;
-  si mette in pausa durante la registrazione manuale e per qualche secondo dopo ogni
-  risposta (così la voce di Ugo non si riattiva da sola). Il pulsante microfono
-  barrato (accanto al mute TTS, in mouse over) disattiva/riattiva l'ascolto passivo
-- **Wake-guard con Whisper**: il rilevatore economico nel widget (Vosk) può
-  scambiare TV, conversazioni o rumore per la wake word. Il server verifica con
-  **Whisper large-v3-turbo** che nella frase ci sia davvero "Ugo" (o una sua
-  storpiatura: *uga, oga, u go, sugo…*) **prima di eseguire**; i falsi positivi
-  vengono scartati in silenzio (niente bolla né voce). Attivo solo sugli invii
-  dell'ascolto passivo (`?wake=1`): dettatura e microfono manuale non cambiano
-- **Wake word neurale (sperimentale)**: `python -m ugo_agent.ww_collect`
-  registra ~40 "Ugo" + ~40 frasi negative della tua voce (ogni positiva viene
-  verificata con Whisper, fuzzy match distanza ≤ 2); `python -m ugo_agent.ww_train`
-  addestra un classificatore openWakeWord custom (ONNX, input `(N,16,96)`) su
-  reali + sintetici Piper e sceglie la soglia in streaming. Il widget lo carica
-  **solo** se supera la validazione (TPR ≥ 60% a FPR 0, dichiarata in
-  `ww_ugo.json`): altrimenti resta il duo Vosk + wake-guard Whisper
-- **Microfono scelto in automatico**: se il dispositivo predefinito è muto (es.
-  interfaccia audio senza input collegato), il widget sonda gli input e usa quello
-  vivo; la scelta resta memorizzata
-- **Doppio click** → info sul trascrittore attivo (Whisper/Vosk, modello, dispositivo)
-- **Mouse over** → appare pillola di input (Invio = manda), **toggle mute TTS** 🔊/🔇
-  e **toggle ascolto passivo** 🎙️/🚫🎙️
-- **Trascina** il widget dove vuoi (la posizione si ricorda)
-- **Click destro** → chiudi
+### Using the widget
+- **Click** on the circle → record; **second click** → send
+- **Passive listening** 🎙️: say **"Ugo"** (or *ehi/oh/a Ugo*) and immediately the
+  command — *"Ugo apri Spotify"* — without touching anything. Streaming Vosk, near
+  zero CPU; it pauses during manual recording and for a few seconds after every
+  answer (so Ugo's own voice doesn't retrigger it). The crossed-out microphone button
+  (next to the TTS mute, on mouse over) turns passive listening off/on
+- **Whisper wake-guard**: the cheap detector in the widget (Vosk) can mistake TV,
+  conversations or noise for the wake word. The server verifies with **Whisper
+  large-v3-turbo** that "Ugo" (or one of its garblings: *uga, oga, u go, sugo…*) is
+  really in the phrase **before executing**; false positives are silently discarded
+  (no bubble, no voice). Only active on passive-listening submissions (`?wake=1`):
+  dictation and manual microphone are unaffected
+- **Neural wake word (experimental)**: `python -m ugo_agent.ww_collect` records ~40
+  "Ugo" + ~40 negative phrases with your voice (every positive is verified with
+  Whisper, fuzzy edit distance ≤ 2); `python -m ugo_agent.ww_train` trains a custom
+  openWakeWord classifier (ONNX, input `(N,16,96)`) on real + synthetic Piper clips
+  and picks the streaming threshold. The widget loads it **only** if it passes
+  validation (TPR ≥ 60% at FPR 0, declared in `ww_ugo.json`): otherwise the Vosk +
+  Whisper wake-guard duo stays
+- **Automatic microphone choice**: if the default device is mute (e.g. an audio
+  interface with no input plugged in), the widget probes the inputs and uses the live
+  one; the choice is remembered
+- **Double-click** → info about the active transcriber (Whisper/Vosk, model, device)
+- **Mouse over** → input pill appears (Enter = send), **TTS mute toggle** 🔊/🔇
+  and **passive listening toggle** 🎙️/🚫🎙️
+- **Drag** the widget anywhere (position is remembered)
+- **Right-click** → close
 
-### UI web
-Interfaccia chat stile ChatGPT su `http://127.0.0.1:8123`: messaggi con avatar,
-hero con comandi suggeriti, microfono nel composer. Le risposte che contengono
-elenchi (giochi, app) aprono una **modale** con la lista completa; il pulsante
-**🗂️ App e giochi** (fisso in alto a destra) apre la libreria completa con
-categorie **comprimibili** (Giochi / Applicazioni / Strumenti di sistema) e
-**ricerca per nome**.
+### Web UI
+A ChatGPT-style chat interface on `http://127.0.0.1:8123`: messages with avatars,
+hero with suggested commands, microphone in the composer. Replies containing lists
+(games, apps) open a **modal** with the full list; the **🗂️ Apps & games** button
+(pinned top-right) opens the complete library with **collapsible** categories
+(Games / Applications / System tools) and **name search**. The **🌐 flag** switches
+between Italian and English (UI, widget, transcription language and voice).
 
-### Routine (macro vocali) ⚡
-Una frase di attivazione esegue una sequenza di comandi in ordine:
+### Routines (voice macros) ⚡
+One activation phrase runs a sequence of commands in order:
 
-- **A voce**: *"Ugo, quando dico modo gaming esegui apri steam; apri discord; volume 80"*
-  (separatori: `;`, "e poi", "poi" — max 8 passi). Poi *"modo gaming"* esegue tutto.
-- **Da web**: pulsante **⚡ Routine** → crea, modifica, esegui (▶) ed elimina.
-- Vivono nella stessa memoria su disco dei refusi/alias (sezione `__routines__`):
-  sopravvivono ai riavvii e sono condivise tra voce e interfaccia.
-- Prima di ogni risposta l'esecutore consulta le routine: il trigger può avere
-  coda ("modo gaming attivato") e vince il trigger più lungo in caso di overlap.
+- **By voice**: *"Ugo, quando dico modo gaming esegui apri steam; apri discord;
+  volume 80"* (Ugo, when I say gaming mode run open steam; open discord; volume 80)
+  (separators: `;`, "e poi", "poi" — max 8 steps). Then "modo gaming" runs it all.
+- **From the web**: the **⚡ Routines** button → create, edit, run (▶) and delete.
+- They live in the same on-disk memory as typos/aliases (the `__routines__`
+  section): they survive restarts and are shared between voice and interface.
+- Before every reply the executor consults routines: the trigger may have a tail
+  ("modo gaming attivato" / "gaming mode activated") and the longest trigger wins on
+  overlap.
 
-### Dashboard latenze 📊
-Il pulsante **📊** in alto mostra in tempo reale (refresh 3 s) dove va il tempo
-su ogni fase: Vosk pre-lettura, fastlane, Whisper, Qwen (correzione/intent/
-suggerimento), TTS Piper e il **totale comando completo** — media, p95, max e
-numero campioni (ultimi 50 per fase), con barre comparative, modelli attivi e
-stato del processo (RAM/CPU/thread). Raccolta sospendibile dal pannello stesso.
+### Latency dashboard 📊
+The **📊** button on top shows in real time (3 s refresh) where time goes at each
+stage: Vosk pre-read, fastlane, Whisper, Qwen (correction/intent/suggestion), Piper
+TTS and the **full command total** — average, p95, max and sample count (last 50 per
+stage), with comparison bars, active models and process state (RAM/CPU/threads).
+Collection can be paused from the panel itself.
 
 ### API
 ```bash
@@ -398,67 +406,70 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
      -d '{"text":"crea una cartella chiamata Prova sul desktop"}'
 ```
 
-| Endpoint | Uso |
+| Endpoint | Use |
 |---|---|
-| `POST /api/text` | esegue un comando testuale |
-| `POST /api/listen` | audio webm dal browser (via ffmpeg) |
-| `POST /api/listen_wav` | WAV PCM dal widget |
-| `GET /api/apps[?q=termine]` | libreria app + giochi, con categorie (ricerca opzionale) |
-| `POST /api/apps/rescan` | reindicizza le app |
-| `GET /api/list` | ultima lista giochi/app richiesta a voce |
-| `GET /api/stt` | trascrittore attivo (motore, modello, dispositivo) |
-| `POST /api/normalize` | corregge una trascrizione con Qwen senza eseguirla: `{raw, text, corrected}` |
-| `GET/POST /api/model` | modello LLM attivo / cambia modello (persistito, menu nel widget e nella UI) |
-| `GET/POST /api/routines` | routine (macro vocali): elenco / create·update·delete·run |
-| `GET/POST /api/stats` | dashboard latenze (medie/p95 per fase, modelli attivi, processo) / pausa-riprendi raccolta |
-| `GET /_tts_reply.wav` | ultima risposta vocale |
+| `POST /api/text` | executes a text command |
+| `POST /api/listen` | webm audio from the browser (via ffmpeg) |
+| `POST /api/listen_wav` | PCM WAV from the widget |
+| `GET /api/apps[?q=term]` | app + game library, with categories (optional search) |
+| `POST /api/apps/rescan` | re-indexes the apps |
+| `GET /api/list` | last game/app list requested by voice |
+| `GET /api/stt` | active transcriber (engine, model, device) |
+| `POST /api/normalize` | corrects a transcript with Qwen without executing: `{raw, text, corrected}` |
+| `GET/POST /api/model` | active LLM model / switch model (persisted, menu in widget and UI) |
+| `GET/POST /api/lang` | active language (it/en) / switch language: voice, Whisper and UI follow |
+| `GET/POST /api/routines` | routines (voice macros): list / create·update·delete·run |
+| `GET/POST /api/stats` | latency dashboard (avg/p95 per stage, active models, process) / pause-resume collection |
+| `GET /_tts_reply.wav` | last spoken reply |
 
-## 📁 Struttura del progetto
+## 📁 Project structure
 
 ```
 ugo_agent/
-├── server.py         # FastAPI: STT (faster-whisper/Vosk), intent, LLM, esecuzione, TTS, API
-├── widget.py         # widget desktop Tkinter (trasparente, trascinabile)
-├── ui.html           # UI web stile ChatGPT
-├── cli.py            # comandi ugo run/setup/doctor/stop
-├── platform_utils.py # astrazioni OS: cartelle, TTS, open, volume, subprocess
-├── appindex.py       # libreria app: lnk/Store/portabili, /Applications, .desktop
-└── games.py          # librerie giochi: Steam (win/mac/linux), Epic, GOG
+├── server.py         # FastAPI: STT (faster-whisper/Vosk), intent, LLM, execution, TTS, API
+├── widget.py         # Tkinter desktop widget (transparent, draggable)
+├── ui.html           # ChatGPT-style web UI
+├── cli.py            # ugo run/setup/doctor/stop commands
+├── platform_utils.py # OS abstractions: folders, TTS, open, volume, subprocess
+├── appindex.py       # app library: lnk/Store/portable, /Applications, .desktop
+└── games.py          # game libraries: Steam (win/mac/linux), Epic, GOG
 ```
 
-File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\ugo` (Windows),
-`~/Library/Application Support/ugo` (macOS) o `~/.local/share/ugo` (Linux).
+Runtime files (index caches, wav, positions) in `%LOCALAPPDATA%\ugo` (Windows),
+`~/Library/Application Support/ugo` (macOS) or `~/.local/share/ugo` (Linux).
 
-## 🍎 Note per piattaforma
+## 🍎 Platform notes
 
-- **Windows**: esperienza completa — Whisper via faster-whisper (CUDA o CPU), widget
-  trasparente click-through, TTS SAPI con voci italiane, controllo volume master e
-  **per-applicazione** (mixer sessioni audio pycaw), chiusura app taskkill.
-- **macOS**: **Whisper ora funziona anche qui**: faster-whisper gira su Metal
-  (configurabile) o CPU, TTS con la voce di sistema, widget semi-trasparente (Aqua non
-  supporta il keying a colore), giochi letti dai manifest `.acf` di Steam
-  (`~/Library/Application Support/Steam`). Al primo avvio concedere il microfono
-  in Impostazioni → Privacy e sicurezza.
-- **Linux**: come macOS per STT/TTS; widget con trasparenza parziale, giochi via
-  Steam (`~/.steam`), indice app dai file `.desktop` XDG. Su Wayland il
-  always-on-top del widget può dipendere dal compositor. Volume master con pycaw o
-  fallback `pactl`/`amixer`; chiusura app via `pkill`.
-- **Ovunque**: server, pipeline (intent + correzione + conferma vocale), UI web e
-  tutti gli endpoint sono identici — cambia solo la "pelle" di sistema.
-- **Accelerazione Whisper**: `WHISPER_DEVICE=auto|cuda|cpu` (default: CUDA se
-  presente), `WHISPER_COMPUTE=default|int8|...`, `WHISPER_LANG=it|auto`.
-  Su macOS è possibile Metal via `pip install ctranslate2` con supporto Metal
-  (sperimentale) o `WHISPER_DEVICE=cpu`.
+- **Windows**: full experience — Whisper via faster-whisper (CUDA or CPU),
+  click-through transparent widget, SAPI TTS with Italian voices, master and
+  **per-application** volume control (pycaw audio session mixer), taskkill app
+  closing.
+- **macOS**: **Whisper works here too**: faster-whisper runs on Metal (configurable)
+  or CPU, TTS with the system voice, semi-transparent widget (Aqua has no color
+  keying), games read from Steam's `.acf` manifests
+  (`~/Library/Application Support/Steam`). On first launch grant the microphone in
+  System Settings → Privacy & Security.
+- **Linux**: like macOS for STT/TTS; widget with partial transparency, games via
+  Steam (`~/.steam`), app index from XDG `.desktop` files. On Wayland the widget's
+  always-on-top may depend on the compositor. Master volume with pycaw or
+  `pactl`/`amixer` fallback; app closing via `pkill`.
+- **Everywhere**: server, pipeline (intent + correction + voice confirmation), web UI
+  and every endpoint are identical — only the system "skin" changes.
+- **Whisper acceleration**: `WHISPER_DEVICE=auto|cuda|cpu` (default: CUDA if present),
+  `WHISPER_COMPUTE=default|int8|...`, `WHISPER_LANG=it|en|auto` (defaults to the UI
+  language).
+  On macOS Metal is possible via `pip install ctranslate2` with Metal support
+  (experimental) or `WHISPER_DEVICE=cpu`.
 
-## 🛠️ Estendere
+## 🛠️ Extending
 
-- **Nuove app/siti**: dizionari `APP_ALIAS` / `SITE_ALIAS` in `ugo_agent/server.py`
-- **Nuovi comandi**: aggiungi parole chiave in `KEYWORDS` + un ramo in `run_command()`
-- **Altri launcher di gioco**: aggiungi un collector in `ugo_agent/games.py`
-- **Disattivare Whisper**: variabile d'ambiente `WHISPER=0` (usa solo Vosk)
-- **Dispositivo/compute Whisper**: env `WHISPER_DEVICE`, `WHISPER_COMPUTE`, `WHISPER_LANG` (vedi Note per piattaforma)
-- **Microfono/latenza**: il modello Whisper resta residente in RAM/VRAM; avvio a freddo ~1 s
+- **New apps/sites**: `APP_ALIAS` / `SITE_ALIAS` dictionaries in `ugo_agent/server.py`
+- **New commands**: add keywords in `KEYWORDS` + a branch in `run_command()`
+- **More game launchers**: add a collector in `ugo_agent/games.py`
+- **Disabling Whisper**: environment variable `WHISPER=0` (Vosk only)
+- **Whisper device/compute**: env `WHISPER_DEVICE`, `WHISPER_COMPUTE`, `WHISPER_LANG` (see Platform notes)
+- **Microphone/latency**: the Whisper model stays resident in RAM/VRAM; cold start ~1 s
 
-## 📄 Licenza
+## 📄 License
 
-Uso personale. Modelli: Whisper (MIT/OpenAI), Qwen2.5 (Apache 2.0), Laya (Apache 2.0).
+Personal use. Models: Whisper (MIT/OpenAI), Qwen2.5 (Apache 2.0), Laya (Apache 2.0).

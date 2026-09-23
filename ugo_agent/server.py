@@ -300,11 +300,20 @@ piper_tts.ensure_started()  # scarica in bg la voce naturale se manca (poi parla
 # in background allo startup: finche' non e' pronto parla la voce di sistema.
 # ---------------------------------------------------------------------------
 def _pick_voice(engine) -> None:
+    """Voce di sistema coerente con la lingua attiva (it: Elsa/Italian;
+    en: Zira/David/English)."""
+    want_en = piper_tts.current_lang() == "en"
     for v in engine.getProperty("voices"):
         name = (v.name or "").lower()
-        if "ital" in name or "elsa" in name or "it-it" in str(getattr(v, "id", "")).lower():
-            engine.setProperty("voice", v.id)
-            return
+        vid = str(getattr(v, "id", "")).lower()
+        if want_en:
+            if "english" in name or "en-us" in vid or "en_us" in vid or "zira" in name or "david" in name:
+                engine.setProperty("voice", v.id)
+                return
+        else:
+            if "ital" in name or "elsa" in name or "it-it" in vid:
+                engine.setProperty("voice", v.id)
+                return
 
 
 def speak(text: str) -> str:
@@ -399,7 +408,8 @@ def _fw_download(name: str) -> None:
 def _whisper_transcribe(pcm16: bytes) -> str:
     """PCM s16le 16k mono -> testo con Whisper turbo."""
     a = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-    lang = os.environ.get("WHISPER_LANG", "it")  # "auto" per il rilevamento automatico
+    # la lingua segue l'impostazione globale (bandiera UI); env override possibile
+    lang = os.environ.get("WHISPER_LANG") or piper_tts.current_lang()
     t0 = time.time()
     segments, _info = get_whisper().transcribe(
         a, language=None if lang == "auto" else lang,
@@ -521,6 +531,17 @@ FILE_INTENTS = {"create_file", "append_file", "delete_file", "read_file"}
 # e siti) PRIMA del riconoscimento dell'intento: il comando eseguito e' quello
 # corretto, non quello dettato male.
 # ---------------------------------------------------------------------------
+TRANSLATE_SCHEMA = (
+    'You translate an English voice command for a PC assistant into the '
+    'equivalent Italian command, so the Italian command engine can execute it. '
+    'Answer ONLY with the translated Italian command. '
+    'Examples: open notepad -> apri il blocco note; open Spotify -> apri spotify; '
+    'what time is it -> che ore sono; create a folder called work on the desktop '
+    '-> crea una cartella chiamata work sul desktop; set volume to 50 -> volume 50. '
+    'Keep app and site names as-is (Spotify, YouTube, Steam). Never execute, '
+    'never answer. If unsure, answer with the original text unchanged.'
+)
+
 NORMALIZE_SCHEMA = (
     'You fix speech-to-text mistakes in an Italian voice command for a PC assistant. '
     'Given the raw transcript, answer ONLY with the corrected Italian command. '
@@ -574,14 +595,18 @@ def _learned_examples(limit: int = 8) -> str:
 
 def normalize_stt(text: str) -> str | None:
     """Ritorna la trascrizione corretta da Qwen, o None se non disponibile.
-    La pipeline usa il risultato solo se effettivamente diverso dall'originale."""
-    print(f"[normalize] chiedo a Qwen ({_llm_model()}): {text!r}")
+    La pipeline usa il risultato solo se effettivamente diverso dall'originale.
+    Con lingua EN: Qwen TRADUDE il comando inglese nell'equivalente italiano
+    (l'engine di intent e di comandi e' italiano), con le stesse guardie."""
+    en_mode = piper_tts.current_lang() == "en"
+    print(f"[normalize] chiedo a Qwen ({_llm_model()}){' [traduco EN->IT]' if en_mode else ''}: {text!r}")
     try:
         import urllib.request
         rel = _relevant_apps(text)
+        schema = (TRANSLATE_SCHEMA if en_mode else NORMALIZE_SCHEMA)
         payload = json.dumps({
             "model": _llm_model(),
-            "system": (NORMALIZE_SCHEMA
+            "system": (schema
                        + (f" Apps possibly mentioned: {rel}." if rel else "")
                        + _learned_examples()),
             "prompt": text,
@@ -2041,11 +2066,43 @@ def qwen_app_suggest(name: str) -> dict | None:
         return None
 
 
+def _translate_reply_it_en(reply: str) -> str:
+    """Con lingua EN traduce la risposta italiana in inglese (Qwen, guardie:
+    non numeri/tempi puri, non troppo lunga, fallback all'originale)."""
+    if piper_tts.current_lang() != "en" or not reply or not re.search(r"[a-zA-Z\u00c0-\u00ff]", reply):
+        return reply
+    # interrogativi/numeri gia' inglesi o tempo: lascia stare (evita SPOKEN clock
+    # tradotto male); le frasi corte generiche invece si traducono
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "model": _llm_model(),
+            "system": ('Translate this Italian assistant reply into natural '
+                       'English. Answer ONLY with the translation. Keep app/site '
+                       'names, numbers and units as-is. If it is already English '
+                       'or you are unsure, repeat it unchanged.'),
+            "prompt": reply,
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": 0, "num_predict": 120},
+        }).encode()
+        req = urllib.request.Request(OLLAMA_URL, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            out = (json.loads(r.read().decode()).get("response") or "").strip().strip('"').strip()
+        if out and "\n" not in out and len(out) <= len(reply) * 3 + 80:
+            return out
+    except Exception as exc:
+        print(f"[lang] traduzione risposta fallita ({exc}); resta l'italiano")
+    return reply
+
+
 def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
           raw: str | None = None, show_list: bool = False) -> dict:
     """Costruisce l'entry di risposta: history, log, voce e ritorno API."""
+    spoken = _translate_reply_it_en(reply)   # lingua EN: parla/traduce in inglese
     entry = {
-        "user": user, "assistant": reply, "intent": intent,
+        "user": user, "assistant": spoken, "intent": intent,
         "detector": src, "input": source, "ms": dt, "ts": datetime.now().isoformat(timespec="seconds"),
     }
     if raw:
@@ -2056,9 +2113,9 @@ def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
         _history.append(entry)
         if len(_history) > 200:
             del _history[:-200]
-    print(f"[cmd] intent={intent} via {src} ({dt} ms): {user!r} -> {reply!r}")
+    print(f"[cmd] intent={intent} via {src} ({dt} ms): {user!r} -> {spoken!r}")
     try:
-        speak(reply)
+        speak(spoken)
     except Exception as exc:
         print(f"[tts] errore: {exc}")
     return entry
@@ -2562,6 +2619,39 @@ def api_normalize(payload: dict):
 def api_model_get():
     """Modello LLM attivo + quelli disponibili (menu widget / UI web)."""
     return {"active": _llm_model(), "available": ollama_models()}
+
+
+# ---------------------------------------------------------------------------
+# Lingua globale (bandiera IT/EN della UI web): guida voce Piper, voce di
+# sistema, lingua Whisper e la traduzione EN->IT dei comandi. Persistita nel
+# prefs di Piper; widget e web la leggono per tradursi in tempo reale.
+# ---------------------------------------------------------------------------
+@app.get("/api/lang")
+def api_lang_get():
+    lang = piper_tts.current_lang()
+    return {"lang": lang,
+            "voice": piper_tts.voice_key_for(lang),
+            "voice_ready": piper_tts.voice_ready(lang),
+            "downloading": piper_tts.status()["downloading"]}
+
+
+@app.post("/api/lang")
+def api_lang_set(payload: dict):
+    lang = (payload.get("lang") or "").lower()[:2]
+    if lang not in ("it", "en"):
+        return JSONResponse({"error": "lingua non supportata (it, en)"},
+                            status_code=400)
+    prev = piper_tts.current_lang()
+    piper_tts.set_language(lang)   # seleziona la voce di default accoppiata
+    if lang == "en" and not piper_tts.voice_ready("en"):
+        piper_tts.ensure_voice("en")  # scarico Amy in background se manca
+    if lang != prev:
+        print(f"[lang] lingua attiva: {prev} -> {lang} "
+              f"(voce: {piper_tts.voice_key_for(lang)})")
+    return {"ok": True, "lang": lang,
+            "voice": piper_tts.voice_key_for(lang),
+            "voice_ready": piper_tts.voice_ready(lang),
+            "downloading": piper_tts.status()["downloading"]}
 
 
 @app.post("/api/model")
