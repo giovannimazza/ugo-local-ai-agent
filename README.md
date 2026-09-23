@@ -29,6 +29,7 @@ decision-engine non autoregressivo usato qui per la classificazione degli intent
 | *"Che ore sono? / Che giorno è oggi?"* | ora e data a voce |
 | *"Alza il volume / Muto"* | controllo audio reale (pycaw) |
 | *"Metti il volume al 30" / "al settanta" / "a metà" / "del 20"* | livello assoluto (cifre, parole o %) o relativo, con verifica del valore ottenuto |
+| *"Abbassa il volume di Discord al 30%"* | **volume per-app**: regola la sessione audio del singolo processo (il mixer di Windows), non il volume di sistema — solo se l'app ha l'audio attivo in quel momento |
 | *"Elenca i file sul desktop"* | lettura cartella reale |
 
 All'avvio il server indicizza in una **libreria** tutto il PC (collegamenti menu
@@ -117,7 +118,7 @@ non sono mai conferme.
                             │    (Ollama, locale)       │
                             │ 5. Esecuzione reale       │
                             │    sul PC + TTS           │
-                            │    (pyttsx3/SAPI)         │
+                            │    (Piper, locale)        │
                             └──────────────────────────┘
 ```
 
@@ -128,7 +129,7 @@ non sono mai conferme.
 | **LLM** | Qwen2.5 via [Ollama](https://ollama.com), dimensione **selezionabile** (0.5b / 1.5b / 3b — default 1.5b) | correzione della trascrizione (con guardie anti-danno: intent, luoghi, siti noti) + traduzione frasi libere in specifica JSON (`create_file{name,content}`…) + suggerimento 'Intendavi X?' per le app; fallback fuzzy `difflib` sui nomi d'app. Benchmark su Ryzen 7800X3D: 0.5b ~0,05 s/comando ma pasticcia le frasi corrette; 1.5b ~0,55 s e non tocca nulla di giusto; 3b uguale al 1.5b col doppio della RAM |
 | **Esecuzione** | Python (os, subprocess, send2trash, pycaw, webbrowser) | azioni reali: file system, app, siti, volume |
 | **Librerie app/giochi** | `appindex.py` + `games.py`: menu Start, Store/AppX, portabili, manifest Steam/Epic/GOG | contesto per l'IA, avvio app, elenchi su richiesta |
-| **TTS** | pyttsx3 → voci SAPI di Windows (Elsa IT) | risposta vocale offline, interrotta su nuovo input |
+| **TTS** | [Piper](https://github.com/rhasspy/piper) neurale locale — voce **Paola** it_IT-medium (~63 MB, auto-download in background); fallback pyttsx3/SAPI (Elsa) selezionabile dalla UI | risposta vocale naturale e offline, interrotta su nuovo input |
 | **GUI** | Tkinter stdlib + Pillow (icone anti-aliasate, keying trasparenza) | widget sempre-on-top trascinabile, zero dipendenze GUI |
 
 ---
@@ -151,11 +152,15 @@ scansione indici su runner Windows, macOS e Linux a ogni push.
 |---|---|---|---|
 | Server, pipeline, intent, correzione STT, UI web | ✅ | ✅ | ✅ |
 | STT Whisper (faster-whisper) | ✅ CUDA/CPU | ✅ CUDA/**Metal**/CPU | ✅ CUDA/CPU |
-| TTS italiano | ✅ SAPI (Elsa) | ✅ NSSpeech (Alice) | ✅ espeak-ng (`apt install espeak-ng`) |
+| TTS italiano | ✅ **Piper (Paola)** + SAPI fallback | ✅ **Piper (Paola)** + NSSpeech fallback | ✅ **Piper (Paola)** + espeak-ng fallback |
 | Indice app | menu Start, Store/AppX, portabili | `/Applications` | `.desktop` (XDG) |
 | Librerie giochi | Steam, Epic, GOG, launcher | **Steam** (stesso formato `.acf`) | **Steam** (stesso formato) |
 | Widget | trasparente click-through | semi-trasparente (Aqua) | semi-trasparente |
-| Volume | pycaw | osascript | pactl (se presente) |
+| Volume (master) | pycaw | — (non implementato) | pycaw / pactl / amixer (fallback) |
+| Volume **per-app** (mixer) | ✅ pycaw (sessioni audio) | — | — (limitazione API desktop) |
+| Chiudere app | taskkill | `pkill` | `pkill` |
+| Elencare processi | tasklist | psutil | psutil |
+| Siti e ricerche web | browser predefinito | browser predefinito | browser predefinito |
 | Cartelle dati | `%LOCALAPPDATA%\chicco` | `~/Library/Application Support/chicco` | `~/.local/share/chicco` |
 | Installazione Ollama (`chicco setup`) | winget | brew | script ufficiale |
 
@@ -346,7 +351,8 @@ File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows)
 ## 🍎 Note per piattaforma
 
 - **Windows**: esperienza completa — Whisper via faster-whisper (CUDA o CPU), widget
-  trasparente click-through, TTS SAPI con voci italiane, controllo volume pycaw.
+  trasparente click-through, TTS SAPI con voci italiane, controllo volume master e
+  **per-applicazione** (mixer sessioni audio pycaw), chiusura app taskkill.
 - **macOS**: **Whisper ora funziona anche qui**: faster-whisper gira su Metal
   (configurabile) o CPU, TTS con la voce di sistema, widget semi-trasparente (Aqua non
   supporta il keying a colore), giochi letti dai manifest `.acf` di Steam
@@ -354,7 +360,8 @@ File runtime (cache indici, wav, posizioni) in `%LOCALAPPDATA%\chicco` (Windows)
   in Impostazioni → Privacy e sicurezza.
 - **Linux**: come macOS per STT/TTS; widget con trasparenza parziale, giochi via
   Steam (`~/.steam`), indice app dai file `.desktop` XDG. Su Wayland il
-  always-on-top del widget può dipendere dal compositor.
+  always-on-top del widget può dipendere dal compositor. Volume master con pycaw o
+  fallback `pactl`/`amixer`; chiusura app via `pkill`.
 - **Ovunque**: server, pipeline (intent + correzione + conferma vocale), UI web e
   tutti gli endpoint sono identici — cambia solo la "pelle" di sistema.
 - **Accelerazione Whisper**: `WHISPER_DEVICE=auto|cuda|cpu` (default: CUDA se

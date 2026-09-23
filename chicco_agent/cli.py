@@ -27,6 +27,7 @@ except ImportError:  # eseguito come script diretto
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from chicco_agent import platform_utils as pu
+from chicco_agent import piper_tts
 
 DATA = pu.data_dir()
 FW_DIR = Path.home() / ".cache" / "whisper" / "faster-whisper-large-v3-turbo"
@@ -328,6 +329,9 @@ def cmd_setup() -> int:
     install_qwen()
     install_whisper()
     install_vosk()
+    _step("Voce naturale Piper (TTS locale, ~85 MB)")
+    from . import piper_tts
+    _ok("voce naturale pronta") if piper_tts.install_sync() else _warn("si scarichera' al primo avvio")
     print("\nSetup completato. Avvia con:  chicco run")
     print("Se il terminale non trova 'chicco', aprine uno nuovo.")
     return 0
@@ -340,6 +344,7 @@ def cmd_doctor() -> int:
         ("Laya (intent)", py_import("laya")),
         ("Whisper large-v3-turbo (CT2)", _fw_file_present()),
         ("Vosk it", VOSK_DIR.is_dir()),
+        ("Voce naturale Piper (Paola)", piper_tts.is_ready()),
         ("Ollama installato", OLLAMA_EXE.exists()),
         ("Ollama attivo", ollama_ok()),
         ("Qwen2.5 0.5B", qwen_ok()),

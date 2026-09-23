@@ -119,6 +119,7 @@
 <div class="topbar">
 <button class="appsbtn small" id="modelbtn" title="Modello AI per correzione e interpretazione">⚙️ <span id="modelname">…</span></button>
 <button class="appsbtn small" id="sttbtn" title="Modello di trascrizione vocale (Whisper)">🎤 <span id="sttname">…</span></button>
+<button class="appsbtn small" id="ttsbtn" title="Voce di risposta (TTS)">🔊 <span id="ttsname">…</span></button>
 <button class="appsbtn small" id="membtn" title="Memoria appresa: refusi corretti e alias-app">🧠 <span id="memcount">…</span></button>
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
 </div>
@@ -321,6 +322,62 @@ document.getElementById('sttbtn').onclick = openSttMenu;
 (async () => { try { const s = await (await fetch('/api/stt/models')).json();
   const a = s.models.find(m => m.active);
   document.getElementById('sttname').textContent = a ? a.id : s.fallback; } catch {} })();
+
+// --- menu voce di risposta (TTS): Piper naturale (Paola) / voce di sistema ---
+async function openTtsMenu() {
+  try {
+    const d = await (await fetch('/api/tts')).json();
+    mtitle.textContent = 'Voce di risposta';
+    mcount.textContent = 'piper: naturale e locale — sistema: sempre disponibile';
+    msearch.style.display = 'none';
+    mlist.innerHTML = '';
+    const SUB = {piper: 'voce neurale naturale, locale (~63 MB)', sapi: 'Elsa SAPI / voce di sistema'};
+    for (const m of d.engines) {
+      const tag = m.downloading ? ' \u23f3 download\u2026' : (m.installed ? '' : '  \u2b07 non installato');
+      const it = {title: (m.id === 'piper' ? 'Paola — Piper' : 'Voce di sistema') + tag,
+                  subtitle: SUB[m.id] || '', kind: 'appx'};
+      const rowEl = row(it);
+      rowEl.classList.add('click');
+      if (m.active) {
+        const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713';
+        rowEl.appendChild(c);
+      }
+      rowEl.onclick = async () => {
+        if (m.downloading) return;
+        const rr = await fetch('/api/tts/engine', {method:'POST',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify({engine: m.id})});
+        const dd = await rr.json();
+        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || 'cambio fallito')); return; }
+        ovl.classList.remove('open');
+        const nameEl = document.getElementById('ttsname');
+        if (dd.status === 'downloading') {
+          nameEl.textContent = 'sistema (temp)';
+          add('bot', '\u2b07\ufe0f Scarico la voce naturale Piper (~85 MB, in background). Finche\u0300 non e\u0300 pronta risponde la voce di sistema.');
+          const poll = setInterval(async () => {
+            try {
+              const s = await (await fetch('/api/tts')).json();
+              const me = s.engines.find(x => x.id === 'piper');
+              if (me && me.installed) { clearInterval(poll);
+                nameEl.textContent = 'Paola';
+                add('bot', '\u2705 Voce naturale pronta: da ora risponde Paola.'); }
+            } catch { clearInterval(poll); }
+          }, 4000);
+        } else {
+          nameEl.textContent = m.id === 'piper' ? 'Paola' : 'sistema';
+        }
+      };
+      mlist.appendChild(rowEl);
+    }
+    ovl.classList.add('open');
+  } catch {}
+}
+document.getElementById('ttsbtn').onclick = openTtsMenu;
+(async () => { try { const s = await (await fetch('/api/tts')).json();
+  const a = s.engines.find(m => m.active);
+  const el = document.getElementById('ttsname');
+  if (!a) { el.textContent = '?'; return; }
+  el.textContent = (a.id === 'piper') ? (a.installed ? 'Paola' : 'sistema (temp)') : 'sistema';
+} catch {} })();
 async function openApps() {
   try {
     const r = await fetch('/api/apps'); const d = await r.json();

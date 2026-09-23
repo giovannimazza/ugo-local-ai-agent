@@ -9,6 +9,7 @@ verificati in CI (install + import + compileall su runner reali).
 """
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -133,6 +134,42 @@ def tts_play_file(wav_path: Path) -> None:
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
+
+
+def press_media_keys(up_steps: int, down_steps: int) -> bool:
+    """Premi i tasti multimediali volume su mac/Linux (fallback senza pycaw).
+    Ritorna True se il sistema operativo e' supportato."""
+    if not IS_LINUX:
+        # mac non ha tasti multimediali via CLI; su Windows c'e' pycaw/tasti SendKeys
+        return False
+    try:
+        if up_steps:
+            subprocess.Popen(["sh", "-c",
+                              f"for i in $(seq {up_steps}); do {pactl_or_alsa('up')}; done"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if down_steps:
+            subprocess.Popen(["sh", "-c",
+                              f"for i in $(seq {down_steps}); do {pactl_or_alsa('down')}; done"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def pactl_or_alsa(direction: str) -> str:
+    """Comando singolo di aggiustamento volume su Linux (pactl se c'e', alsa altrimenti).
+    direction: 'up' | 'down' | 'mute'."""
+    if direction == "mute":
+        if shutil.which("pactl"):
+            return "pactl set-sink-mute @DEFAULT_SINK@ toggle"
+        if shutil.which("amixer"):
+            return "amixer -q set Master toggle"
+        return "true"
+    if shutil.which("pactl"):
+        return f"pactl set-sink-volume @DEFAULT_SINK@ {'+' if direction == 'up' else '-'}2%"
+    if shutil.which("amixer"):
+        return f"amixer -q set Master {'5%+' if direction == 'up' else '5%-'}"
+    return "true"
 
 
 # ---------------------------------------------------------------------------

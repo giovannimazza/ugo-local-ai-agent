@@ -39,10 +39,12 @@ from pathlib import Path
 
 try:  # pacchetto (pip install / -m) O script diretto (python chicco_agent/server.py)
     from . import platform_utils as pu
+    from . import piper_tts
 except ImportError:
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from chicco_agent import platform_utils as pu
+    from chicco_agent import piper_tts
 
 import laya
 import pyttsx3
@@ -241,10 +243,13 @@ except Exception as exc:  # laya opzionale: senza, si usa solo il matching testu
 
 print("[apps] scansione libreria applicazioni in background...")
 appindex.scan_async()  # lnk + Microsoft Store/AppX + portabili, all'avvio
+piper_tts.ensure_started()  # scarica in bg la voce naturale se manca (poi parla Paola)
 
 
 # ---------------------------------------------------------------------------
-# TTS (Elsa, italiano)
+# TTS: Piper neurale (Paola, naturale) con fallback sulla voce di sistema
+# (SAPI/Elsa su Windows, NSSpeech/espeak altrove). Il download di Piper parte
+# in background allo startup: finche' non e' pronto parla la voce di sistema.
 # ---------------------------------------------------------------------------
 def _pick_voice(engine) -> None:
     for v in engine.getProperty("voices"):
@@ -258,6 +263,11 @@ def speak(text: str) -> str:
     """Riproduce la risposta a voce e ritorna il path del file wav generato."""
     out = BASE / "_tts_reply.wav"
     with _tts_lock:
+        try:
+            if piper_tts.synthesize(text, out):
+                return str(out)          # voce naturale: fatta
+        except Exception as exc:
+            print(f"[piper] inatteso ({exc}); passo alla voce di sistema")
         try:
             engine = pyttsx3.init()
             _pick_voice(engine)
@@ -379,6 +389,7 @@ LAYA_QUESTIONS = {
             "time": "ask what time it is",
             "date": "ask what day or date it is today",
             "volume": "turn volume up, down or mute the computer",
+            "set_app_volume": "set, raise or lower the volume of ONE specific application (e.g. lower Discord's volume to 30 percent)",
             "close_app": "close or quit a running application the user names",
             "list_files": "list or show the files in a directory",
             "list_apps": "ask which apps or games are installed (e.g. what games do I have on steam)",
@@ -426,7 +437,8 @@ OLLAMA_SCHEMA = (
     'Allowed actions: create_folder{name,location}, delete_folder{name,location}, '
     'create_file{name,content,location}, append_file{name,content,location}, '
     'delete_file{name,location}, read_file{name,location}, open_app{app}, '
-    'open_site{site}, close_app{name}, search_web{query,site}, volume{direction}, time{}, date{}, unknown{}. '
+    'open_site{site}, close_app{name}, set_app_volume{app,level}, search_web{query,site}, volume{direction}, time{}, date{}, unknown{}. '
+    'set_app_volume sets the audio volume of ONE application (level 0-100), not the system volume. '
     'close_app closes a running application the user asked to quit. '
     'location is one of: desktop, documents, downloads, home. '
     'For create_file and append_file the name MUST end with .txt (text file). '
@@ -811,7 +823,14 @@ def keyword_intent(text: str):
     for alias in SITE_ALIAS:
         if re.search(rf"\b{re.escape(alias)}\b", t):
             return "open_site"
-    # 2) poi le app, le cartelle e il resto
+    # 2) il volume di UNA SINGOLA app ha la precedenza sul volume di sistema:
+    #    'abbassa il volume di discord' come 'volume di comet al 60%' (senza
+    #    verbo) regola il mixer per-app. 'volume del sistema/pc' resta master.
+    if ("volume" in t or "audio" in t or "suono" in t) and \
+            re.search(r"\b(?:volume|audio|suono)\s+(?:di|del|della|per)\s+[a-z]", t) and \
+            not re.search(r"\b(?:sistema|computer|pc|dispositivo)\b", t):
+        return "set_app_volume"
+    # 3) poi le app, le cartelle e il resto
     for label, words in KEYWORDS:
         for w in words:
             if w in t:
@@ -965,6 +984,15 @@ def execute_spec(spec: dict, text: str) -> str:
     if action == "search_web" and spec.get("query"):
         site = "youtube" if "youtube" in str(spec.get("site") or "") else "google"
         return run_command(f"cerca {spec['query']} su {site}", "open_site")
+    if action == "set_app_volume" and spec.get("app"):
+        try:
+            level = max(0, min(100, int(str(spec.get("level") or "").strip().rstrip("%"))))
+        except ValueError:
+            level = None
+        if level is None:  # senza livello: relativo dal verbo nella frase
+            mode = "down" if any(w in tl for w in ("abbassa", "diminuisci", "riduci", "azzer")) else "up"
+            return _set_app_volume(str(spec["app"]), mode, 10)
+        return _set_app_volume(str(spec["app"]), "abs", level)
 
     return ("Non ho capito il comando. Posso creare o eliminare cartelle e file di testo, "
             "aprire app e siti, cercare su YouTube o Google, darti ora e data, "
@@ -1078,6 +1106,155 @@ def _endpoint_volume():
     return cast(iface, POINTER(IAudioEndpointVolume))
 
 
+# ---------------------------------------------------------------------------
+# Volume PER-APPLICAZIONE: regola la sessione audio del singolo processo
+# (l'icona "Mixer volume" di Windows), NON il volume master del sistema.
+# ---------------------------------------------------------------------------
+def _audio_sessions() -> list:
+    """Sessioni audio attive: [(processo_minuscolo, volume, sessione), ...]"""
+    if not pu.IS_WINDOWS:
+        return []
+    try:
+        from pycaw.pycaw import AudioUtilities
+        import comtypes
+        comtypes.CoInitialize()
+        out = []
+        for s in AudioUtilities.GetAllSessions():
+            try:
+                if s.Process is None or s.SimpleAudioVolume is None:
+                    continue
+                name = (s.Process.name() or "").lower().removesuffix(".exe")
+                if name:
+                    out.append((name, s.SimpleAudioVolume, s))
+            except Exception:
+                continue
+        return out
+    except Exception as exc:
+        print(f"[volume-app] errore pycaw: {exc}")
+        return []
+
+
+# token che non fanno parte del nome dell'app nel comando volume
+_APPVOL_NOISE = re.compile(
+    r"\b(?:abbassa|alza|aumenta|diminuisci|riduci|imposta|metti|porta|regola|"
+    r"azzer\w*|silenz\w*|tira)\b|\b(?:il|lo|la|l'|un|una|di|del|della|"
+    r"dei|delle|al|alla|a|su|volume|audio|suono|percento|per\s?cento)\b|"
+    r"\d+\s*%?|\b(?:al|a|del|di|su)\s+\d+\b|\b(?:settanta|trenta|venti|dieci|"
+    r"quaranta|cinquanta|sessanta|ottanta|novanta|cento|massimo|minimo|meta)\b")
+
+
+def _appvol_app_name(t: str) -> str:
+    """Estrae il nome dell'app dal comando 'abbassa il volume di discord al 30%':
+    tutto quello che sta tra il verbo e il primo 'di/a' o la percentuale."""
+    m = re.search(
+        r"(?:(?:abbassa|alza|aumenta|diminuisci|riduci|imposta|metti|regola|"
+        r"azzer\w*|silenz\w*|tira)\b.*?)?"
+        r"\b(?:volume|audio|suono)\s*(?:di|del|della|per)\s+(.+?)"
+        r"\s*(?:\bal\b|\ba\b|alla|\d|%|$)", t)
+    if not m:
+        return ""
+    name = _APPVOL_NOISE.sub(" ", m.group(1))
+    return re.sub(r"\s+", " ", name).strip(" ?!.,")
+
+
+def _parse_app_volume(t: str):
+    """Percentuale dal comando volume-app: ('abs', 30) | ('up', 10) | ('down', 10).
+    Diverso dal volume master: qui 'al 30' / '30%' e' ASSOLUTO anche con
+    'abbassa' davanti ('abbassa il volume di discord al 30%' = mettilo A 30),
+    mentre 'del/di 20' e' relativo ('abbassa ... del 20' = togli 20)."""
+    if re.search(r"\bazzer\w*", t):
+        return "abs", 0
+    m = (re.search(r"\b(?:al|alla|a)\s+(\d{1,3})\b", t)
+         or re.search(r"(\d{1,3})\s*%", t)
+         or re.search(r"\b(?:volume|audio|suono)\s+(\d{1,3})\b", t))
+    if m and 0 <= int(m.group(1)) <= 100:
+        return "abs", int(m.group(1))
+    m = re.search(r"\b(?:del|di)\s+(\d{1,3})\b", t)
+    if m and 0 <= int(m.group(1)) <= 100:  # 'abbassa del 20' -> relativo
+        up = any(w in t for w in ("alza", "aumenta"))
+        return ("up" if up else "down"), int(m.group(1))
+    for word, val in _IT_NUMBERS.items():
+        if re.search(rf"\b(?:al|a|alla)\s+{word}\b", t):
+            return "abs", val
+    if "massimo" in t or "al max" in t:
+        return "abs", 100
+    if "minimo" in t or "al min" in t:
+        return "abs", 0
+    if "meta" in t or "met\u00e0" in t or "mezzo" in t:
+        return "abs", 50
+    return None
+
+
+def _resolve_audio_process(name: str) -> str | None:
+    """Trova il processo della sessione audio che combacia meglio col nome detto
+    ('discord' -> 'discord', 'league of legends' -> 'leagueclient', ...)."""
+    if not name:
+        return None
+    from difflib import get_close_matches
+    sessions = _audio_sessions()
+    procs = sorted({p for p, _, _ in sessions})
+    if not procs:
+        return None
+    n = name.lower().strip()
+    # 1) match esatto o sottostringa ('discord' in 'discordptt' ecc.)
+    for p in procs:
+        if n == p or n in p or p in n:
+            return p
+    # 2) fuzzy
+    m = get_close_matches(n, procs, n=1, cutoff=0.6)
+    return m[0] if m else None
+
+
+def _set_app_volume(app_name: str, mode: str, level: int) -> str:
+    """Imposta/relativa il volume della sessione audio di UNA app.
+    mode: 'abs' (imposta al livello), 'up'/'down' (relativo)."""
+    if not pu.IS_WINDOWS:
+        return "Il volume per singola applicazione al momento funziona solo su Windows."
+    proc = _resolve_audio_process(app_name)
+    if not proc:
+        sess = [p for p, _, _ in _audio_sessions()]
+        return (f"Non trovo nessuna app attiva con l'audio acceso che si chiami "
+                f"'{app_name}'. App con audio in questo momento: "
+                f"{', '.join(sess) if sess else 'nessuna'}.")
+    sessions = _audio_sessions()
+    vol = next((v for p, v, _ in sessions if p == proc), None)
+    if vol is None:
+        return f"Non riesco ad accedere al volume di {proc}."
+    cur = int(round(vol.GetMasterVolume() * 100))
+    if mode == "abs":
+        new = max(0, min(100, level))
+    elif mode == "up":
+        new = min(100, cur + level)
+    else:
+        new = max(0, cur - level)
+    vol.SetMasterVolume(new / 100.0, None)
+    got = int(round(vol.GetMasterVolume() * 100))
+    if abs(got - new) > 3:
+        return f"Non sono riuscito a regolare il volume di {proc} al {new} per cento."
+    if got == 0:
+        return f"Volume di {proc} azzerato."
+    return f"Volume di {proc} portato al {got} per cento."
+
+
+def _get_app_volume(app_name: str) -> str:
+    """Legge il volume attuale della sessione audio di UNA app
+    ('volume di discord?' senza verbi ne' numeri)."""
+    if not pu.IS_WINDOWS:
+        return "Il volume per singola applicazione al momento funziona solo su Windows."
+    proc = _resolve_audio_process(app_name)
+    if not proc:
+        sess = sorted({p for p, _, _ in _audio_sessions()})
+        return (f"Non trovo nessuna app attiva con l'audio acceso che si chiami "
+                f"'{app_name}'. App con audio in questo momento: "
+                f"{', '.join(sess) if sess else 'nessuna'}.")
+    vol = next((v for p, v, _ in _audio_sessions() if p == proc), None)
+    if vol is None:
+        return f"Non riesco a leggere il volume di {proc}."
+    cur = int(round(vol.GetMasterVolume() * 100))
+    return (f"{proc} e' muto." if cur == 0
+            else f"Volume di {proc} al {cur} per cento.")
+
+
 # processi che Chicco si rifiuta di chiudere (sistema o se stesso)
 _CLOSE_PROTECTED = {"explorer", "winlogon", "csrss", "dwm", "system", "idle",
                     "python", "pythonw", "ollama", "audiodg", "svchost", "services"}
@@ -1086,7 +1263,13 @@ _CLOSE_PROTECTED = {"explorer", "winlogon", "csrss", "dwm", "system", "idle",
 def _running_processes() -> list:
     """Nomi immagine (senza .exe) dei processi attivi, minuscoli e deduplicati."""
     if not pu.IS_WINDOWS:
-        return []
+        # mac / Linux: psutil (niente tasklist.exe)
+        try:
+            import psutil
+            return sorted({p.info["name"].lower().removesuffix(".exe")
+                           for p in psutil.process_iter(["name"]) if p.info["name"]})
+        except Exception:
+            return []
     try:
         r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
                            text=True, timeout=15,
@@ -1104,6 +1287,14 @@ def _running_processes() -> list:
 
 def _still_running(img: str) -> bool:
     """True se esiste ancora un processo con quel nome immagine."""
+    if not pu.IS_WINDOWS:
+        try:
+            import psutil
+            base = img.lower().removesuffix(".exe")
+            return any(p.info["name"].lower().removesuffix(".exe") == base
+                       for p in psutil.process_iter(["name"]) if p.info["name"])
+        except Exception:
+            return False
     try:
         r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {img}"],
                            capture_output=True, text=True, timeout=15,
@@ -1125,6 +1316,17 @@ def _kill_by_image(base: str, force: bool = False, display: str | None = None) -
     if img.lower()[:-4] in _CLOSE_PROTECTED:
         return "Questo processo di sistema non lo chiudo per sicurezza."
     nome = display or base
+    if not pu.IS_WINDOWS:
+        # mac / Linux: pkill prima educato (SIGTERM), poi forzato (SIGKILL)
+        try:
+            r = subprocess.run(["pkill", "-f" if force else "-x", base],
+                               capture_output=True, text=True, timeout=15)
+            return (f"Ho chiuso {nome}." if r.returncode == 0
+                    else f"Non vedo {nome} tra i programmi aperti.")
+        except FileNotFoundError:
+            return "Comando pkill non disponibile su questo sistema."
+        except Exception as exc:
+            return f"Errore chiudendo {nome}: {exc}"
     flags = subprocess.CREATE_NO_WINDOW if pu.IS_WINDOWS else 0
     try:
         if force:
@@ -1360,8 +1562,8 @@ def run_command(text: str, intent: str) -> str:
                 return f"Sto aprendo {app['name']}{extra}."
             except Exception as exc:
                 print(f"[open_app] launch {app} fallito: {exc}")
-        # 2) vecchio percorso: scorciatoie Start via cache .lnk
-        lnk = _find_shortcut(rest)
+        # 2) vecchio percorso: scorciatoie Start via cache .lnk (solo Windows)
+        lnk = _find_shortcut(rest) if pu.IS_WINDOWS else None
         if lnk is not None:
             try:
                 os.startfile(str(lnk))  # noqa: S606
@@ -1383,9 +1585,9 @@ def run_command(text: str, intent: str) -> str:
         if exe:
             subprocess.Popen([exe])
             return f"Sto aprendo {rest}."
-        # 4) ultimo tentativo: ShellExecute risolve anche gli App Paths del registro
+        # 4) ultimo tentativo: apertura col programma predefinito del sistema
         try:
-            os.startfile(rest)  # noqa: S606
+            pu.open_path(rest)  # noqa: S606
             return f"Sto aprendo {rest}."
         except Exception:
             return (f"Non trovo nessuna app chiamata {rest}. "
@@ -1399,7 +1601,7 @@ def run_command(text: str, intent: str) -> str:
                 url = f"https://www.youtube.com/results?search_query={q}"
             else:
                 url = f"https://www.google.com/search?q={q}"
-            os.startfile(url)  # noqa: S606 - apre il browser predefinito (es. Comet)
+            webbrowser.open(url)  # browser predefinito su TUTTI i sistemi operativi
             return f"Cerco {query} su {site.capitalize()}."
 
         # 1) "cerca X su youtube/google" (\b per non far combaciare "cerca" dentro "ricerca")
@@ -1427,13 +1629,13 @@ def run_command(text: str, intent: str) -> str:
             return web_search("google", m.group(1))
         for alias, url in SITE_ALIAS.items():
             if re.search(rf"\b{re.escape(alias)}\b", t):
-                # os.startfile usa ShellExecute -> apre il BROWSER PREDEFINITO
-                os.startfile(url)  # noqa: S606
+                # webbrowser.open usa il BROWSER PREDEFINITO su ogni sistema
+                webbrowser.open(url)  # noqa: S606
                 return f"Apro {alias} nel browser."
         m = re.search(r"(?:vai (?:su|a)|portami su|apri)\s+([a-z0-9\.\-]+\.[a-z]{2,})", t)
         if m:
             url = "https://" + m.group(1)
-            os.startfile(url)  # noqa: S606
+            webbrowser.open(url)  # noqa: S606
             return f"Apro {m.group(1)}."
         return "Non ho capito quale sito aprire."
 
@@ -1448,6 +1650,25 @@ def run_command(text: str, intent: str) -> str:
         now = datetime.now()
         return f"Oggi e' {days[now.weekday()]} {now.day} {months[now.month - 1]} {now.year}."
 
+    if intent == "set_app_volume":
+        t2 = _strip_wake(t)  # 'chicco volume di comet al 60' -> 'volume di comet al 60'
+        app = _appvol_app_name(t2)
+        if not app:
+            sess = sorted({p for p, _, _ in _audio_sessions()})
+            return ("Di quale applicazione vuoi che regoli il volume? "
+                    f"App con audio attivo in questo momento: {', '.join(sess) or 'nessuna'}.")
+        pv = _parse_app_volume(t2)
+        if pv is None:
+            if any(w in t2 for w in ("abbassa", "alza", "aumenta", "diminuisci",
+                                     "riduci", "imposta", "metti", "porta",
+                                     "regola", "tira", "azzer", "silenz")):
+                mode = "down" if any(w in t2 for w in ("abbassa", "diminuisci",
+                                                       "riduci", "azzer")) else "up"
+                return _set_app_volume(app, mode, 10)  # relativo senza numero
+            return _get_app_volume(app)  # 'volume di discord?': solo lettura
+        mode, level = pv
+        return _set_app_volume(app, mode, level)
+
     if intent == "volume":
         # muto: toggle istantaneo (prima di qualsiasi altra interpretazione)
         if "muto" in t or "mute" in t:
@@ -1458,9 +1679,13 @@ def run_command(text: str, intent: str) -> str:
                 return "Audio escluso." if new_mute else "Audio riattivato."
             except Exception as exc:
                 print(f"[volume] errore pycaw (muto): {exc}; uso fallback tasti")
-            subprocess.Popen(["powershell", "-NoProfile", "-Command",
-                              "$w=New-Object -ComObject WScript.Shell; $w.SendKeys('{VK_VOLUME_MUTE}')"],
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+            if pu.IS_WINDOWS:
+                subprocess.Popen(["powershell", "-NoProfile", "-Command",
+                                  "$w=New-Object -ComObject WScript.Shell; $w.SendKeys('{VK_VOLUME_MUTE}')"],
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+            elif pu.IS_LINUX:
+                subprocess.Popen(["sh", "-c", pu.pactl_or_alsa("mute")],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return "Comando muto inviato."
         level, mode = _parse_volume(t)
         try:
@@ -1482,7 +1707,7 @@ def run_command(text: str, intent: str) -> str:
             return f"Volume portato al {got} per cento."
         except Exception as exc:
             print(f"[volume] errore pycaw: {exc}; uso fallback tasti")
-        # fallback tasti multimediali: se conosco il livello attuale lo avvicino a passi di 2
+        # fallback tasti multimediali (Windows) o pactl/amixer (Linux)
         try:
             cur = int(round(_endpoint_volume().GetMasterVolumeLevelScalar() * 100))
         except Exception:
@@ -1492,12 +1717,16 @@ def run_command(text: str, intent: str) -> str:
             steps = max(0, min(50, abs(level - cur) // 2))
         else:
             steps = 10
-        key = "{VK_VOLUME_UP}" if mode == "up" else "{VK_VOLUME_DOWN}"
-        if steps:
-            ps = (f"$w=New-Object -ComObject WScript.Shell; "
-                  f"1..{steps} | ForEach-Object {{ $w.SendKeys('{key}') }}")
-            subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+        if pu.IS_WINDOWS:
+            key = "{VK_VOLUME_UP}" if mode == "up" else "{VK_VOLUME_DOWN}"
+            if steps:
+                ps = (f"$w=New-Object -ComObject WScript.Shell; "
+                      f"1..{steps} | ForEach-Object {{ $w.SendKeys('{key}') }}")
+                subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+        elif pu.IS_LINUX:
+            pu.press_media_keys(steps if mode == "up" else 0,
+                                steps if mode == "down" else 0)
         return "Volume regolato approssimativamente."
 
     if intent == "list_files":
@@ -1867,6 +2096,26 @@ def _fast_command(text: str) -> dict | None:
     """
     t = (text or "").lower().strip()
     t = _strip_wake(t)  # 'chicco apri spotify' -> 'apri spotify' (residuo di wake)
+    # volume per-app: 'abbassa il volume di discord al 30' -> subito, senza Whisper
+    m = re.match(r"^(abbassa|alza|aumenta|diminuisci|riduci|imposta|metti|tira|"
+                 r"azzer\w*|silenz\w*)\b.{0,30}?(?:volume|audio|suono)\s*"
+                 r"(?:di|del|della|per)\s+(.+?)\s*$", t)
+    if m:
+        tail = m.group(2)
+        app = _appvol_app_name(t)
+        # nessuna congiunzione ('e', 'poi'...) e app con sessione audio attiva:
+        # altrimenti decide la pipeline completa
+        if (app and not _FAST_TAIL_NOISE.search(tail) and " e " not in f" {tail} "
+                and _resolve_audio_process(app)):
+            pv = _parse_app_volume(t)
+            if pv:
+                mode, level = pv
+            else:
+                level = 10
+                mode = ("down" if m.group(1).startswith(
+                    ("abbassa", "diminuisci", "riduci", "azzer", "silenz")) else "up")
+            return _emit(t, _set_app_volume(app, mode, level),
+                         "set_app_volume", "fastlane", "voce", 0)
     m = re.match(r"^(apri|lancia|avvia|chiudi|chiudimi|ferma)\s+(.{2,60})$", t)
     if not m:
         return None
@@ -2069,6 +2318,7 @@ def api_stt():
             gpu = False
         return {"engine": "whisper", "model": _whisper_choice["name"],
                 "device": "cuda/gpu" if gpu else "cpu"}
+    return {"engine": "vosk", "model": "small-it-0.22", "device": "cpu"}
 
 
 @app.get("/api/stt/models")
@@ -2106,13 +2356,41 @@ def api_stt_model_set(payload: dict):
         _whisper_dl["busy"].add(name)
         threading.Thread(target=_fw_download, args=(name,), daemon=True).start()
     return {"ok": True, "status": "downloading"}
-    return {"engine": "vosk", "model": "small-it-0.22", "device": "cpu"}
 
 
 @app.get("/_tts_reply.wav")
 def tts_wav():
     """Ultima risposta vocale generata, riprodotta dalla UI."""
     return FileResponse(BASE / "_tts_reply.wav", media_type="audio/wav")
+
+
+@app.get("/api/tts")
+def api_tts():
+    """Stato del motore vocale per la dropdown della UI (Piper naturale / sistema)."""
+    st = piper_tts.status()
+    active = piper_tts.get_engine()
+    return {"engines": [
+        {"id": "piper", "label": "Piper — Paola (naturale, locale)",
+         "installed": st["piper_ready"], "downloading": st["downloading"],
+         "active": active == "piper"},
+        {"id": "sapi", "label": "Voce di sistema (Elsa)",
+         "installed": True, "downloading": False, "active": active == "sapi"},
+    ]}
+
+
+@app.post("/api/tts/engine")
+def api_tts_engine(payload: dict):
+    """Cambia il motore vocale. Se si sceglie Piper non ancora scaricato,
+    avvia il download in background (intanto parla la voce di sistema)."""
+    name = (payload.get("engine") or "").strip()
+    if name not in ("piper", "sapi"):
+        return JSONResponse({"error": "motore sconosciuto"}, status_code=400)
+    piper_tts.set_engine(name)
+    status = "attivo"
+    if name == "piper" and not piper_tts.is_ready():
+        piper_tts.download_async()
+        status = "downloading"
+    return {"ok": True, "status": status}
 
 
 @app.get("/api/history")
