@@ -262,9 +262,8 @@ def _icon_send(d, n):
     _rline(d, [(cx - n * 0.17, cy - n * 0.02), (cx, cy - n * 0.19), (cx + n * 0.17, cy - n * 0.02)], lw)
 
 
-def _icon_mic_off(d, n):
-    """Microfono barrato (stesso stile dell'icona mic attiva) per il toggle
-    dell'ascolto passivo: barrato = passivo spento."""
+def _icon_mic_body(d, n):
+    """Corpo del microfono (stesso stile dell'icona mic attiva)."""
     cx = cy = n / 2
     w, h = n * 0.25, n * 0.28
     top = cy - n * 0.30
@@ -279,6 +278,17 @@ def _icon_mic_off(d, n):
         d.ellipse([px - lw / 2, py - lw / 2, px + lw / 2, py + lw / 2], fill=255)
     _rline(d, [(cx, acy + r - lw / 2), (cx, cy + n * 0.185)], lw)
     _rline(d, [(cx - n * 0.105, cy + n * 0.185), (cx + n * 0.105, cy + n * 0.185)], lw)
+
+
+def _icon_mic_on(d, n):
+    """Microfono libero (senza barra): ascolto passivo ATTIVO."""
+    _icon_mic_body(d, n)
+
+
+def _icon_mic_off(d, n):
+    """Microfono barrato: ascolto passivo SPENTO."""
+    _icon_mic_body(d, n)
+    cx = cy = n / 2
     _rline(d, [(cx - n * 0.30, cy - n * 0.30), (cx + n * 0.30, cy + n * 0.30)], n * 0.085)
 
 
@@ -724,8 +734,8 @@ mute_btn = tk.Label(root, bd=0, bg=TRANSPARENT, cursor="hand2")
 # --- toggle ascolto passivo (wake word), visibile in mouse-over ----------------
 listen_disabled = {"on": not bool(prefs.get("listen", True))}  # default: attivo
 _LSN = {
-    (False, False): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, ACCENT, _icon_mic_off))),
-    (False, True): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, _lighter(ACCENT, 0.12), _icon_mic_off))),
+    (False, False): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, ACCENT, _icon_mic_on))),
+    (False, True): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, _lighter(ACCENT, 0.12), _icon_mic_on))),
     (True, False): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, SPK_BG, _icon_mic_off))),
     (True, True): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, _lighter(SPK_BG, 0.12), _icon_mic_off))),
 }
