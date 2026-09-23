@@ -7,7 +7,7 @@ Interfaccia a riga di comando di Ugo.
   ugo doctor  -> diagnostica: cosa e' installato, cosa manca
 
 Uso tipico su una macchina nuova:
-  pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+  pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
   ugo run
 """
 import json

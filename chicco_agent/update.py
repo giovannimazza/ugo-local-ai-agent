@@ -17,9 +17,9 @@ import sys
 import urllib.request
 from pathlib import Path
 
-REPO_URL = "https://github.com/giovannimazza/ugo-local-ai-agent.git"
+REPO_URL = "https://github.com/giovannimazza/chicco-local-ai-agent.git"
 RAW_URL = ("https://raw.githubusercontent.com/giovannimazza/"
-           "ugo-local-ai-agent/main/pyproject.toml")
+           "chicco-local-ai-agent/main/pyproject.toml")
 ROOT = Path(__file__).resolve().parent.parent
 _VER_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.M)
 

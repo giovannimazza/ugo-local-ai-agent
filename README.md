@@ -187,14 +187,14 @@ tutti gli OS) e Vosk di fallback, poi avvia server e widget.
 ### Windows
 
 ```bat
-pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+pip install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
 ugo run
 ```
 
 ### macOS
 
 ```bash
-pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
 ugo run
 ```
 
@@ -205,7 +205,7 @@ poi serve la concessione microfono quando macOS la chiede al primo avvio.
 
 ```bash
 sudo apt install python3-pip espeak-ng libportaudio2
-pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+pip3 install git+https://github.com/giovannimazza/chicco-local-ai-agent.git
 ugo run
 ```
 
