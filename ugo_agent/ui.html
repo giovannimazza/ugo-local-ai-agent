@@ -303,7 +303,7 @@ it: {
   st_vosk: 'Vosk (fastlane pre-lettura)', st_fastlane: 'Fastlane (match comandi)',
   st_whisper: 'Whisper (trascrizione)', st_qn: 'Qwen (correzione STT)',
   st_qi: 'Qwen (interpretazione intent)', st_qs: 'Qwen (suggerimento app)',
-  st_tts_piper: 'TTS Piper (Paola)', st_tts_sapi: 'TTS di sistema',
+  st_tts_piper: 'TTS Piper (Paola/Amy)', st_tts_sapi: 'TTS di sistema',
   st_command: '⏱ Comando completo (voce → risposta)',
 },
 en: {
@@ -371,7 +371,7 @@ en: {
   st_vosk: 'Vosk (fastlane pre-read)', st_fastlane: 'Fastlane (command match)',
   st_whisper: 'Whisper (transcription)', st_qn: 'Qwen (STT correction)',
   st_qi: 'Qwen (intent parsing)', st_qs: 'Qwen (app suggestions)',
-  st_tts_piper: 'TTS Piper (Paola)', st_tts_sapi: 'System TTS',
+  st_tts_piper: 'TTS Piper (Paola/Amy)', st_tts_sapi: 'System TTS',
   st_command: '⏱ Full command (voice → reply)',
 }
 };
@@ -651,12 +651,7 @@ async function openTtsMenu() {
   } catch {}
 }
 document.getElementById('ttsbtn').onclick = openTtsMenu;
-(async () => { try { const s = await (await fetch('/api/tts')).json();
-  const a = s.engines.find(m => m.active);
-  const el = document.getElementById('ttsname');
-  if (!a) { el.textContent = '?'; return; }
-  el.textContent = (a.id === 'piper') ? (a.installed ? 'Paola' : 'sistema (temp)') : 'sistema';
-} catch {} })();
+// l'etichetta della voce (Paola/Amy secondo la lingua) la gestisce refreshVoiceName()
 async function openApps() {
   try {
     const r = await fetch('/api/apps'); const d = await r.json();

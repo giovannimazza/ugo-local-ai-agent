@@ -23,6 +23,7 @@ except ImportError:
     import games
     import appindex
 import difflib
+import io
 import json
 import numpy as np
 import os
@@ -2890,13 +2891,15 @@ def tts_wav():
 
 @app.get("/api/tts")
 def api_tts():
-    """Stato del motore vocale per la dropdown della UI (Piper naturale / sistema)."""
+    """Stato del motore vocale per la dropdown della UI (Piper naturale / sistema).
+    L'etichetta della voce naturale segue la lingua attiva: Paola (it) / Amy (en)."""
     st = piper_tts.status()
     active = piper_tts.get_engine()
+    nat = "Amy" if st.get("lang") == "en" else "Paola"
     return {"engines": [
-        {"id": "piper", "label": "Piper — Paola (naturale, locale)",
-         "installed": st["piper_ready"], "downloading": st["downloading"],
-         "active": active == "piper"},
+        {"id": "piper", "label": f"Piper — {nat} (naturale, locale)",
+         "voice": nat, "installed": st["piper_ready"],
+         "downloading": st["downloading"], "active": active == "piper"},
         {"id": "sapi", "label": "Voce di sistema (Elsa)",
          "installed": True, "downloading": False, "active": active == "sapi"},
     ]}
