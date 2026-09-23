@@ -21,15 +21,24 @@ server_*.log
 # ~/.local/share/ugo su Linux), fuori dalla repo: questi pattern sono la
 # cintura di sicurezza se qualcuno li copia dentro il progetto.
 # ---------------------------------------------------------------------------
-learned_fixes.json     # refusi/alias appresi, scelte, routine vocali
-app_index.json         # libreria applicazioni indicizzata (specifica del PC)
-games_index.json       # libreria giochi (specifica del PC)
-update_channel.json    # canale di aggiornamento scelto dall'utente
-stt.json               # preferenze trascrittore
-model.json             # metadati modello wake word custom
-ww_ugo.onnx            # modello wake word addestrato sulla voce dell'utente
-ww_ugo.json            # metadati/metriche del modello wake word
-passive_log.txt        # log dell'ascolto passivo (contiene dettati privati)
+# learned_fixes.json -> refusi/alias appresi, scelte, routine vocali
+learned_fixes.json
+# app_index.json -> libreria applicazioni indicizzata (specifica del PC)
+app_index.json
+# games_index.json -> libreria giochi (specifica del PC)
+games_index.json
+# update_channel.json -> canale di aggiornamento scelto dall'utente
+update_channel.json
+# stt.json -> preferenze trascrittore
+stt.json
+# model.json -> metadati del modello wake word custom
+model.json
+# ww_ugo.onnx -> modello wake word addestrato sulla voce dell'utente
+ww_ugo.onnx
+# ww_ugo.json -> metadati/metriche del modello wake word
+ww_ugo.json
+# passive_log.txt -> log dell'ascolto passivo (contiene dettati privati)
+passive_log.txt
 
 # backup locali di lavoro (es. uiBackup.html, widgetBackup.py)
 *Backup.*
