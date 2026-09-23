@@ -196,7 +196,7 @@
 <button class="appsbtn small" id="membtn" title="Memoria appresa: refusi corretti e alias-app">🧠 <span id="memcount">…</span></button>
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
 <button class="appsbtn" id="routbtn" title="Routine: una frase attiva una sequenza di comandi">⚡ Routine <span id="routcount"></span></button>
-<button class="appsbtn small" id="statsbtn" title="Dashboard latenze: whisper, qwen, tts, comandi">📊 <span id="statscmd">…</span></button>
+<button class="appsbtn small" id="statsbtn" title="Dashboard latenze: whisper, qwen, tts, comandi">📊 <span id="statscmd">Dashboard latenze</span></button>
 <button class="appsbtn small" id="langbtn" title="Lingua / Language">🌐 <span id="langname">IT</span></button>
 </div>
 <div class="app">
@@ -270,6 +270,7 @@ it: {
   tt_apps: 'App e giochi installati sul PC',
   tt_rout: 'Routine: una frase attiva una sequenza di comandi',
   tt_stats: 'Dashboard latenze: whisper, qwen, tts, comandi',
+  b_stats: 'Dashboard latenze',
   tt_lang: 'Lingua / Language',
   m_lang_sub: 'cambia voce, trascrizione e interfaccia — i comandi restano eseguiti dal motore italiano',
   m_lang_switching: 'cambio in corso…',
@@ -342,6 +343,7 @@ en: {
   tt_apps: 'Apps and games installed on this PC',
   tt_rout: 'Routines: one phrase triggers a command sequence',
   tt_stats: 'Latency dashboard: whisper, qwen, tts, commands',
+  b_stats: 'Latency dashboard',
   tt_lang: 'Lingua / Language',
   m_lang_sub: 'changes voice, transcription and interface — commands are still executed by the Italian engine',
   m_lang_switching: 'switching…',
@@ -887,11 +889,11 @@ async function refreshStats() {
     const d = await (await fetch('/api/stats')).json();
     const cmd = (d.stages || []).find(s => s.stage === 'command');
     const sc = document.getElementById('statscmd');
-    sc.textContent = cmd ? cmd.avg.toFixed(1) + 's' : (d.enabled ? 'n/d' : '⏸');
+    sc.textContent = t('b_stats');   // label parlante; i numeri restano nel tooltip
     document.getElementById('statsbtn').title =
-      'Dashboard latenze: whisper, qwen, tts, comandi' +
-      (cmd ? ' · ultimo comando ' + cmd.avg.toFixed(1) + 's'
-           : d.enabled ? ' · nessun comando registrato' : ' · raccolta sospesa');
+      (cmd ? 'Dashboard latenze · ultimo comando ' + cmd.avg.toFixed(1) + 's'
+           : d.enabled ? 'Dashboard latenze · nessun comando registrato'
+           : 'Dashboard latenze · raccolta sospesa');
     if (!ovl.classList.contains('open')) {
       if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
       return;
