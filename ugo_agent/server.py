@@ -16,9 +16,12 @@ Comandi supportati:
 Avvio:  python voice_assistant_server.py   ->  http://127.0.0.1:8123
 """
 
-import games
-import io
-import appindex
+try:  # pacchetto (pip install / -m / uvicorn) O script diretto (python ugo_agent/server.py)
+    from . import games
+    from . import appindex
+except ImportError:
+    import games
+    import appindex
 import difflib
 import json
 import numpy as np

@@ -19,10 +19,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Installa il pacchetto (dipendenze per piattaforma)
+      - name: Installa il pacchetto come un utente (non editable, da pyproject)
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install .
+
+      - name: Verifica script e metadati installati
+        run: |
+          pip show ugo-agent
+          python -c "import ugo_agent, sys; print('ugo_agent importabile da', ugo_agent.__file__)"
 
       - name: Compila tutti i moduli (errori di sintassi)
         run: python -m compileall -q ugo_agent
@@ -41,3 +46,51 @@ jobs:
           print('giochi:', len(games))
           assert isinstance(apps, list) and isinstance(games, list)
           "
+
+      # ---------------------------------------------------------------------
+      # Boot del server FastAPI senza modelli (niente Vosk/Whisper: sono lazy
+      # e /api/stt risponde anche senza). L'import del modulo server verifica
+      # che tutte le route si registrino (es. UploadFile -> python-multipart).
+      # ---------------------------------------------------------------------
+      - name: Boot del server + test API HTTP
+        shell: python
+        run: |
+          import threading, time, urllib.request, sys
+          import uvicorn
+          from ugo_agent.server import app
+
+          cfg = uvicorn.Config(app, host="127.0.0.1", port=8199, log_level="error")
+          srv = uvicorn.Server(cfg)
+          t = threading.Thread(target=srv.run, daemon=True)
+          t.start()
+
+          def get(path, timeout=5):
+              with urllib.request.urlopen(f"http://127.0.0.1:8199{path}", timeout=timeout) as r:
+                  return r.status, r.read().decode("utf-8")
+
+          ok = False
+          for _ in range(60):  # fino a 12 s di avvio
+              time.sleep(0.2)
+              try:
+                  status, body = get("/api/stt")
+                  print("GET /api/stt ->", status, body)
+                  assert status == 200 and '"engine"' in body
+                  ok = True
+                  break
+              except Exception:
+                  pass
+          assert ok, "il server non ha risposto entro 12 s"
+
+          # la UI web deve essere servita (ui.html incluso nel pacchetto)
+          status, body = get("/")
+          print("GET / ->", status, f"({len(body)} byte)")
+          assert status == 200 and "html" in body.lower()
+
+          # endpoint leggeri senza modelli
+          status, body = get("/api/routines")
+          print("GET /api/routines ->", status, body[:60])
+          assert status == 200
+
+          srv.should_exit = True
+          t.join(timeout=10)
+          print(f"server boot OK su {sys.platform}")

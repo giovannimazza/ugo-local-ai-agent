@@ -8,7 +8,7 @@ risponde a voce. Nessuna API key, nessun cloud, nessun costo per token.
 Il progetto nasce come dimostrazione di [Laya](https://pypi.org/project/laya/), un
 decision-engine non autoregressivo usato qui per la classificazione degli intent.
 
-![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-faster--whisper%20%7C%20CTranslate2-purple)
+![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-faster--whisper%20%7C%20CTranslate2-purple)
 
 ---
 
