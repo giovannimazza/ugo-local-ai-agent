@@ -345,23 +345,16 @@ def cmd_setup() -> int:
     return 0
 
 
-def cmd_log() -> int:
-    """Apre un terminale che mostra in diretta cosa sente l'ascolto passivo."""
-    try:
-        from . import platform_utils as pu
-    except ImportError:  # modulo top-level
-        import platform_utils as pu
-    log = pu.data_dir() / "passive_log.txt"
-    if not log.exists():
-        print("Nessun log: il widget non ha ancora ascoltato (prova: ugo run).")
-        return 1
+def _tail_in_terminal(log: Path, title: str, note: str) -> int:
+    """Apre un nuovo terminale che segue il file (Windows/macOS), oppure lo
+    segue qui nel terminale corrente. Ritorna l'exit code CLI."""
     if pu.IS_WINDOWS and shutil.which("powershell"):
-        ps = ("$host.UI.RawUI.WindowTitle='Ugo - ascolto passivo'; "
+        ps = (f"$host.UI.RawUI.WindowTitle='{title}'; "
               f"Get-Content -Path '{log}' -Wait -Tail 15")
         try:
             subprocess.Popen(["powershell", "-NoProfile", "-NoExit", "-Command", ps],
                              creationflags=0x00000010)  # CREATE_NEW_CONSOLE
-            print("Terminale aperto: vedi in diretta cosa sente Ugo (Ctrl+C o X per chiudere).")
+            print(note)
             return 0
         except Exception:
             pass
@@ -374,7 +367,7 @@ def cmd_log() -> int:
         except Exception:
             pass
     # fallback multipiattaforma: segue il file qui, nel terminale corrente
-    print(f"--- cosa sente Ugo ({log}) — Ctrl+C per uscire ---")
+    print(f"--- {log} — Ctrl+C per uscire ---")
     print("\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]))
     try:
         with open(log, "r", encoding="utf-8", errors="replace") as f:
@@ -388,6 +381,32 @@ def cmd_log() -> int:
     except KeyboardInterrupt:
         pass
     return 0
+
+
+def cmd_log() -> int:
+    """Apre un terminale che mostra in diretta cosa sente l'ascolto passivo."""
+    try:
+        from . import platform_utils as pu
+    except ImportError:  # modulo top-level
+        import platform_utils as pu
+    log = pu.data_dir() / "passive_log.txt"
+    if not log.exists():
+        print("Nessun log: il widget non ha ancora ascoltato (prova: ugo run).")
+        return 1
+    return _tail_in_terminal(
+        log, "Ugo - ascolto passivo",
+        "Terminale aperto: vedi in diretta cosa sente Ugo (Ctrl+C o X per chiudere).")
+
+
+def cmd_server_log() -> int:
+    """Apre un terminale con chiamate API e risposte del server in diretta."""
+    log = pu.data_dir() / "server_log.txt"
+    if not log.exists():
+        print("Nessun log del server: avvia Ugo e dai un comando (prova: ugo run).")
+        return 1
+    return _tail_in_terminal(
+        log, "Ugo - server log",
+        "Terminale aperto: chiamate e risposte del server in diretta (Ctrl+C o X per chiudere).")
 
 
 def cmd_doctor() -> int:
@@ -457,6 +476,8 @@ Comandi:
   stop            ferma widget e server (uccide solo i processi di Ugo)
   log             apre un terminale che mostra in diretta l'ascolto passivo
                   (cosa sente la wake word "Ugo")
+  server log      apre un terminale con chiamate API e risposte del server
+                  in diretta (ogni comando: testo, microfono, passivo)
   update          controlla GitHub e aggiorna all'ultima versione del canale
   channel         canale di aggiornamento:  dev = main  |  stable = release
                   (solo  ugo channel  mostra quello attivo)
@@ -483,6 +504,12 @@ def main() -> int:
         return cmd_stop()
     if cmd == "log":
         return cmd_log()
+    if cmd in ("server-log", "serverlog"):
+        return cmd_server_log()
+    if cmd == "server":
+        if len(sys.argv) > 2 and sys.argv[2].lower() == "log":
+            return cmd_server_log()   # forma a due parole: ugo server log
+        return cmd_run("server")
     if cmd == "update":
         try:
             from . import update

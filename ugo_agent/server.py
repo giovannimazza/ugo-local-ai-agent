@@ -226,6 +226,22 @@ _stats_lock = threading.Lock()
 _stats: dict[str, list[float]] = {}
 _stats_enabled = {"on": True}   # la UI puo' sospendere la raccolta
 
+# log delle chiamate API e risposte (per 'ugo server log'): righeleggibile,
+# con rotazione a ~1 MB per non crescere all'infinito
+_REQLOG = BASE / "server_log.txt"
+_reqlog_lock = threading.Lock()
+
+
+def _reqlog(msg: str) -> None:
+    try:
+        with _reqlog_lock:
+            if _REQLOG.exists() and _REQLOG.stat().st_size > 1_000_000:
+                _REQLOG.replace(_REQLOG.with_suffix(".txt.1"))
+            with _REQLOG.open("a", encoding="utf-8") as f:
+                f.write(time.strftime("[%H:%M:%S] ") + msg + "\n")
+    except Exception:
+        pass  # il logging non deve mai rompere la pipeline
+
 
 def _track(stage: str, dt: float) -> None:
     """Registra la durata (secondi) di una fase; i contatori globali di
@@ -2115,6 +2131,8 @@ def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
         if len(_history) > 200:
             del _history[:-200]
     print(f"[cmd] intent={intent} via {src} ({dt} ms): {user!r} -> {spoken!r}")
+    _reqlog(f"CMD  {source:5s} intent={intent:<12s} via {src:<12s} {dt:5d} ms  "
+            f"{user!r} -> {spoken!r}")
     try:
         speak(spoken)
     except Exception as exc:
@@ -2391,9 +2409,14 @@ async def api_listen_wav(request: Request, wake: int = 0):
     ci sia davvero la wake word: i falsipositivi del rilevatore economico
     (Vosk/OWW sul rumore, TV, conversazioni) non eseguono piu' comandi."""
     data = await request.body()
+    _t0 = time.time()
     try:
-        return _handle_pcm(_wav_to_pcm16k(data), require_wake=bool(wake))
+        res = _handle_pcm(_wav_to_pcm16k(data), require_wake=bool(wake))
+        _reqlog(f"HTTP  /api/listen_wav wake={wake}  {len(data)} B  "
+                f"{time.time() - _t0:.2f}s  -> {(res.get('assistant') or res.get('error') or '?')!r}")
+        return res
     except Exception as exc:
+        _reqlog(f"HTTP  /api/listen_wav wake={wake}  ERRORE: {exc}")
         return JSONResponse({"error": f"WAV non valido: {exc}"}, status_code=400)
 
 
@@ -2602,6 +2625,8 @@ async def api_text(payload: dict):
     _t0 = time.time()
     res = process(text, "testo")
     _track("command", time.time() - _t0)  # anche il testo entra nella dashboard
+    _reqlog(f"HTTP  /api/text  {time.time() - _t0:.2f}s  "
+            f"{text!r} -> {(res.get('assistant') or res.get('error') or '?')!r}")
     return res
 
 
