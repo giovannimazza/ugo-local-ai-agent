@@ -742,7 +742,13 @@ def _bare(s: str) -> str:
 
 
 def _learn_fix(raw: str, fixed: str) -> None:
-    """Registra (o rinforza) una coppia refuso -> correzione, se significativa."""
+    """Registra (o rinforza) una coppia refuso -> correzione.
+    Chiamata SOLO dopo conferma esplicita dell'utente ('Hai detto X?' -> si):
+    niente apprendimento automatico dai cand di Qwen. In lingua EN non registra
+    nulla: il testo confermato e' una TRADUZIONE (EN->IT), non un refuso, e
+    memorizzarla insegnerebbe a Qwen di tradurre ogni frase inglese uguale."""
+    if piper_tts.current_lang() == "en":
+        return
     r, f = raw.strip(), fixed.strip()
     if len(r) < 4 or _bare(r) == _bare(f):
         return  # cambia solo maiuscole/punteggiatura: non e' un refuso
@@ -862,12 +868,42 @@ def _learned_lookup(text: str) -> str | None:
     return best
 
 
+# input che NON sono refusi di un comando: domande conversazionali e frammenti
+# corti. Qwen/Laya tende a "rimediarli" in comandi plausibili (test -> 'che ore
+# sono'); blocco la correzione, se il testo e' vero comando parte lo stesso.
+_NOT_A_TYPO = re.compile(
+    r"^\s*(quando|perche|perché|come|dove|chi|cosa|che cosa|quanto|quanta|quanti|"
+    r"test|prova|abc|hello)\b", re.I)
+
+
+def _semantics_changed(raw: str, cand: str) -> bool:
+    """True se la 'correzione' stravolge la frase: il punto interrogativo
+    (una domanda vera) sparisce, o la differenza di parole e' cosi' grande che
+    la correzione inventa un altro comando (es. 'test' -> 'che ore sono')."""
+    if raw.rstrip().endswith("?") and not cand.rstrip().endswith("?"):
+        return True
+    rw = set(_bare(raw).split())
+    cw = set(_bare(cand).split())
+    if not rw or not cw:
+        return True
+    # meno della meta' delle parole dette sopravvive nella correzione: non la accetto
+    return len(rw & cw) < max(1, len(rw) // 2)
+
+
 def _guards_ok(raw: str, cand: str) -> bool:
     """Guardie anti-danno condivise: la correzione non deve perdere un intent
-    keyword, un luogo o un sito noto, ne' sfuggire in formato strano."""
+    keyword, un luogo o un sito noto, ne' stravolgere la frase (refuso vs altro
+    comando), ne' correggere input che non sono comandi. In lingua EN le guardie
+    semantiche non si applicano (la traduzione EN->IT riscrive legittimamente la
+    frase): vale solo il veto sull'intent keyword, che resta italiano."""
     if "->" in cand:
         return False
     raw_l, cand_l = raw.lower(), cand.lower()
+    if piper_tts.current_lang() != "en":
+        if _NOT_A_TYPO.match(raw_l) and _bare(raw_l) != _bare(cand_l):
+            return False
+        if _semantics_changed(raw_l, cand_l):
+            return False
     kw_raw, kw_new = keyword_intent(raw_l), keyword_intent(cand_l)
     if kw_raw and kw_raw != kw_new:
         return False
@@ -2349,7 +2385,6 @@ def process(text: str, source: str) -> dict:
                 return _emit(raw_stt, f'Hai detto: "{cand}"? Rispondi sì o no.',
                              "confirm", "guard", source, 0)
             corrected, text = cand, cand
-            _learn_fix(raw_stt, cand)  # refuso ricorrente? sara' istantaneo la prossima volta
             print(f"[normalize] {raw_stt!r} -> {cand!r}")
     intent, src = detect_intent(text)
     t0 = time.time()
