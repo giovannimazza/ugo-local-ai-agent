@@ -99,14 +99,19 @@ def ensure_voice(lang: str) -> threading.Thread | None:
         try:
             info = _voice_info(lang)
             print(f"[piper] scarico la voce {info['label']} ({info['key']})...")
+            _state["pct"] = 1
             onnx, js = _voice_paths(lang)
             if not onnx.exists():
-                _download(info["url"], onnx)
+                _download(info["url"], onnx,
+                          on_pct=lambda p: _state.__setitem__("pct", max(1, int(p * 0.99))))
+            _state["pct"] = 99
             if not js.exists():
                 _download(info["url"] + ".json", js)
+            _state["pct"] = 100
             print(f"[piper] voce {info['label']} pronta.")
         except Exception as exc:
             print(f"[piper] download voce {lang} non riuscito ({exc}).")
+            _state["pct"] = 0
         finally:
             _state["downloading"] = False
     t = threading.Thread(target=work, daemon=True)
@@ -132,7 +137,7 @@ PIPER_URL = f"https://github.com/rhasspy/piper/releases/download/{PIPER_RELEASE}
 _NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if _sys == "Windows" else {}
 
 _lock = threading.Lock()
-_state = {"downloading": False}
+_state = {"downloading": False, "pct": 0}
 
 
 def _load_prefs() -> dict:
@@ -184,17 +189,21 @@ def is_ready(lang: str | None = None) -> bool:
 def status() -> dict:
     lang = current_lang()
     return {"piper_ready": is_ready(lang), "downloading": _state["downloading"],
+            "pct": _state["pct"],
             "lang": lang, "voice": voice_key_for(lang),
             "voices": {lg: voice_ready(lg) for lg in _LANGS}}
 
 
-def _download(url: str, dest: Path) -> None:
+def _download(url: str, dest: Path, on_pct=None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
 
     def hook(n, bs, total):
         if total > 0 and n % 40 == 0:
             print(f"[piper] {dest.name}: {min(n * bs, total) // 1048576} MB / {total // 1048576} MB")
+        if on_pct and total > 0:
+            on_pct(min(100, int(n * bs * 100 / total)))
+
     urllib.request.urlretrieve(url, tmp, reporthook=hook)
     tmp.replace(dest)
 

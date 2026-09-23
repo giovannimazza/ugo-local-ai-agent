@@ -163,6 +163,24 @@
   .mcat { cursor:default; }  /* le voci del menu modello non collassano niente */
   .mitem.click { cursor:pointer; }
   .mitem.click:hover { background:var(--card2); }
+  /* loader cambio lingua: spinner + progresso reale del download voce */
+  @keyframes langspin { to { transform:rotate(360deg); } }
+  .langld { display:flex; flex-direction:column; align-items:center; gap:13px;
+            padding:36px 14px 26px; animation:rise .25s ease; text-align:center; }
+  .langld .spin { width:34px; height:34px; border-radius:50%; flex-shrink:0;
+            border:3px solid var(--acc-dim); border-top-color:var(--acc);
+            animation:langspin .8s linear infinite; }
+  .langld b { font-size:.9rem; font-weight:500; }
+  .langld small { color:var(--mut); font-size:.74rem; max-width:260px; }
+  .langld .bar { width:230px; height:6px; border-radius:99px; background:var(--card2);
+            overflow:hidden; border:1px solid var(--border-soft); }
+  .langld .bar i { display:block; height:100%; width:0%; border-radius:99px;
+            background:linear-gradient(90deg,var(--acc),var(--acc2));
+            transition:width .4s ease; }
+  .langld.fail .spin { border-color:var(--danger-dim); border-top-color:var(--danger); animation:none; }
+  .langld .retry { margin-top:2px; padding:7px 20px; border-radius:99px; border:1px solid var(--border);
+            background:var(--card2); color:var(--txt); cursor:pointer; font-size:.8rem; }
+  .langld .retry:hover { border-color:var(--acc); }
   .mitem .check { margin-left:auto; color:var(--acc2); font-weight:700; }
   .mitem .memdel { margin-left:auto; background:none; border:none; color:var(--mut);
                    font-size:1.1rem; cursor:pointer; padding:4px 8px; border-radius:8px;
@@ -271,6 +289,10 @@ it: {
   msg_tts_dl: '⬇️ Scarico la voce naturale Piper (~85 MB, in background). Finché non è pronta risponde la voce di sistema.',
   msg_tts_ok_pre: '✅ Voce naturale pronta: da ora risponde ',
   msg_voice_dl: '⬇️ Scarico la voce inglese Amy (~63 MB, in background): appena pronta parla in inglese.',
+  ld_lang: 'Cambio lingua in corso…',
+  ld_voice: 'Scarico la voce ', ld_voice2: '…',
+  ld_prc: 'pronto in un attimo', ld_fail: 'Download della voce non riuscito.',
+  ld_retry: 'Riprova', ld_close: 'Chiudi e continua in background',
   m_mem: 'Memoria appresa',
   m_mem_sub: 'ciò che Ugo ha imparato dai tuoi comandi — click per correggere, × per eliminare',
   g_fixes: 'Refusi corretti', g_apps: 'Alias app',
@@ -339,6 +361,10 @@ en: {
   msg_tts_dl: '⬇️ Downloading the Piper natural voice (~85 MB, in background). The system voice replies until ready.',
   msg_tts_ok_pre: '✅ Natural voice ready: from now on ',
   msg_voice_dl: '⬇️ Downloading the English voice Amy (~63 MB, in background): it will speak English as soon as ready.',
+  ld_lang: 'Switching language…',
+  ld_voice: 'Downloading the ', ld_voice2: ' voice…',
+  ld_prc: 'almost ready', ld_fail: 'Voice download failed.',
+  ld_retry: 'Retry', ld_close: 'Close and continue in background',
   m_mem: 'Learned memory',
   m_mem_sub: 'what Ugo learned from your commands — click to fix, × to delete',
   g_fixes: 'Fixed typos', g_apps: 'App aliases',
@@ -436,22 +462,97 @@ document.getElementById('langbtn').onclick = async () => {
       }
       rowEl.onclick = async () => {
         if (opt.id === d.lang) { ovl.classList.remove('open'); return; }
-        rowEl.querySelector('.tx small').textContent = t('m_lang_switching');
-        const rr = await fetch('/api/lang', {method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({lang: opt.id})});
-        const dd = await rr.json();
-        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || t('err_change'))); return; }
-        LANG = dd.lang;
-        applyLang();
-        ovl.classList.remove('open');
-        if (dd.downloading) add('bot', t('msg_voice_dl'));
+        await switchLang(opt.id, rowEl);
       };
       mlist.appendChild(rowEl);
     }
     ovl.classList.add('open');
   } catch {}
 };
+
+// --- loader cambio lingua: resta finche' TUTTE le risorse non sono pronte ---
+// server passa a lingua nuova (voce Piper, whisper, traduzione comandi);
+// se la voce deve essere scaricata mostro il progresso reale e attendo la fine.
+function langLoader(title) {
+  mlist.innerHTML = '';
+  msearch.style.display = 'none';
+  mcount.textContent = '';
+  const ld = document.createElement('div'); ld.className = 'langld';
+  ld.innerHTML = '<div class="spin"></div><b></b><small></small>' +
+                 '<div class="bar"><i></i></div>';
+  ld.querySelector('b').textContent = title;
+  mlist.appendChild(ld);
+  return ld;
+}
+
+function langFailActions(ld, retryLang) {
+  // azioni sul fallimento: riprova il cambio, oppure chiudi (download in background)
+  const retry = document.createElement('button'); retry.className = 'retry';
+  retry.textContent = t('ld_retry');
+  retry.onclick = () => switchLang(retryLang, null);
+  const close = document.createElement('button'); close.className = 'retry';
+  close.textContent = t('ld_close');
+  close.onclick = () => ovl.classList.remove('open');
+  const box = document.createElement('div');
+  box.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+  box.append(retry, close);
+  ld.appendChild(box);
+}
+
+async function switchLang(id, rowEl) {
+  const ld = langLoader(t('ld_lang'));
+  if (rowEl) rowEl.querySelector('.tx small').textContent = t('m_lang_switching');
+  try {
+    const rr = await fetch('/api/lang', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lang: id})});
+    const dd = await rr.json();
+    if (!dd.ok) {
+      ld.classList.add('fail');
+      ld.querySelector('small').textContent = (dd.error || t('err_change'));
+      langFailActions(ld, id);
+      return;
+    }
+    LANG = dd.lang;
+    applyLang();                       // UI gia' tradotta: il loader segue nella lingua nuova
+    if (dd.downloading || !dd.voice_ready) {
+      // risorsa vocale mancante: attendo con progresso reale dal server
+      ld.querySelector('b').textContent = t('ld_voice') +
+        (LANG === 'en' ? 'Amy' : 'Paola') + t('ld_voice2');
+      const setPct = p => { ld.querySelector('.bar i').style.width = Math.max(4, p) + '%';
+                            ld.querySelector('small').textContent =
+                              p > 0 && p < 100 ? p + '%' : t('ld_prc'); };
+      setPct(dd.pct || 0);
+      const ok = await new Promise(resolve => {          // polling finche' pronta
+        let noDl = 0;                                    // download mai partito / fallito
+        const poll = setInterval(async () => {
+          if (!ovl.classList.contains('open')) { clearInterval(poll); resolve(false); return; }
+          try {
+            const s = await (await fetch('/api/lang')).json();
+            if (s.downloading) noDl = 0; else noDl++;
+            setPct(s.pct || 0);
+            if (s.voice_ready && !s.downloading) { clearInterval(poll); resolve(true); }
+            else if (noDl >= 4) {                        // non sta scaricando e non e' pronta: fallito
+              clearInterval(poll);
+              ld.classList.add('fail');
+              ld.querySelector('small').textContent = t('ld_fail');
+              langFailActions(ld, id);
+              resolve(false);
+            }
+          } catch {}
+        }, 700);
+      });
+      if (!ok) return;                 // chiuso dall'utente o fallito: il download resta in background
+    }
+    ld.querySelector('.bar i').style.width = '100%';
+    ovl.classList.remove('open');
+  } catch (e) {
+    ld.classList.add('fail');
+    ld.querySelector('small').textContent = t('err_change');
+    langFailActions(ld, id);
+  }
+}
+
 (async () => { try { LANG = (await (await fetch('/api/lang')).json()).lang || 'it'; } catch {} applyLang(); })();
 
 const KIND_ICONS = {steam:'🎮', epic:'🟣', gog:'🟡', launcher:'🚀', appx:'🪟',

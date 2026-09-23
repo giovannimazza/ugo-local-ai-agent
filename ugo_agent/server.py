@@ -2661,7 +2661,8 @@ def api_lang_get():
     return {"lang": lang,
             "voice": piper_tts.voice_key_for(lang),
             "voice_ready": piper_tts.voice_ready(lang),
-            "downloading": piper_tts.status()["downloading"]}
+            "downloading": piper_tts.status()["downloading"],
+            "pct": piper_tts.status()["pct"]}
 
 
 @app.post("/api/lang")
@@ -2680,7 +2681,8 @@ def api_lang_set(payload: dict):
     return {"ok": True, "lang": lang,
             "voice": piper_tts.voice_key_for(lang),
             "voice_ready": piper_tts.voice_ready(lang),
-            "downloading": piper_tts.status()["downloading"]}
+            "downloading": piper_tts.status()["downloading"],
+            "pct": piper_tts.status()["pct"]}
 
 
 @app.post("/api/model")
