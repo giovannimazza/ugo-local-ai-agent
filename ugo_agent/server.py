@@ -2541,7 +2541,10 @@ async def api_text(payload: dict):
     text = (payload.get("text") or "").strip()
     if not text:
         return JSONResponse({"error": "testo vuoto"}, status_code=400)
-    return process(text, "testo")
+    _t0 = time.time()
+    res = process(text, "testo")
+    _track("command", time.time() - _t0)  # anche il testo entra nella dashboard
+    return res
 
 
 @app.post("/api/normalize")

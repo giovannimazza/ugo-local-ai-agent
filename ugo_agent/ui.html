@@ -568,8 +568,12 @@ async function refreshStats() {
   try {
     const d = await (await fetch('/api/stats')).json();
     const cmd = (d.stages || []).find(s => s.stage === 'command');
-    document.getElementById('statscmd').textContent =
-      cmd ? cmd.avg.toFixed(1) + 's' : '…';
+    const sc = document.getElementById('statscmd');
+    sc.textContent = cmd ? cmd.avg.toFixed(1) + 's' : (d.enabled ? 'n/d' : '⏸');
+    document.getElementById('statsbtn').title =
+      'Dashboard latenze: whisper, qwen, tts, comandi' +
+      (cmd ? ' · ultimo comando ' + cmd.avg.toFixed(1) + 's'
+           : d.enabled ? ' · nessun comando registrato' : ' · raccolta sospesa');
     if (!ovl.classList.contains('open')) {
       if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
       return;
@@ -595,7 +599,7 @@ async function refreshStats() {
       const b = document.createElement('b'); b.textContent = STAGE_LABEL[s.stage] || s.stage;
       const sm = document.createElement('small');
       sm.textContent = 'media ' + s.avg.toFixed(2) + 's · p95 ' + s.p95.toFixed(2) +
-        's · max ' + s.max.toFixed(2) + 's · ' + s.n + ' campioni';
+        's · max ' + s.max.toFixed(2) + 's · ' + s.n + (s.n === 1 ? ' campione' : ' campioni');
       const bar = document.createElement('div');
       bar.style.cssText = 'height:6px;background:var(--border);border-radius:3px;margin-top:5px;overflow:hidden';
       const fill = document.createElement('div');
@@ -630,6 +634,7 @@ function openStats() {
   if (!statsTimer) statsTimer = setInterval(refreshStats, 3000);
 }
 document.getElementById('statsbtn').onclick = openStats;
+refreshStats();  // aggiorna il badge della topbar subito, senza aprire il pannello
 
 async function openMem() {
   try {
