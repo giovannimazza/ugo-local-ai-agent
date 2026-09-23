@@ -876,12 +876,22 @@ document.getElementById('routbtn').onclick = openRoutines;
 
 // --- dashboard latenze (📊) --------------------------------------------
 const STAGE_LABEL = {
-  vosk: 'Vosk (fastlane pre-lettura)', fastlane: 'Fastlane (match comandi)',
-  whisper: 'Whisper (trascrizione)', qwen_normalize: 'Qwen (correzione STT)',
-  qwen_intent: 'Qwen (interpretazione intent)', qwen_suggest: 'Qwen (suggerimento app)',
-  tts_piper: 'TTS Piper (Paola)', tts_sapi: 'TTS di sistema',
-  command: '⏱ Comando completo (voce → risposta)'
+  vosk: {it: 'Vosk (fastlane pre-lettura)', en: 'Vosk (pre-read fastlane)'},
+  fastlane: {it: 'Fastlane (match comandi)', en: 'Fastlane (command match)'},
+  whisper: {it: 'Whisper (trascrizione)', en: 'Whisper (transcription)'},
+  qwen_normalize: {it: 'Qwen (correzione STT)', en: 'Qwen (STT correction)'},
+  qwen_intent: {it: 'Qwen (interpretazione intent)', en: 'Qwen (intent parsing)'},
+  qwen_suggest: {it: 'Qwen (suggerimento app)', en: 'Qwen (app suggestion)'},
+  qwen_translate: {it: 'Qwen (traduzione risposta)', en: 'Qwen (reply translation)'},
+  tts_piper: {it: 'TTS Piper (Paola/Amy)', en: 'Piper TTS (Paola/Amy)'},
+  tts_sapi: {it: 'TTS di sistema', en: 'System TTS'},
+  command: {it: '⏱ Comando completo (voce → risposta)',
+            en: '⏱ Full command (voice → reply)'}
 };
+function stageLabel(k) {
+  const e = STAGE_LABEL[k];
+  return e ? (e[LANG] || e.it) : k;
+}
 let statsTimer = null;
 
 async function refreshStats() {
@@ -898,8 +908,8 @@ async function refreshStats() {
       if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
       return;
     }
-    mtitle.textContent = '📊 Dashboard latenze';
-    mcount.textContent = 'ultimi 50 comandi per fase · modelli: STT ' + d.models.stt +
+    mtitle.textContent = t('m_stats');
+    mcount.textContent = t('stats_sub') + d.models.stt +
       ' · AI ' + d.models.llm + ' · TTS ' + d.models.tts;
     msearch.style.display = 'none';
     mlist.innerHTML = '';
@@ -916,10 +926,12 @@ async function refreshStats() {
       const pct = s.stage === 'command' ? 100 :
         Math.min(100, Math.round(s.avg / maxavg * 100));
       const tx = document.createElement('div'); tx.className = 'tx';
-      const b = document.createElement('b'); b.textContent = STAGE_LABEL[s.stage] || s.stage;
+      const b = document.createElement('b'); b.textContent = stageLabel(s.stage);
       const sm = document.createElement('small');
-      sm.textContent = 'media ' + s.avg.toFixed(2) + 's · p95 ' + s.p95.toFixed(2) +
-        's · max ' + s.max.toFixed(2) + 's · ' + s.n + (s.n === 1 ? ' campione' : ' campioni');
+      const tps = s.tps_avg ? ' · ' + s.tps_avg + ' tok/s' : '';
+      sm.textContent = (LANG === 'en' ? 'avg ' : 'media ') + s.avg.toFixed(2) + 's · p95 ' +
+        s.p95.toFixed(2) + 's · max ' + s.max.toFixed(2) + 's · ' + s.n +
+        (s.n === 1 ? (LANG === 'en' ? ' sample' : ' campione') : (LANG === 'en' ? ' samples' : ' campioni')) + tps;
       const bar = document.createElement('div');
       bar.style.cssText = 'height:6px;background:var(--border);border-radius:3px;margin-top:5px;overflow:hidden';
       const fill = document.createElement('div');
@@ -931,9 +943,33 @@ async function refreshStats() {
     }
     if (d.process && d.process.rss_mb) {
       const p = document.createElement('div'); p.className = 'mitem';
-      p.innerHTML = '<div class="tx"><small>processo server: ' + d.process.rss_mb +
-        ' MB RAM · cpu ' + d.process.cpu_pct + '% · ' + d.process.threads + ' thread</small></div>';
+      p.innerHTML = '<div class="tx"><small>' +
+        (LANG === 'en' ? 'server process: ' : 'processo server: ') + d.process.rss_mb +
+        ' MB RAM · cpu ' + d.process.cpu_pct + '% · ' + d.process.threads +
+        (LANG === 'en' ? ' threads</small></div>' : ' thread</small></div>');
       mlist.appendChild(p);
+    }
+    // RAM per tool (Ollama reale, modelli interni stimati)
+    if ((d.tools || []).length) {
+      const h = document.createElement('div'); h.className = 'mcat';
+      h.textContent = LANG === 'en' ? 'Memory by tool' : 'Memoria per tool';
+      mlist.appendChild(h);
+      const maxmb = Math.max(...d.tools.map(t => t.mb), 1);
+      for (const t of d.tools) {
+        const el = document.createElement('div'); el.className = 'mitem';
+        const mb = t.mb >= 1024 ? (t.mb / 1024).toFixed(1) + ' GB' : t.mb + ' MB';
+        const tx = document.createElement('div'); tx.className = 'tx';
+        const b = document.createElement('b'); b.textContent = t.name;
+        const sm = document.createElement('small');
+        sm.textContent = mb + (t.note ? ' · ' + t.note : '');
+        const bar = document.createElement('div');
+        bar.style.cssText = 'height:6px;background:var(--border);border-radius:3px;margin-top:5px;overflow:hidden';
+        const fill = document.createElement('div');
+        fill.style.cssText = 'height:100%;width:' + Math.round(t.mb / maxmb * 100) +
+          '%;background:var(--acc2)';
+        bar.appendChild(fill); tx.append(b, sm, bar); el.appendChild(tx);
+        mlist.appendChild(el);
+      }
     }
     const tog = document.createElement('div'); tog.className = 'mitem click';
     tog.innerHTML = '<div class="ic">' + (d.enabled ? '⏸' : '▶') + '</div><div class="tx"><b>' +

@@ -254,6 +254,21 @@ def _track(stage: str, dt: float) -> None:
         if len(buf) > 50:
             del buf[:-50]
 
+
+_tps: dict[str, list] = {}   # token/s delle fasi LLM (da eval_count/eval_duration)
+
+
+def _track_tps(stage: str, eval_count: int, eval_duration_ns: int) -> None:
+    """Token/s reali riportati da Ollama per la chiamata appena conclusa."""
+    if not _stats_enabled["on"] or not eval_count or not eval_duration_ns:
+        return
+    tps = eval_count / (eval_duration_ns / 1e9)
+    with _stats_lock:
+        buf = _tps.setdefault(stage, [])
+        buf.append(tps)
+        if len(buf) > 50:
+            del buf[:-50]
+
 # ---------------------------------------------------------------------------
 # Whisper via faster-whisper (CTranslate2): CUDA/CPU su Windows, Metal/CPU su
 # macOS, CUDA/CPU su Linux — stesso motore ovunque. Il modello e' SCEGLIBILE
@@ -637,6 +652,8 @@ def normalize_stt(text: str) -> str | None:
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode())
         _track("qwen_normalize", time.time() - _q0)
+        _track_tps("qwen_normalize", data.get("eval_count", 0),
+                   data.get("eval_duration", 0))
         out = (data.get("response") or "").strip().strip('"').strip()
         # difese: vuoto, delirio troppo lungo o multilinea -> meglio l'originale
         if not out or "\n" in out or len(out) > len(text) * 3 + 80:
@@ -961,6 +978,8 @@ def ollama_parse(text: str) -> dict | None:
         with urllib.request.urlopen(req, timeout=30) as r:
             data = json.loads(r.read().decode())
         _track("qwen_intent", time.time() - _q0)
+        _track_tps("qwen_intent", data.get("eval_count", 0),
+                   data.get("eval_duration", 0))
         spec = json.loads(data.get("response") or "{}")
         if not isinstance(spec, dict):
             return None
@@ -2095,8 +2114,11 @@ def qwen_app_suggest(name: str) -> dict | None:
                                      headers={"Content-Type": "application/json"})
         _q0 = time.time()
         with urllib.request.urlopen(req, timeout=15) as r:
-            out = (json.loads(r.read().decode()).get("response") or "").strip().strip('"').strip()
+            data = json.loads(r.read().decode())
         _track("qwen_suggest", time.time() - _q0)
+        _track_tps("qwen_suggest", data.get("eval_count", 0),
+                   data.get("eval_duration", 0))
+        out = (data.get("response") or "").strip().strip('"').strip()
         if not out or "\n" in out or len(out) > 60:
             return None
         low = out.lower()
@@ -2141,8 +2163,13 @@ def _translate_reply_it_en(reply: str) -> str:
         }).encode()
         req = urllib.request.Request(OLLAMA_URL, data=payload,
                                      headers={"Content-Type": "application/json"})
+        _q0 = time.time()
         with urllib.request.urlopen(req, timeout=10) as r:
-            out = (json.loads(r.read().decode()).get("response") or "").strip().strip('"').strip()
+            data = json.loads(r.read().decode())
+        _track("qwen_translate", time.time() - _q0)
+        _track_tps("qwen_translate", data.get("eval_count", 0),
+                   data.get("eval_duration", 0))
+        out = (data.get("response") or "").strip().strip('"').strip()
         if out and "\n" not in out and len(out) <= len(reply) * 3 + 80:
             return out
     except Exception as exc:
@@ -2991,6 +3018,49 @@ def api_history():
         return {"history": list(reversed(_history[-50:]))}
 
 
+def _tool_memory_mb() -> list:
+    """RAM stimata dei tool del pipeline. Ollama e' letta dal processo reale;
+    laya/vosk/whisper dai modelli caricati IN QUESTO processo (il loro peso e'
+    dentro il rss globale: queste stime mostrano come e' distribuito)."""
+    tools = []
+    try:
+        import psutil
+        me = psutil.Process()
+        # Ollama: processo server + runner del modello (esclusi i figli del nostro)
+        ollama_mb = 0.0
+        for p in psutil.process_iter(["name", "memory_info"]):
+            n = (p.info["name"] or "").lower()
+            if "ollama" in n:
+                try:
+                    ollama_mb += p.info["memory_info"].rss / 1048576
+                except Exception:
+                    pass
+        if ollama_mb:
+            tools.append({"name": "Ollama (Qwen)", "mb": round(ollama_mb),
+                          "kind": "llm"})
+    except Exception:
+        pass
+    # stime interne: il peso dei modelli caricati nel processo server
+    if laya_system is not None:
+        tools.append({"name": "Laya (intent)", "mb": 450, "kind": "intent"})
+    if _stt.get("model") is not None:
+        tools.append({"name": "Vosk (fallback STT)", "mb": 45, "kind": "stt"})
+    if _whisper.get("model") is not None:
+        wdir = whisper_model_dir().lower()
+        est = 2100 if "turbo" in wdir else (600 if "small" in wdir else 200)
+        tools.append({"name": f"Whisper {_whisper_choice['name']}",
+                      "mb": est, "kind": "stt"})
+    try:
+        import ctranslate2 as _ct
+        if _ct.get_cuda_device_count() > 0:
+            for t in tools:
+                if t["kind"] == "stt" and "Whisper" in t["name"]:
+                    t["note"] = "su GPU (VRAM)"
+    except Exception:
+        pass
+    return tools
+
+
 @app.get("/api/stats")
 def api_stats():
     """Dashboard latenze: medie/p95 per fase (ultimi 50 campi ciascuna),
@@ -3011,6 +3081,12 @@ def api_stats():
              "qwen_suggest", "tts_piper", "tts_sapi", "command"]
     stages = [{"stage": k, **out[k]} for k in order if k in out]
     stages += [{"stage": k, **v} for k, v in out.items() if k not in order]
+    with _stats_lock:
+        tps = {k: list(v) for k, v in _tps.items()}
+    for st in stages:
+        v = tps.get(st["stage"])
+        if v:
+            st["tps_avg"] = round(sum(v) / len(v), 1)
     proc = {}
     try:
         import psutil
@@ -3021,10 +3097,11 @@ def api_stats():
                 "threads": p.num_threads()}
     except Exception:
         proc = {}
-    return {"stages": stages, "process": proc,
+    return {"stages": stages, "process": proc, "tools": _tool_memory_mb(),
             "models": {"stt": _whisper_choice["name"],
                        "llm": _llm_model(),
-                       "tts": "piper-paola" if piper_tts.is_ready() else "sistema"},
+                       "tts": (f"piper-{piper_tts.voice_key_for(piper_tts.current_lang()).split('-')[1]}"
+                               if piper_tts.is_ready() else "sistema")},
             "enabled": _stats_enabled["on"],
             "ts": datetime.now().isoformat(timespec="seconds")}
 
