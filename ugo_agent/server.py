@@ -2391,10 +2391,13 @@ async def api_listen(audio: UploadFile):
     data = await audio.read()
     # decodifica webm -> pcm 16k mono tramite ffmpeg (se presente)
     try:
-        proc = _run(
+        # NOTA: niente _run qui (metterebbe capture_output=True, incompatibile
+        # con stdout/stderr espliciti); input binario, quindi neanche text=True.
+        proc = subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le",
              "-ac", "1", "-ar", "16000", "pipe:1"],
             input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True,
+            **_WFLAGS,
         )
     except FileNotFoundError:
         return JSONResponse({"error": "ffmpeg non trovato: installalo per lo STT dal browser"},
