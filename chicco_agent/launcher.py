@@ -145,9 +145,17 @@ def stop_all(verbose: bool = True) -> None:
 
 
 def start_all(reuse: bool = False, skip_widget: bool = False) -> int:
-    """Avvio completo: pulizia istanze precedenti -> server -> widget.
+    """Avvio completo: check aggiornamenti -> pulizia istanze -> server -> widget.
     reuse=True: se il server e' gia' attivo e sano, non lo riavvia."""
     _step("Pulizia istanze precedenti")
+    # controllo versione su GitHub: se c'e' una versione piu' recente aggiorna
+    # e rilancia se stesso (interattivo da terminale, silenzioso al doppio click)
+    try:
+        from . import update
+    except ImportError:
+        from chicco_agent import update
+    update.auto_check_and_restart()
+
     widgets = _widget_pids()
     for pid in widgets:
         if _kill_pid(pid):

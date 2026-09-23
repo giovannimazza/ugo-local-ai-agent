@@ -394,6 +394,25 @@ def main() -> int:
         return cmd_doctor()
     if cmd == "stop":
         return cmd_stop()
+    if cmd == "update":
+        try:
+            from . import update
+        except ImportError:
+            from chicco_agent import update
+        loc, rem = update.local_version(), update.remote_version(timeout=5)
+        print(f"versione installata: {loc or '?'}   su GitHub: {rem or '? (offline?)'}")
+        if update.check_update(interactive=True):
+            print("Riavvia i componenti:  chicco stop && chicco run")
+        else:
+            print("Niente da aggiornare.")
+        return 0
+    if cmd in ("version", "--version"):
+        try:
+            from . import update
+        except ImportError:
+            from chicco_agent import update
+        print(f"chicco-agent {update.local_version() or '?'}")
+        return 0
     if cmd in ("run", "start"):
         only = sys.argv[2].lower() if len(sys.argv) > 2 else None
         return cmd_run(only)

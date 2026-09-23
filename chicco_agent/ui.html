@@ -97,22 +97,31 @@
              padding:9px 12px; font-size:.85rem; outline:none; font-family:inherit; }
   .msearch:focus { border-color:var(--acc); }
   .msearch::placeholder { color:var(--mut); }
-  .appsbtn { position:fixed; top:18px; right:22px; z-index:40; background:var(--card);
-             border:1px solid var(--border); color:var(--txt); font-size:.82rem;
-             font-family:inherit; padding:8px 14px; border-radius:999px; cursor:pointer;
-             display:flex; align-items:center; gap:8px;
+  .topbar { position:fixed; top:18px; right:22px; z-index:40; display:flex;
+            gap:8px; align-items:stretch; }
+  .appsbtn { background:var(--card); border:1px solid var(--border); color:var(--txt);
+             font-size:.82rem; font-family:inherit; padding:8px 14px;
+             border-radius:999px; cursor:pointer; display:flex;
+             align-items:center; gap:8px; white-space:nowrap;
              transition:border-color .15s, transform .15s; }
   .appsbtn:hover { border-color:var(--acc); transform:translateY(-1px); }
-  .appsbtn.small { right:190px; padding:8px 12px; }
+  .appsbtn.small { padding:8px 12px; }
   .mcat { cursor:default; }  /* le voci del menu modello non collassano niente */
   .mitem.click { cursor:pointer; }
   .mitem.click:hover { background:var(--card); }
   .mitem .check { margin-left:auto; color:var(--acc); font-weight:700; }
+  .mitem .memdel { margin-left:auto; background:none; border:none; color:var(--mut);
+                   font-size:1.1rem; cursor:pointer; padding:4px 8px; border-radius:8px; }
+  .mitem .memdel:hover { color:#e5484d; background:var(--card); }
 </style>
 </head>
 <body>
+<div class="topbar">
 <button class="appsbtn small" id="modelbtn" title="Modello AI per correzione e interpretazione">⚙️ <span id="modelname">…</span></button>
+<button class="appsbtn small" id="sttbtn" title="Modello di trascrizione vocale (Whisper)">🎤 <span id="sttname">…</span></button>
+<button class="appsbtn small" id="membtn" title="Memoria appresa: refusi corretti e alias-app">🧠 <span id="memcount">…</span></button>
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
+</div>
 <div class="app">
   <main class="main">
     <div class="chat" id="chat">
@@ -265,6 +274,53 @@ async function openModelMenu() {
   } catch {}
 }
 document.getElementById('modelbtn').onclick = openModelMenu;
+async function openSttMenu() {
+  try {
+    const r = await fetch('/api/stt/models'); const d = await r.json();
+    mtitle.textContent = 'Trascrittore vocale';
+    mcount.textContent = 'whisper: qualita\u0300 vs velocita\u0300 — vosk sempre come ripiego';
+    msearch.style.display = 'none';
+    mlist.innerHTML = '';
+    for (const m of d.models) {
+      const short = m.id.replace('large-v3-turbo', 'large-v3-turbo');
+      const tag = m.downloading ? '\u23f3 download\u2026' : (m.installed ? '' : '  \u2b07 non installato');
+      const it = {title: short + tag, subtitle: m.label, kind: 'appx', _m: m};
+      const rowEl = row(it);
+      rowEl.classList.add('click');
+      if (m.active) {
+        const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713';
+        rowEl.appendChild(c);
+      }
+      rowEl.onclick = async () => {
+        if (m.downloading) return;
+        const rr = await fetch('/api/stt/model', {method:'POST',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify({model: m.id})});
+        const dd = await rr.json();
+        if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || 'cambio fallito')); return; }
+        document.getElementById('sttname').textContent = short;
+        ovl.classList.remove('open');
+        if (dd.status === 'downloading') {
+          add('bot', '\u2b07\ufe0f Scarico il modello ' + short +
+              ' (in background). Finche\u0300 non e\u0300 pronto si usa Vosk.');
+          const poll = setInterval(async () => {
+            try {
+              const s = await (await fetch('/api/stt/models')).json();
+              const me = s.models.find(x => x.id === m.id);
+              if (me && me.installed) { clearInterval(poll);
+                add('bot', '\u2705 Trascrittore pronto: ' + short); }
+            } catch { clearInterval(poll); }
+          }, 4000);
+        }
+      };
+      mlist.appendChild(rowEl);
+    }
+    ovl.classList.add('open');
+  } catch {}
+}
+document.getElementById('sttbtn').onclick = openSttMenu;
+(async () => { try { const s = await (await fetch('/api/stt/models')).json();
+  const a = s.models.find(m => m.active);
+  document.getElementById('sttname').textContent = a ? a.id : s.fallback; } catch {} })();
 async function openApps() {
   try {
     const r = await fetch('/api/apps'); const d = await r.json();
@@ -274,6 +330,87 @@ async function openApps() {
   } catch {}
 }
 appsBtn.onclick = openApps;
+
+// --- pannello memoria appresa (refusi + alias-app), modificabile a mano ---
+function memRow(entry, kind) {
+  const r = document.createElement('div'); r.className = 'mitem';
+  const ic = document.createElement('div'); ic.className = 'ic';
+  ic.textContent = kind === 'fix' ? '\u270f\ufe0f' : '\ud83d\udd17';
+  const tx = document.createElement('div'); tx.className = 'tx';
+  const b = document.createElement('b'); b.textContent = kind === 'fix'
+    ? (entry.raw + ' \u2192 ' + entry.fixed)
+    : (entry.said + ' \u2192 ' + entry.app);
+  const s = document.createElement('small');
+  s.textContent = (kind === 'fix' ? 'refuso' : 'alias app')
+    + ' \u00b7 usato ' + (entry.count || 1) + 'x';
+  tx.append(b, s);
+  const del = document.createElement('button'); del.className = 'memdel';
+  del.textContent = '\u00d7'; del.title = 'Elimina';
+  del.onclick = async (ev) => {
+    ev.stopPropagation();
+    await fetch('/api/memory', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action: kind === 'fix' ? 'del_fix' : 'del_app', raw: kind === 'fix' ? entry.raw : entry.said})});
+    openMem();  // ricarico il pannello
+  };
+  r.onclick = () => {
+    const cur = kind === 'fix' ? entry.fixed : entry.app;
+    const nu = prompt('Correggi la destinazione di "' + (kind === 'fix' ? entry.raw : entry.said) + '":', cur);
+    if (nu && nu.trim() && nu.trim() !== cur) {
+      fetch('/api/memory', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action: kind === 'fix' ? 'set_fix' : 'set_app',
+                              raw: kind === 'fix' ? entry.raw : entry.said, fixed: nu.trim()})})
+        .then(() => openMem());
+    }
+  };
+  r.append(ic, tx, del); return r;
+}
+
+async function openMem() {
+  try {
+    const r = await fetch('/api/memory'); const d = await r.json();
+    document.getElementById('memcount').textContent = d.fixes.length + d.apps.length;
+    mtitle.textContent = 'Memoria appresa';
+    mcount.textContent = 'ci\u00f2 che Chicco ha imparato dai tuoi comandi \u2014 click per correggere, \u00d7 per eliminare';
+    msearch.style.display = 'none';
+    mlist.innerHTML = '';
+    const h1 = document.createElement('div'); h1.className = 'mcat';
+    h1.innerHTML = '<span class="chev">\u25be</span>Refusi corretti <span>\u00b7 ' + d.fixes.length + '</span>';
+    mlist.appendChild(h1);
+    if (!d.fixes.length) {
+      const e = document.createElement('div'); e.className = 'mitem';
+      e.innerHTML = '<div class="tx"><small>Nessun refuso imparato (per ora).</small></div>';
+      mlist.appendChild(e);
+    }
+    for (const f of d.fixes) mlist.appendChild(memRow(f, 'fix'));
+    const h2 = document.createElement('div'); h2.className = 'mcat';
+    h2.innerHTML = '<span class="chev">\u25be</span>Alias app <span>\u00b7 ' + d.apps.length + '</span>';
+    mlist.appendChild(h2);
+    if (!d.apps.length) {
+      const e = document.createElement('div'); e.className = 'mitem';
+      e.innerHTML = '<div class="tx"><small>Nessun alias: arrivano da \u201cIntendavi X?\u201d \u2192 s\u00ec.</small></div>';
+      mlist.appendChild(e);
+    }
+    for (const a of d.apps) mlist.appendChild(memRow(a, 'app'));
+    // aggiunta manuale
+    const add = document.createElement('div'); add.className = 'mitem click';
+    add.innerHTML = '<div class="ic">\u2795</div><div class="tx"><b>Insegna un refuso nuovo</b>' +
+      '<small>es. \u201cspotifi\u201d deve diventare \u201cSpotify\u201d</small></div>';
+    add.onclick = async () => {
+      const raw = prompt('Il refuso (come lo detti/scrivi):');
+      if (!raw || !raw.trim()) return;
+      const fixed = prompt('La forma corretta:', raw.trim());
+      if (!fixed || !fixed.trim()) return;
+      await fetch('/api/memory', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action: 'add_fix', raw: raw.trim(), fixed: fixed.trim()})});
+      openMem();
+    };
+    mlist.appendChild(add);
+    ovl.classList.add('open');
+  } catch {}
+}
+document.getElementById('membtn').onclick = openMem;
+(async () => { try { const d = await (await fetch('/api/memory')).json();
+  document.getElementById('memcount').textContent = d.fixes.length + d.apps.length; } catch {} })();
 
 async function maybeShowList() {
   try {

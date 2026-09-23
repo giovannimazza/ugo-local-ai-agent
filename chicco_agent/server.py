@@ -31,6 +31,7 @@ import threading
 import time
 import unicodedata
 import urllib.parse
+import urllib.request
 import wave
 import webbrowser
 from datetime import datetime
@@ -187,14 +188,50 @@ _stt = {"model": None, "recognizer": None}
 _laya_router = None
 
 # ---------------------------------------------------------------------------
-# Whisper large-v3-turbo via faster-whisper (CTranslate2): CUDA/CPU su Windows,
-# Metal/CPU su macOS, CUDA/CPU su Linux — stesso motore e stesso modello ovunque.
+# Whisper via faster-whisper (CTranslate2): CUDA/CPU su Windows, Metal/CPU su
+# macOS, CUDA/CPU su Linux — stesso motore ovunque. Il modello e' SCEGLIBILE
+# da web UI /api/stt/models (download on-demand) e la scelta resta su disco.
 # Se il modello non c'e' o WHISPER=0, si ricade su Vosk piccolo.
 # ---------------------------------------------------------------------------
-WHISPER_MODEL = os.path.expanduser(
-    "~/.cache/whisper/faster-whisper-large-v3-turbo")
+WHISPER_CATALOG = {
+    "large-v3-turbo": {
+        "label": "large-v3-turbo — la migliore (~1.6 GB)",
+        "dir": "~/.cache/whisper/faster-whisper-large-v3-turbo",
+        "repo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+    },
+    "small": {
+        "label": "small — compromesso veloce (~500 MB)",
+        "dir": "~/.cache/whisper/faster-whisper-small",
+        "repo": "Systran/faster-whisper-small",
+    },
+    "base": {
+        "label": "base — molto rapida, qualita' base (~150 MB)",
+        "dir": "~/.cache/whisper/faster-whisper-base",
+        "repo": "Systran/faster-whisper-base",
+    },
+}
+WHISPER_DEFAULT = "large-v3-turbo"
+WHISPER_FILES = ("config.json", "model.bin", "preprocessor_config.json",
+                 "tokenizer.json", "vocabulary.json")
+_whisper_choice = {"name": WHISPER_DEFAULT}
+STT_FILE = BASE / "stt.json"
+try:
+    if STT_FILE.exists():
+        _n = json.loads(STT_FILE.read_text()).get("whisper")
+        if _n in WHISPER_CATALOG:
+            _whisper_choice["name"] = _n
+except Exception:
+    pass
+
+
+def whisper_model_dir() -> str:
+    """Cartella del modello Whisper attivo (la scelta e' cambiabile a caldo)."""
+    return os.path.expanduser(WHISPER_CATALOG[_whisper_choice["name"]]["dir"])
+
+
 _whisper = {"model": None}
 _whisper_lock = threading.Lock()
+_whisper_dl = {"busy": set()}   # modelli in download in questo momento
 
 try:
     laya_system = laya.load("convaiinnovations/laya")  # checkpoint inglese
@@ -257,18 +294,45 @@ def get_whisper():
                         dev = "cuda" if ct.get_cuda_device_count() > 0 else "cpu"
                     except Exception:
                         dev = "cpu"
-                print(f"[whisper] caricamento large-v3-turbo (faster-whisper, device={dev})...")
+                print(f"[whisper] caricamento {_whisper_choice['name']} "
+                      f"(faster-whisper, device={dev})...")
                 kw = {"compute_type": os.environ.get("WHISPER_COMPUTE", "default")}
                 if dev == "cpu":
                     kw["cpu_threads"] = min(8, os.cpu_count() or 4)  # benchmark: ottimo su Zen4
-                _whisper["model"] = WhisperModel(WHISPER_MODEL, device=dev, **kw)
+                _whisper["model"] = WhisperModel(whisper_model_dir(), device=dev, **kw)
     return _whisper["model"]
 
 
 def whisper_available() -> bool:
     return (os.environ.get("WHISPER", "1") == "1"
-            and os.path.isdir(WHISPER_MODEL)
-            and os.path.isfile(os.path.join(WHISPER_MODEL, "model.bin")))
+            and os.path.isdir(whisper_model_dir())
+            and os.path.isfile(os.path.join(whisper_model_dir(), "model.bin")))
+
+
+def _fw_installed(name: str) -> bool:
+    d = os.path.expanduser(WHISPER_CATALOG[name]["dir"])
+    return os.path.isfile(os.path.join(d, "model.bin"))
+
+
+def _fw_download(name: str) -> None:
+    """Scarica i file CT2 del modello in background (chiamato in un thread)."""
+    info = WHISPER_CATALOG[name]
+    d = Path(os.path.expanduser(info["dir"]))
+    d.mkdir(parents=True, exist_ok=True)
+    base = f"https://huggingface.co/{info['repo']}/resolve/main/"
+    try:
+        for fname in WHISPER_FILES:
+            dest = d / fname
+            if dest.exists():
+                continue
+            print(f"[whisper] scarico {name}: {fname}...")
+            urllib.request.urlretrieve(base + fname, str(dest) + ".part")
+            Path(str(dest) + ".part").rename(dest)
+        print(f"[whisper] modello {name} pronto")
+    except Exception as exc:
+        print(f"[whisper] download {name} fallito: {exc}")
+    finally:
+        _whisper_dl["busy"].discard(name)
 
 
 def _whisper_transcribe(pcm16: bytes) -> str:
@@ -430,6 +494,7 @@ def _learned_examples(limit: int = 8) -> str:
     """Frammento di prompt con le correzioni confermate dall'utente (few-shot):
     i refusi ricorrenti vengono risolti sempre nello stesso modo."""
     data = _learned_load()
+    data = {k: v for k, v in data.items() if k != "__apps__" and "raw" in v}
     if not data:
         return ""
     items = sorted(data.values(), key=lambda v: -v.get("count", 1))[:limit]
@@ -504,7 +569,7 @@ def _learn_fix(raw: str, fixed: str) -> None:
         return  # cambia solo maiuscole/punteggiatura: non e' un refuso
     with _learned_lock:
         data = _learned_load()
-        for v in data.values():
+        for v in [x for x in data.values() if "raw" in x]:  # salta __apps__
             if v["raw"].lower() == r.lower():
                 v["count"] = v.get("count", 1) + 1
                 v["fixed"] = f
@@ -523,6 +588,87 @@ def _learn_fix(raw: str, fixed: str) -> None:
             print(f"[learn] scrittura fallita: {exc}")
 
 
+def _learn_app_alias(said: str, app_name: str) -> None:
+    """Memorizza un alias-app confermato dall'utente ('Intendevi Steam?' -> si):
+    la prossima volta il comando detto apre l'app direttamente, senza domanda."""
+    s, a = said.strip(), app_name.strip()
+    if len(s) < 3 or _bare(s) == _bare(a):
+        return  # identico al nome reale: nessun apprendimento utile
+    with _learned_lock:
+        data = _learned_load()
+        entry = data.setdefault("__apps__", {})
+        entry[s.lower()] = {"said": s, "app": a, "count": entry.get(s.lower(), {}).get("count", 0) + 1,
+                            "ts": time.time()}
+        if len(entry) > 100:
+            keep = sorted(entry.items(), key=lambda kv: -kv[1].get("count", 1))[:80]
+            entry.clear()
+            entry.update(keep)
+        try:
+            LEARNED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+            print(f"[learn] alias app memorizzato: {s!r} -> {a!r}")
+        except Exception as exc:
+            print(f"[learn] scrittura fallita: {exc}")
+
+
+def _learn_app_forget(said: str) -> None:
+    """Un 'no' a 'Intendevi X?' cancella l'alias app sbagliato (se presente)."""
+    with _learned_lock:
+        data = _learned_load()
+        entry = data.get("__apps__")
+        if entry and entry.pop(said.strip().lower(), None):
+            try:
+                LEARNED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                        encoding="utf-8")
+            except Exception:
+                pass
+
+
+def _learned_app_lookup(text: str) -> str | None:
+    """Se il nome detto somiglia a un alias-app confermato, ritorna l'app da aprire."""
+    data = _learned_load().get("__apps__", {})
+    if not data:
+        return None
+    t = _bare(text)
+    best, score = None, 0.0
+    for v in data.values():
+        ratio = difflib.SequenceMatcher(None, t, _bare(v["said"])).ratio()
+        if ratio > score and ratio >= 0.85:
+            best, score = v["app"], ratio
+    return best
+
+
+def _learned_token_fix(text: str) -> str:
+    """Riscrive le parole note come refusi usando la memoria ('spotifi' ->
+    'Spotify'), per risolvere i nomi PRIMA dell'intent e della ricerca indice.
+    La mappa viene dalle coppie apprese: parole allineate raw->fixed diverse
+    tra loro (solo lunghe >= 4: le corte generano falsi positivi)."""
+    tmap = {}
+    for v in _learned_load().values():
+        if "raw" not in v:
+            continue
+        rw, fw = v["raw"].split(), v["fixed"].split()
+        if len(rw) == len(fw):
+            for a, b in zip(rw, fw):
+                if _bare(a) != _bare(b) and len(a) >= 4:
+                    tmap[_bare(a)] = b
+    if not tmap:
+        return text
+    out = []
+    for w in text.split():
+        b = _bare(w)
+        if b in tmap:
+            out.append(tmap[b])
+            continue
+        if len(b) >= 4:
+            near = difflib.get_close_matches(b, list(tmap), n=1, cutoff=0.82)
+            if near:
+                out.append(tmap[near[0]])
+                continue
+        out.append(w)
+    return " ".join(out)
+
+
 def _learned_lookup(text: str) -> str | None:
     """Se il comando somiglia a un refuso gia' corretto, ritorna il fix noto."""
     data = _learned_load()
@@ -530,7 +676,7 @@ def _learned_lookup(text: str) -> str | None:
         return None
     t = text.strip().lower()
     best, score = None, 0.0
-    for v in data.values():
+    for v in [x for x in data.values() if "raw" in x]:  # salta la sezione __apps__
         ratio = difflib.SequenceMatcher(None, t, v["raw"].lower()).ratio()
         if ratio > score and ratio >= 0.88:
             best, score = v["fixed"], ratio
@@ -553,11 +699,18 @@ def _guards_ok(raw: str, cand: str) -> bool:
     return True
 
 
+_YES_NO_PAT = re.compile(r"^\s*(si|sì|no)\b.{0,20}$", re.I)
+
+
 def safe_normalize(text: str) -> str | None:
     """Correzione STT: prima la memoria dei refusi noti (istantanea), poi Qwen.
     In entrambi i casi la proposta passa le guardie anti-danno. None se nulla
     di utilizzabile."""
     # 1) correzioni gia' apprese (confermate dall'utente in passato)
+    # 'si'/'no' (event. con aggiunta breve: 'si va bene') NON si normalizzano:
+    # sono risposte a una conferma e Qwen le trasformerebbe in comandi assurdi
+    if _YES_NO_PAT.match(text):
+        return None
     remembered = _learned_lookup(text)
     if remembered and _bare(text) != _bare(remembered):
         if _guards_ok(text, remembered):
@@ -1162,6 +1315,19 @@ def run_command(text: str, intent: str) -> str:
                 except Exception:
                     continue
         # 1) libreria indicizzata: .lnk, app Store/AppX e portabili
+        # 0) alias confermato in passato ('stimolo' -> Steam): apre direttamente
+        remembered_app = _learned_app_lookup(rest)
+        if remembered_app:
+            try:
+                appindex.launch(next(a for a in appindex.get_apps()
+                                     if a["name"] == remembered_app))
+                print(f"[open_app] alias memorizzato: {rest!r} -> {remembered_app!r}")
+                return f"Sto aprendo {remembered_app}."
+            except Exception:
+                pass  # l'app non esiste piu': ricado nella ricerca normale
+        # i refusi appresi valgono anche a livello NOME: 'apri lo spotifi'
+        # diventa 'apri lo Spotify' prima ancora di cercare nell'indice
+        rest = _learned_token_fix(rest)
         hits = appindex.search(rest, limit=3)
         if not hits:
             # fallback fuzzy: il nome era storpiato ('spotrifyt' -> 'Spotify')
@@ -1180,6 +1346,7 @@ def run_command(text: str, intent: str) -> str:
             if sugg:
                 with _log_lock:
                     _pending["app"] = sugg["name"]
+                    _pending["raw_said"] = rest  # per imparare l'alias se confermi
                     _pending["text"] = None
                     _pending["ts"] = time.time()
                 print(f"[open_app] qwen suggerisce {rest!r} -> {sugg['name']!r}, chiedo conferma")
@@ -1359,6 +1526,9 @@ _pending = {"text": None, "app": None, "ts": 0.0}
 _YES = {"si", "sì", "ok", "okay", "confermo", "conferma", "esatto", "esatta",
         "giusto", "giusta", "certo", "certamente", "appunto", "sicuro",
         "corretto", "corretta", "esegui", "vai", "yes", "sure", "quoto"}
+_YES_REPLIES = {"si", "sì", "ok", "okay", "confermo", "esatto", "giusto",
+                "certo", "appunto", "sicuro", "corretto", "corretta",
+                "esegui", "vai", "yes", "sure", "quoto"}
 _NO = {"no", "nope", "annulla", "annullare", "cancella", "sbagliato",
        "sbagliata", "falso", "falsa", "riprova", "stop", "negativo",
        "non", "niente", "mica"}
@@ -1366,14 +1536,23 @@ _NO = {"no", "nope", "annulla", "annullare", "cancella", "sbagliato",
 
 def _yes_no(text: str):
     """True (affermazione), False (negazione) o None (non e' una risposta).
-    Tollerante ai near-miss dello STT ('confirmo' -> 'confermo')."""
+    Tollerante ai near-miss dello STT ('confirmo' -> 'confermo').
+    Vale SOLO per risposte brevi: frasi piu' lunghe o con un verbo di
+    comando ('vai e apri spotify') NON sono conferme, sono comandi."""
     tokens = re.findall(r"[a-zà-ù]+", (text or "").lower())
-    if not tokens:
+    if not tokens or len(tokens) > 3:  # una conferma e' breve: 'si', 'ok va bene'
         return None
     tset = set(tokens)
+    # il comando contiene un verbo d'azione? non e' una risposta, e' un comando
+    # ('vai e apri spotify' prima veniva mangiato come conferma da 'vai')
+    if any(re.search(rf"\b{re.escape(w)}\b", (text or "").lower())
+           for w in ("apri", "lancia", "avvia", "chiudi", "ferma", "crea",
+                     "elimina", "cancella", "cerca", "trova", "scrivi",
+                     "imposta", "metti", "dimmi", "che")):
+        return None
     if tset & _NO:
         return False
-    if tset & _YES:
+    if tset & _YES_REPLIES:
         return True
     # fuzzy: la voce (soprattutto quella sintetica) viene sentita storta
     for tok in tokens:
@@ -1469,10 +1648,15 @@ def process(text: str, source: str) -> dict:
         with _log_lock:
             pend_text, pend_app, pend_ts = _pending["text"], _pending["app"], _pending["ts"]
             pend_raw = _pending.get("raw")
-            _pending["text"] = _pending["app"] = _pending.get("raw") or None
+            pend_said = _pending.get("raw_said")  # nome DETTO per il suggerimento app
+            _pending["text"] = _pending["app"] = None
+            _pending["raw"] = None
+            _pending["raw_said"] = None
         if pend_ts and time.time() - pend_ts <= PENDING_TTL:
             if decision is True and (pend_app or pend_text):
-                if pend_app:  # 'intendavi X?' confermato: avvia l'app
+                if pend_app:  # 'intendavi X?' confermato: avvio E imparo l'alias
+                    if pend_said:
+                        _learn_app_alias(pend_said, pend_app)
                     print(f"[confirm] app confermata, avvio: {pend_app!r}")
                     reply = run_command(f"apri {pend_app}", "open_app")
                     return _emit(f"apri {pend_app}", reply, "open_app", "guard", source, 0)
@@ -1489,13 +1673,52 @@ def process(text: str, source: str) -> dict:
                 return _emit(text, reply, intent, src, source,
                              int((time.time() - t0) * 1000))
             if decision is False:
+                if pend_app and pend_said:
+                    _learn_app_forget(pend_said)  # il suggerimento era sbagliato
                 return _emit(text or "no", "Va bene, annullato.", "confirm", "guard", source, 0)
-        # si/no ma nessuna conferma valida in attesa: prosegui come nuovo comando
+        # si/no ma conferma assente o scaduta: NON e' mai un comando (prima
+        # 'si' veniva classificato 'chiudi sihost' e si tentava il force-kill!)
+        return _emit(text, "Non c'e' piu' nulla da confermare.",
+                     "confirm", "guard", source, 0)
     else:
+        # si/no fuori da qualunque conferma: NON un comando (prima 'si' veniva
+        # classificato 'chiudi sihost' e il sistema tentava la chiusura forzata!)
+        if _yes_no(text or "") is not None:
+            return _emit(text, "Non c'e' nulla da confermare.",
+                         "confirm", "guard", source, 0)
         with _log_lock:  # un nuovo comando fa decadere eventuali conferme
             _pending["text"] = _pending["app"] = None
 
     if text:
+        # fase -1: alias-app gia' confermati in passato -> apre SUBITO, senza
+        # neppure chiedere a Qwen ('stimolo' -> Steam in ~40 ms, zero LLM)
+        m = re.match(r"^(apri|lancia|avvia|chiudi)\s+(.{2,40})$",
+                     _strip_wake((text or "").lower().strip()))
+        if m:
+            target = re.sub(r"^(il|lo|la|l'|un|una|mi)\s+",
+                            "", m.group(2).strip(" .!"))
+            target = _strip_wake(target)  # 'chicco apri steam' -> 'apri steam'
+            # i refusi appresi si applicano gia' qui, pre-intent: il comando
+            # girato viene riscritto e tutto il resto lo vede corretto
+            fixed_target = _learned_token_fix(target)
+            if fixed_target != target:  # confronto ESATTO: conta anche il case
+                # ('spotify' -> 'Spotify' significa che la memoria ha matchato)
+                # il nome riscritto risolve gia' nell'indice? apri subito:
+                # niente Qwen, niente pipeline (risoluzione pre-intent)
+                hits0 = appindex.search(fixed_target, limit=1)
+                if hits0:
+                    intent = ("open_app" if m.group(1) in ("apri", "lancia", "avvia")
+                              else "close_app")
+                    reply = run_command(f"{m.group(1)} {hits0[0]['name']}", intent)
+                    return _emit(text, reply, intent, "learned", source, 0)
+                text = f"{m.group(1)} {fixed_target}"  # il resto lo vede corretto
+                target = fixed_target
+            alias_app = _learned_app_lookup(target)
+            if alias_app:
+                intent = ("open_app" if m.group(1) in ("apri", "lancia", "avvia")
+                          else "close_app")
+                reply = run_command(f"{m.group(1)} {alias_app}", intent)
+                return _emit(text, reply, intent, "alias", source, 0)
         # fase 0: Qwen corregge errori di dettato/trascrizione prima di tutto
         # (voce E testo: anche chi scrive sbaglia a digitare 'apri spotrifyt')
         cand = safe_normalize(text)
@@ -1593,9 +1816,93 @@ def _wav_to_pcm16k(data: bytes) -> bytes:
     return a.tobytes()
 
 
+def _fast_resolve(verb: str, cand: str) -> dict | None:
+    """Risolve 'verb + nome app' sull'indice; None se non e' inequivocabile."""
+    close = difflib.get_close_matches(
+        _norm(cand), [_norm(a["name"]) for a in appindex.get_apps()],
+        n=2, cutoff=0.88)
+    if len(close) != 1:  # nessun match, o due candidati troppo simili: corsia normale
+        return None
+    apps = appindex.search(close[0], limit=1)
+    if not apps:
+        return None
+    name = apps[0]["name"]
+    intent = "open_app" if verb in ("apri", "lancia", "avvia") else "close_app"
+    reply = run_command(f"{verb} {name}", intent)  # verbo italiano: run_command lo capisce
+    return _emit(f"{verb} {cand}", reply, intent, "fastlane", "voce", 0)
+
+
+_FAST_UNSAFE = (
+    "sito", "pagina", "google", "youtube", "cartella", "file", "volume",
+    "musica", "video", "canzone", "ricerca", "cerca", "trova")
+_FAST_TAIL_NOISE = re.compile(
+    r"\b(e|ed|poi|quindi|dopodiche|dopo|mentre|per|favore|grazie)\b")
+
+# residui di wake word: "chicco apri spotify" Vosk lo scrive così, e la fase
+# pre-intent lo vedrebbe come app "chicco apri spotify" -> nessuna app
+_WAKE_RESIDUE = re.compile(
+    r"^\s*(?:(?:ehi|oh|hey|e|a|he)\s+)?"
+    r"(?:chicco|chikko|chiko|chico|chiacco|chichico|cicco|cikko|cico|"
+    r"kicco|kikko|kiko|kiriko|qui quo)\b[,\s]*", re.IGNORECASE)
+
+
+def _strip_wake(text: str) -> str:
+    """Toglie i residui di wake word all'inizio: 'chicco apri spotify' ->
+    'apri spotify'. Ripete finche' pulisce ('ehi chicco chicco apri steam')."""
+    prev = None
+    while prev != (text := _WAKE_RESIDUE.sub("", text, count=1)):
+        prev = text
+    return text.strip()
+
+
+def _fast_command(text: str) -> dict | None:
+    """Corsia veloce per i comandi vocali piu' comuni.
+
+    Vosk trascrive lo stesso audio in ~0,3 s (Whisper ne impiega ~4 su CPU):
+    per 'apri X' / 'chiudi X' con un'app INEQUIVOCABILE nel nome, esegue
+    subito senza aspettare Whisper. Tollerante alle parole fantasma di coda
+    di Vosk ('chiudi spotify fai'): prova a scartarne fino a due, ma se nel
+    comando c'e' una congiunzione ('e', 'poi'...) e' un comando composto e
+    decide la pipeline completa. Ritorna None quando non e' abbastanza sicuro.
+    """
+    t = (text or "").lower().strip()
+    t = _strip_wake(t)  # 'chicco apri spotify' -> 'apri spotify' (residuo di wake)
+    m = re.match(r"^(apri|lancia|avvia|chiudi|chiudimi|ferma)\s+(.{2,60})$", t)
+    if not m:
+        return None
+    verb, target = m.group(1), m.group(2).strip(" .!")
+    if not target or any(w in target for w in _FAST_UNSAFE):
+        return None
+    if _FAST_TAIL_NOISE.search(target):  # comando composto: niente scorciatoie
+        return None
+    # residui di wake word all'inizio ('chicco apri spotify' -> 'apri spotify')
+    target = _strip_wake(target)
+    # la memoria dei refusi confermati risolve i nomi PRIMA della pipeline:
+    # 'apri lo spotifi' -> 'apri Spotify' in ~ms, senza Whisper ne' Qwen
+    target = _learned_token_fix(target)
+    words = target.split()
+    for drop in range(3):  # parole fantasma di coda ('fai', 'la', 'e' gia' escluso)
+        cand = " ".join(words[:len(words) - drop]) if drop else target
+        cand = re.sub(r"^(il|lo|la|l'|un|una|mi)\s+", "", cand).strip()
+        if not cand:
+            break
+        res = _fast_resolve(verb, cand)
+        if res is not None:
+            return res
+    return None
+
+
 def _handle_pcm(pcm: bytes):
     if not pcm:
         return JSONResponse({"error": "audio vuoto"}, status_code=400)
+    # corsia veloce: Vosk e' gia' pronto, per i comandi banali non aspetta Whisper
+    try:
+        fast = _fast_command(_vosk_transcribe(pcm))
+        if fast is not None:
+            print("[fastlane] comando semplice eseguito senza Whisper")
+            return fast
+    except Exception as exc:
+        print(f"[fastlane] scartata ({exc}); passo alla pipeline completa")
     text = transcribe(pcm)
     if not text:
         entry = {"user": "", "assistant": "Non ho sentito nulla, riprova.",
@@ -1691,17 +1998,114 @@ def api_list():
     return {"count": len(items), "items": items}
 
 
+@app.get("/api/memory")
+def api_memory_get():
+    """Memoria appresa (per il pannello web): refusi corretti + alias-app."""
+    data = _learned_load()
+    fixes = sorted((v for k, v in data.items()
+                    if k != "__apps__" and "raw" in v),
+                   key=lambda v: -v.get("count", 1))
+    apps = sorted(data.get("__apps__", {}).values(),
+                  key=lambda v: -v.get("count", 1))
+    return {"fixes": fixes, "apps": apps}
+
+
+@app.post("/api/memory")
+def api_memory_edit(payload: dict):
+    """Modifica manuale della memoria: set_fix/set_app/del_fix/del_app/add_fix.
+    Il file su disco resta la fonte di verita': qui si riscrive in sicurezza
+    (con lock, gestione errori e normalizzazione minima dell'input)."""
+    action = payload.get("action", "")
+    raw = (payload.get("raw") or "").strip()
+    fixed = (payload.get("fixed") or payload.get("app") or "").strip()
+    with _learned_lock:
+        data = _learned_load()
+        if action == "del_fix":
+            for k in list(data.keys()):
+                if k != "__apps__" and data[k].get("raw", "").lower() == raw.lower():
+                    data.pop(k)
+        elif action == "del_app":
+            data.get("__apps__", {}).pop(raw.lower(), None)
+        elif action in ("set_fix", "add_fix") and raw and fixed:
+            if action == "add_fix":
+                old = next((v for k, v in data.items()
+                            if k != "__apps__" and v.get("raw", "").lower() == raw.lower()), None)
+                if old:
+                    old["fixed"] = fixed
+                else:
+                    data[raw.lower()] = {"raw": raw, "fixed": fixed,
+                                         "count": 1, "ts": time.time()}
+            else:
+                for k in list(data.keys()):
+                    if k != "__apps__" and data[k].get("raw", "").lower() == raw.lower():
+                        data[k]["fixed"] = fixed
+                        break
+        elif action == "set_app" and raw and fixed:
+            entry = data.setdefault("__apps__", {})
+            if raw.lower() in entry:
+                entry[raw.lower()]["app"] = fixed
+            else:
+                entry[raw.lower()] = {"said": raw, "app": fixed,
+                                      "count": 1, "ts": time.time()}
+        else:
+            return JSONResponse({"error": "azione o parametri non validi"},
+                                status_code=400)
+        try:
+            LEARNED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+    return {"ok": True}
+
+
 @app.get("/api/stt")
 def api_stt():
-    """Quale trascrittore e' attivo (Whisper GPU/CPU o fallback Vosk)."""
+    """Quale trascrittore e' attivo (Whisper modello scelto, o fallback Vosk)."""
     if whisper_available():
         try:
             import ctranslate2 as ct
             gpu = ct.get_cuda_device_count() > 0
         except Exception:
             gpu = False
-        return {"engine": "whisper", "model": "large-v3-turbo (CTranslate2)",
+        return {"engine": "whisper", "model": _whisper_choice["name"],
                 "device": "cuda/gpu" if gpu else "cpu"}
+
+
+@app.get("/api/stt/models")
+def api_stt_models():
+    """Catalogo modelli Whisper per la dropdown web (installato/attivo/download)."""
+    out = []
+    for name, info in WHISPER_CATALOG.items():
+        out.append({
+            "id": name,
+            "label": info["label"],
+            "installed": _fw_installed(name),
+            "active": name == _whisper_choice["name"] and whisper_available(),
+            "downloading": name in _whisper_dl["busy"],
+        })
+    return {"models": out, "fallback": "vosk"}
+
+
+@app.post("/api/stt/model")
+def api_stt_model_set(payload: dict):
+    """Seleziona il modello Whisper. Se non installato: avvia il download in
+    background e si torna a Whisper quando e' pronto (nel frattempo Vosk)."""
+    name = (payload.get("model") or "").strip()
+    if name not in WHISPER_CATALOG:
+        return JSONResponse({"error": f"modello sconosciuto: {name}"}, status_code=400)
+    _whisper_choice["name"] = name
+    try:
+        STT_FILE.write_text(json.dumps({"whisper": name}))
+    except Exception:
+        pass
+    if _fw_installed(name):
+        with _whisper_lock:  # scarica il modello vecchio dalla RAM
+            _whisper["model"] = None
+        return {"ok": True, "status": "attivo"}
+    if name not in _whisper_dl["busy"]:
+        _whisper_dl["busy"].add(name)
+        threading.Thread(target=_fw_download, args=(name,), daemon=True).start()
+    return {"ok": True, "status": "downloading"}
     return {"engine": "vosk", "model": "small-it-0.22", "device": "cpu"}
 
 

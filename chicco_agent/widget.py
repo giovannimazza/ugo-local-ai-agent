@@ -47,6 +47,21 @@ except ImportError:  # avviato come script diretto
 PKG_DIR = Path(__file__).resolve().parent
 BASE = pu.data_dir()
 BASE.mkdir(parents=True, exist_ok=True)
+
+# i crash silenziosi sono impossibili da diagnosticare (pythonw non mostra
+# nulla): ogni traceback imprevisto finisce in widget_crash.log accanto alle prefs
+def _log_crash(tp, val, tb):
+    import traceback
+    try:
+        (BASE / "widget_crash.log").open("a", encoding="utf-8").write(
+            "\n=== " + time.strftime("%Y-%m-%d %H:%M:%S") + " ===\n"
+            + "".join(traceback.format_exception(tp, val, tb)))
+    except Exception:
+        pass
+    sys.__excepthook__(tp, val, tb)
+
+
+sys.excepthook = _log_crash
 PORT = 8123
 SR = 16000
 POS_FILE = BASE / "widget_pos.json"
@@ -74,6 +89,7 @@ PRESS_SCALE = 0.92       # quanto si schiaccia alla pressione
 DRAG_SCALE = 1.05        # "sollevato" mentre lo trascini
 S_MIN, S_MAX = 0.88, 1.18
 PULSE_N, PULSE_MS = 14, 1200   # fotogrammi e durata dell'anello di registrazione
+HALO_N, HALO_MS = 20, 2000     # anello "respirante" dell'ascolto passivo
 
 ENTRY_W, ENTRY_H = 190, 32     # pillola della textbox
 SEND_D, SEND_D_HOVER = 24, 27  # tasto invia a riposo / in hover
@@ -569,16 +585,39 @@ def _ring(k):
     return _ring_cache[k]
 
 
-mic_state = {"color": ACCENT}
-anim = {"s": 1.0, "v": 0.0, "target": 1.0, "phase": 0.0, "job": None}
-mic_hover = {"on": False}
+_halo_cache = {}
+
+
+def _halo(k):
+    """Anello dell'ascolto passivo: respiro lento attorno al cerchio.
+    Si allarga restringendosi e torna indietro, in ciclo continuo
+    (niente alpha su Windows: la dissolvenza e' lo spessore)."""
+    if k not in _halo_cache:
+        t = k / HALO_N
+        wave = 0.5 - 0.5 * np.cos(2 * np.pi * t)      # 0 -> 1 -> 0, dolce
+        dia = BD * (1.06 + 0.07 * wave) * SS
+        wid = max(2.0, 3.6 - 1.4 * wave) * SS
+        img = Image.new("RGBA", (C * SS, C * SS), (0, 0, 0, 0))
+        c0 = C * SS / 2
+        ImageDraw.Draw(img).ellipse([c0 - dia / 2, c0 - dia / 2, c0 + dia / 2, c0 + dia / 2],
+                                    outline=_lighter(ACCENT, 0.30) + (255,), width=int(wid))
+        _halo_cache[k] = img.resize((C, C), Image.LANCZOS)
+    return _halo_cache[k]
+
+
+mic_state = {"color": ACCENT}   # colore corrente del cerchio (viola / rosso)
+# vero mentre il ciclo di ascolto passivo gira: serve gia' a _mic_frame/_tick
+# per l'anello respirante, quindi definito qui una volta sola per tutti
+_passive = {"on": False, "mic": None}
 
 
 def _mic_frame():
     rec = mic_state["color"] == RED
+    passive = _passive["on"] and not rec
     s100 = int(round(min(max(anim["s"], S_MIN), S_MAX) * 100))
     k = int(anim["phase"] * PULSE_N) % PULSE_N if rec else -1
-    key = ("rec" if rec else "idle", s100, k)
+    hk = int(anim["pphase"] * HALO_N) % HALO_N if passive else -1
+    key = ("rec" if rec else "idle", s100, k if rec else hk)
     ph = _photo_cache.get(key)
     if ph is None:
         if len(_photo_cache) > 400:
@@ -586,8 +625,14 @@ def _mic_frame():
         frame = _disc(key[0], s100)
         if rec:
             frame = Image.alpha_composite(_ring(k), frame)
+        elif passive:
+            frame = Image.alpha_composite(_halo(hk), frame)
         ph = _photo_cache[key] = ImageTk.PhotoImage(_key(frame))
     return ph
+anim = {"s": 1.0, "v": 0.0, "target": 1.0, "phase": 0.0, "pphase": 0.0, "job": None}
+mic_hover = {"on": False}
+
+
 
 
 def _tick():
@@ -598,7 +643,11 @@ def _tick():
     rec = mic_state["color"] == RED
     if rec:
         a["phase"] = (a["phase"] + 16 / PULSE_MS) % 1.0
+    elif _passive["on"]:
+        a["pphase"] = (a["pphase"] + 16 / HALO_MS) % 1.0
     settled = abs(a["v"]) < 0.0008 and abs(a["target"] - a["s"]) < 0.003
+    if settled and _passive["on"]:
+        settled = False  # con l'anello passivo attivo l'animazione non si ferma mai
     if settled:
         a["s"], a["v"] = a["target"], 0.0
     canvas.itemconfig(img_item, image=_mic_frame())
@@ -849,6 +898,7 @@ def toggle_listen(_e=None):
     _listen_refresh()
     _save_prefs(listen=not listen_disabled["on"])
     if listen_disabled["on"]:
+        _passive["on"] = False  # ferma DAVVERO il ciclo di ascolto (bug: prima continuava)
         stop_tts()
         bubble.show("Ascolto passivo disattivato.")
     else:
@@ -1062,23 +1112,53 @@ def _rec_thread():
 # Vosk e' leggero (il modello e' gia' in RAM per il fallback STT): ascolta in
 # continuo, e quando sente 'chicco' (o varianti) apre la registrazione vera e
 # invia l'audio al server. Consuma quasi zero CPU: riconoscitore parziale.
-_WAKE_TOK = ("chicco", "chiacco", "chiko", "cico", "kikko", "kiko", "qui quo", "kiriko")
+import unicodedata
+
+# grafie tutte normalizzate (minuscolo, senza accenti ne' punteggiatura);
+# 'qui quo' e 'kiriko' sono storpiature REALI viste da Vosk
+_WAKE_TOK = ("chicco", "chikko", "chiko", "chico", "chiacco", "chichico",
+             "cicco", "cikko", "cico", "kicco", "kikko", "kiko",
+             "kiriko", "qui quo")
 _WAKE_FILLERS = ("ehi", "hey", "oh", "ehila", "ciao", "su", "a", "allora")
-_passive = {"on": False, "mic": None}
+_WAKE_PUNCT = str.maketrans("", "", "!.,;:?\"'`’")
+_PLOG = BASE / "passive_log.txt"
+
+
+def _plog(msg: str) -> None:
+    """Log diagnostico del passivo: cosa sente Vosk, livello, wake, invii."""
+    try:
+        with _PLOG.open("a", encoding="utf-8") as f:
+            f.write(time.strftime("[%H:%M:%S] ") + msg + "\n")
+    except Exception:
+        pass
+
+
+def _norm_tok(t: str) -> str:
+    """Token normalizzato: minuscolo, senza accenti (chicó/chicò -> chicco)
+    e senza punteggiatura finale (chicco! -> chicco)."""
+    t = unicodedata.normalize("NFKD", t.lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return t.translate(_WAKE_PUNCT)
 
 
 def _wake_hit(txt: str) -> bool:
     """La wake word deve APRIRE la frase (eventuale riempitivo davanti):
-    'chicco apri spotify' o 'ehi chicco apri' sì, 'un chicco di caffè' no."""
-    toks = txt.lower().split()
+    'chicco apri spotify' o 'ehi chicco apri' si', 'un chicco di caffe' no.
+    Accetta le grafie alternative e le code fonetiche (chiccoo, chiccoh...)."""
+    toks = [_norm_tok(t) for t in txt.split()]
+    toks = [t for t in toks if t]
     if toks and toks[0] in _WAKE_FILLERS:
         toks = toks[1:]
     if not toks:
         return False
-    if toks[0] in _WAKE_TOK:
+    first = toks[0]
+    if first in _WAKE_TOK:
         return True
-    two = " ".join(toks[:2])
-    return any(two.startswith(w) for w in _WAKE_TOK)
+    # token che APRE con la wake + 1-2 lettere di coda ('chiccoo', 'chiccoh'):
+    # il limite di lunghezza evita falsi positivi tipo 'cicolano'
+    if any(first.startswith(w) and len(first) <= len(w) + 2 for w in _WAKE_TOK):
+        return True
+    return " ".join(toks[:2]) in _WAKE_TOK  # storpiature a due parole ('qui quo')
 
 
 def _pcm16_of(chunk) -> bytes:
@@ -1102,6 +1182,43 @@ def _passive_send_wav(pcm: bytes):
         ui(lambda: bubble.show(msg))
 
 
+def _ensure_mic_volume(mic_dev) -> None:
+    """Porta il volume di registrazione Windows del microfono USATO a >= 90%:
+    matcha il dispositivo per ID endpoint (soundcard e MMDevice condividono
+    lo stesso ID) per non regolarmi un input diverso da quello in uso."""
+    if not pu.IS_WINDOWS:
+        return
+    try:
+        import comtypes
+        from comtypes import CLSCTX_ALL, CoCreateInstance, GUID
+        from pycaw.constants import EDataFlow, DEVICE_STATE
+        from pycaw.pycaw import IMMDeviceEnumerator, IAudioEndpointVolume
+        comtypes.CoInitialize()
+        en = CoCreateInstance(GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}"),
+                              IMMDeviceEnumerator, CLSCTX_ALL)
+        coll = en.EnumAudioEndpoints(EDataFlow.eCapture.value,
+                                     DEVICE_STATE.ACTIVE.value)
+        want = getattr(mic_dev, "id", "") or ""
+        for i in range(coll.GetCount()):
+            dev = coll.Item(i)
+            did = dev.GetId()
+            if want and not (did == want or did.endswith(want) or want.endswith(did)):
+                continue
+            ep = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None
+                              ).QueryInterface(IAudioEndpointVolume)
+            cur = ep.GetMasterVolumeLevelScalar()
+            if cur < 0.9:
+                ep.SetMasterVolumeLevelScalar(1.0, None)
+                _plog(f"volume microfono: {cur * 100:.0f}% -> 100% "
+                      f"({getattr(mic_dev, 'name', '?')})")
+            else:
+                _plog(f"volume microfono: {cur * 100:.0f}% "
+                      f"({getattr(mic_dev, 'name', '?')})")
+            break
+    except Exception as exc:
+        _plog(f"volume microfono non regolabile: {exc}")
+
+
 def _passive_loop():
     """Ascolto passivo con wake word 'chicco': Vosk in streaming sul microfono,
     quasi zero CPU; alla wake word registra il comando e lo manda al server.
@@ -1109,6 +1226,7 @@ def _passive_loop():
     if _passive["on"]:
         return
     _passive["on"] = True
+    ui(lambda: _animate())  # avvia l'anello respirante
     try:
         from vosk import KaldiRecognizer, Model as VoskModel
         vosk_dir = Path.home() / ".cache" / "vosk" / "vosk-model-small-it-0.22"
@@ -1116,6 +1234,9 @@ def _passive_loop():
             ui(lambda: bubble.show("Modello Vosk mancante: ascolto passivo non disponibile."))
             return
         model = VoskModel(str(vosk_dir))
+        mic_dev = _pick_mic()
+        _plog(f"avvio: mic={getattr(mic_dev, 'name', '?')} modello={vosk_dir.name}")
+        _ensure_mic_volume(mic_dev)
 
         def rtxt(r, meth):
             try:
@@ -1129,24 +1250,60 @@ def _passive_loop():
         armed = False
         since_voice = 0.0
         quiet_until = 0.0    # immunita' all'eco: niente wake subito dopo una risposta
-        with _pick_mic().recorder(samplerate=SR) as mic:
+        last_status = 0.0    # per lo stato periodico nel ramo non-armed
+        VOICE_LEVEL = 60     # sotto: silenzio (fondo ~2-20); la voce e' oltre ~100
+        END_SIL = 1.0        # secondi di silenzio prima di considerare il comando finito
+        PRE_WAKE = 12        # chunk (1.2 s) di audio pre-wake inviati al server
+        # AGC: se sei lontano dal microfono il segnale e' debole -> guadagno
+        # software progressivo (con limitatore) prima di Vosk/Whisper
+        MAX_GAIN, SPEECH_TARGET, NOISE_CEIL = 12.0, 2200.0, 400.0
+        agc_gain, agc_n = 1.0, 0
+        noise, speech = 20.0, 300.0   # stime RMS di fondo e di voce
+        with mic_dev.recorder(samplerate=SR) as mic:
             while _passive["on"]:
                 if rec_flag.is_set():
                     time.sleep(0.3)  # registrazione manuale attiva: riparto dopo
                     continue
                 audio = mic.record(numframes=SR // 10).copy()
+                audio = np.clip(audio * agc_gain, -1, 1)   # guadagno AGC
                 pcm = _pcm16_of(audio)
                 level = float(np.sqrt(np.mean(
                     np.frombuffer(pcm, "<i2").astype(np.float32) ** 2)))
+                thr = max(VOICE_LEVEL, noise * 3.0)  # soglia voce adattiva
+                if level > thr and level > 80:       # stima del parlato
+                    speech = 0.95 * speech + 0.05 * level
+                elif level < max(20.0, noise * 1.5): # stima del fondo
+                    noise = 0.95 * noise + 0.05 * max(level, 1.0)
+                agc_n += 1
+                if agc_n >= 10:  # ~1 s: ricalcolo il guadagno target
+                    agc_n = 0
+                    g = min(max(SPEECH_TARGET / max(speech, 80.0), 1.0), MAX_GAIN)
+                    if noise * g > NOISE_CEIL:  # il fondo non deve esplodere
+                        g = min(g, NOISE_CEIL / max(noise, 1.0))
+                    agc_gain = 0.85 * agc_gain + 0.15 * g
                 if armed:
                     chunks.append(pcm)
-                    since_voice = 0.0 if level > 350 else since_voice + 0.1
+                    since_voice = 0.0 if level > thr else since_voice + 0.1
                     dur = sum(len(c) for c in chunks) / 2 / SR
-                    if dur >= 8 or (dur > 0.6 and since_voice > 1.4):
+                    if dur >= 8 or (dur > 0.6 and since_voice > END_SIL):
+                        # taglio il silenzio di coda: Whisper non lo serve e la
+                        # sua latenza scala con la durata dell'audio
+                        cut = 0
+                        for i in range(len(chunks) - 1, -1, -1):
+                            lv = float(np.sqrt(np.mean(
+                                np.frombuffer(chunks[i], "<i2").astype(np.float32) ** 2)))
+                            if lv > thr:
+                                cut = min(len(chunks), i + 4)  # 0.3 s di coda
+                                break
+                        if cut == 0:
+                            cut = len(chunks)
+                        trimmed = b"".join(chunks[:cut])
+                        _plog(f"SEND: {dur:.1f}s -> "
+                              f"{len(trimmed) / 2 / SR:.1f}s dopo il taglio")
                         ui(lambda: (set_mic_color(ACCENT),
                                     bubble.show("Capisco…", sticky=True)))
                         quiet_until = time.time() + 4.0  # la risposta parlata non deve riarmarmi
-                        _passive_send_wav(b"".join(chunks))
+                        _passive_send_wav(trimmed)
                         armed, chunks = False, []
                         rec = KaldiRecognizer(model, SR)
                     elif dur < 0.6 and since_voice >= 2.0:
@@ -1158,18 +1315,27 @@ def _passive_loop():
                 if len(chunks) > 32:
                     chunks.pop(0)
                 txt = rtxt(rec, "FinalResult") if rec.AcceptWaveform(pcm) else rtxt(rec, "PartialResult")
+                if txt:
+                    _plog(f"visto: {txt!r} (livello {level:.0f})")
+                elif time.time() - last_status >= 5.0:
+                    last_status = time.time()
+                    _plog(f"vivo: livello {level:.0f} soglia {thr:.0f} "
+                          f"guadagno {agc_gain:.1f}x fondo {noise:.0f}")
                 if txt and time.time() >= quiet_until and _wake_hit(txt):
-                    chunks = chunks[-30:] + [pcm]  # wake inclusa nel comando
+                    _plog(f"WAKE: {txt!r}")
+                    chunks = chunks[-PRE_WAKE:] + [pcm]  # wake + poco contesto
                     armed, since_voice = True, 0.0
                     rec = KaldiRecognizer(model, SR)
                     ui(lambda: (set_mic_color(RED),
                                 bubble.show("\U0001F3A4 Ti ascolto…", sticky=True)))
     except Exception as exc:
+        _plog(f"ERRORE: {exc}")
         if _passive["on"]:
             ui(lambda: bubble.show(f"Ascolto passivo fermo ({exc})"))
     finally:
         _passive["on"] = False
         ui(lambda: set_mic_color(ACCENT))
+        ui(lambda: _animate())  # ritorno dolce al cerchio fermo (anello spento)
         if not listen_disabled["on"]:
             ui(lambda: root.after(2500, _ensure_passive))
 

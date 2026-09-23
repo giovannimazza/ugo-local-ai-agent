@@ -64,6 +64,33 @@ hai approvato. Il prompt di correzione riceve inoltre solo le **app rilevanti** 
 le parole dette (matching fuzzy sull'indice), invece di un sottoinsieme arbitrario
  della libreria.
 
+**Memoria degli alias-app**: quando Qwen chiede "Non ho nessuna app chiamata X.
+Intendavi Y?" e rispondi **sì**, la coppia *X → Y* viene memorizzata: la seconda
+volta "apri X" apre Y **direttamente** (~40 ms, zero LLM, detector `alias`). Un
+"no" alla domanda cancella l'alias se era stato salvato per errore. Gli alias
+vivono nella stessa sezione `__apps__` del file di memoria.
+
+**Risoluzione pre-intent dalla memoria**: i refusi confermati non aspettano la
+pipeline completa. La memoria viene consultata **prima dell'intent**, su tre
+livelli:
+
+1. **Fastlane** (Vosk, ~0,3 s, prima ancora di Whisper): "apri spotifi" viene
+   riscritto in "apri Spotify" dalla memoria ed eseguito subito (detector
+   `fastlane`) — quando il nome risolve inequivocabilmente nell'indice app
+2. **Fase pre-intent**: i residui di wake word ("chicco apri spotify",
+   "ehi chicco apri steam") vengono ripuliti (`_strip_wake`), i refusi noti
+   riscritti e se il nome risolve nell'indice il comando parte in ~ms senza
+   Whisper né Qwen (detector `learned`)
+3. **Dentro `open_app`**: il fuzzy-match sull'indice riceve già il nome corretto
+   dalla memoria (per-token, con matching a 0,82), quindi anche varianti mai
+   viste di un refuso noto vengono risolte in locale
+
+**Guardia sì/no**: le risposte di conferma ("sì", "no", "ok va bene", fino a 3
+parole) sono riconosciute solo quando non contengono un verbo d'azione — prima
+"vai e apri spotify" veniva scambiato per una conferma a causa di "vai" e la
+frase spariva senza eseguire nulla. Ora le frasi con apri/chiudi/crea/cerca…
+non sono mai conferme.
+
 ---
 
 ## 🏗️ Architettura / Stack
@@ -181,11 +208,29 @@ Comandi disponibili:
 | `chicco setup` | solo installazione, senza avviare |
 | `chicco doctor` | diagnostica: cosa è installato e cosa manca |
 | `chicco stop` | ferma widget e server |
+| `chicco update` | controlla GitHub e aggiorna all'ultima versione |
+| `chicco version` | mostra la versione installata |
 
 Al primo `setup`/`run` la CLI aggiunge automaticamente il comando `chicco` al
 PATH (directory Scripts di pip su Windows, con notifica ai processi — apri un
 terminale nuovo; su macOS/Linux crea un launcher in `~/.local/bin`), così puoi
 richiamarlo da qualsiasi cartella.
+
+### Aggiornamenti automatici
+
+A ogni avvio (`chicco run` o doppio click su `chicco_app.py`) Chicco verifica
+su GitHub se esiste una versione più recente. Per un clone git il confronto è
+sui **commit** (`git fetch` con le tue credenziali: funziona anche con repo
+private); per installazioni pip diretta confronta la versione nel
+`pyproject.toml` remoto.
+
+- **Da terminale**: chiede conferma (`Aggiornare ora? [s/N]`) prima di fare
+  `git pull` + reinstall del pacchetto, poi riavvia i componenti col codice nuovo
+- **Doppio click** (niente console): aggiorna in silenzio e riparte da solo
+- Le modifiche locali non committate vengono messe da parte (stash) e
+  **ripristinate** dopo l'aggiornamento, mai perse
+- Offline o repo non raggiungibile: il controllo viene saltato, mai un blocco
+- Aggiornamenti manuali comunque possibili: `chicco update`
 
 ### Installazione manuale (alternativa)
 
