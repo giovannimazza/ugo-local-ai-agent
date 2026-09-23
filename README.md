@@ -224,6 +224,7 @@ Comandi disponibili:
 | `ugo update` | controlla GitHub e aggiorna all'ultima versione |
 | `ugo channel` | mostra/cambia il canale di aggiornamento (`dev` o `stable`) |
 | `ugo version` | mostra la versione installata |
+| `ugo help` | lista completa dei comandi con spiegazioni ed esempi |
 
 Al primo `setup`/`run` la CLI aggiunge automaticamente il comando `ugo` al
 PATH (directory Scripts di pip su Windows, con notifica ai processi — apri un
