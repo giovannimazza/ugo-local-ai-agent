@@ -228,7 +228,7 @@ def install_whisper() -> None:
 
 
 def ensure_path() -> None:
-    """Rende il comando 'chicco' richiamabile da qualsiasi terminale:
+    """Rende il comando 'ugo' richiamabile da qualsiasi terminale:
     su Windows aggiunge la dir Scripts di pip al PATH utente (con broadcast
     WM_SETTINGCHANGE, niente riavvio), su macOS/Linux crea uno shim in
     ~/.local/bin."""
@@ -256,7 +256,7 @@ def ensure_path() -> None:
             voci = [p.strip().lower() for p in cur.split(";") if p.strip()]
             mancanti = [d for d in dirs if str(d).lower() not in voci]
             if not mancanti:
-                _ok("'chicco' gia' raggiungibile (" + ", ".join(str(d) for d in dirs) + ")")
+                _ok("'ugo' gia' raggiungibile (" + ", ".join(str(d) for d in dirs) + ")")
                 return
             new = cur
             for d in mancanti:
