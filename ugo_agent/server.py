@@ -3040,11 +3040,20 @@ def _tool_memory_mb() -> list:
                           "kind": "llm"})
     except Exception:
         pass
-    # stime interne: il peso dei modelli caricati nel processo server
+    # stime interne: il peso dei modelli caricati nel processo server.
+    # Whisper compare SEMPRE che sia installato: se il modello e' ancora
+    # lazy (carica al primo comando) lo si dice nella nota, cosi' la board
+    # mostra il quadro completo della RAM anche a freddo.
     if laya_system is not None:
         tools.append({"name": "Laya (intent)", "mb": 450, "kind": "intent"})
     if _stt.get("model") is not None:
         tools.append({"name": "Vosk (fallback STT)", "mb": 45, "kind": "stt"})
+    if _whisper.get("model") is None and whisper_available():
+        wdir = whisper_model_dir().lower()
+        est = 2100 if "turbo" in wdir else (600 if "small" in wdir else 200)
+        tools.append({"name": f"Whisper {_whisper_choice['name']}",
+                      "mb": est, "kind": "stt",
+                      "note": "non caricato (al primo comando)"})
     if _whisper.get("model") is not None:
         wdir = whisper_model_dir().lower()
         est = 2100 if "turbo" in wdir else (600 if "small" in wdir else 200)

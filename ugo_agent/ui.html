@@ -326,7 +326,7 @@ it: {
   st_vosk: 'Vosk (fastlane pre-lettura)', st_fastlane: 'Fastlane (match comandi)',
   st_whisper: 'Whisper (trascrizione)', st_qn: 'Qwen (correzione STT)',
   st_qi: 'Qwen (interpretazione intent)', st_qs: 'Qwen (suggerimento app)',
-  st_tts_piper: 'TTS Piper (Paola/Amy)', st_tts_sapi: 'TTS di sistema',
+  st_tts_piper: 'Piper TTS (Voce in Uso)', st_tts_sapi: 'TTS di sistema',
   st_command: '⏱ Comando completo (voce → risposta)',
 },
 en: {
@@ -399,7 +399,7 @@ en: {
   st_vosk: 'Vosk (fastlane pre-read)', st_fastlane: 'Fastlane (command match)',
   st_whisper: 'Whisper (transcription)', st_qn: 'Qwen (STT correction)',
   st_qi: 'Qwen (intent parsing)', st_qs: 'Qwen (app suggestions)',
-  st_tts_piper: 'TTS Piper (Paola/Amy)', st_tts_sapi: 'System TTS',
+  st_tts_piper: 'Piper TTS (voice in use)', st_tts_sapi: 'System TTS',
   st_command: '⏱ Full command (voice → reply)',
 }
 };
@@ -716,7 +716,7 @@ async function openTtsMenu() {
     const SUB = {piper: t('sub_piper'), sapi: t('sub_sapi')};
     for (const m of d.engines) {
       const tag = m.downloading ? t('dl') : (m.installed ? '' : t('notinst'));
-      const it = {title: (m.id === 'piper' ? ((LANG === 'en' ? 'Amy' : 'Paola') + t('tts_piper')) : t('tts_sys')) + tag,
+      const it = {title: (m.id === 'piper' ? ((LANG === 'en' ? 'Amy' : 'Paola') + ' - Piper TTS') : t('tts_sys')) + tag,
                   subtitle: SUB[m.id] || '', kind: 'appx'};
       const rowEl = row(it);
       rowEl.classList.add('click');
@@ -883,15 +883,27 @@ const STAGE_LABEL = {
   qwen_intent: {it: 'Qwen (interpretazione intent)', en: 'Qwen (intent parsing)'},
   qwen_suggest: {it: 'Qwen (suggerimento app)', en: 'Qwen (app suggestion)'},
   qwen_translate: {it: 'Qwen (traduzione risposta)', en: 'Qwen (reply translation)'},
-  tts_piper: {it: 'TTS Piper (Paola/Amy)', en: 'Piper TTS (Paola/Amy)'},
+  tts_piper: {it: ' - Piper TTS', en: ' - Piper TTS'},
   tts_sapi: {it: 'TTS di sistema', en: 'System TTS'},
   command: {it: '⏱ Comando completo (voce → risposta)',
             en: '⏱ Full command (voice → reply)'}
 };
 function stageLabel(k) {
   const e = STAGE_LABEL[k];
+  if (k === 'tts_piper') {
+    // la voce in uso, non l'elenco generico Paola/Amy
+    return LANG === 'en' ? 'Piper TTS (voice in use)' : 'Piper TTS (Voce in Uso)';
+  }
   return e ? (e[LANG] || e.it) : k;
 }
+
+// glifi pausa/play centrati nel riquadro (l'emoji ⏸ e' sempre decentrata
+// e con le due stanghette sfalsate a seconda del font)
+const pauseSVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">' +
+  '<rect x="6.5" y="5" width="4" height="14" rx="1.2"/>' +
+  '<rect x="13.5" y="5" width="4" height="14" rx="1.2"/></svg>';
+const playSVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">' +
+  '<path d="M8 5.5v13c0 .8.9 1.3 1.6.9l10-6.5c.6-.4.6-1.4 0-1.8l-10-6.5C8.9 4.2 8 4.7 8 5.5z"/></svg>';
 let statsTimer = null;
 
 async function refreshStats() {
@@ -910,7 +922,7 @@ async function refreshStats() {
     }
     mtitle.textContent = t('m_stats');
     mcount.textContent = t('stats_sub') + d.models.stt +
-      ' · AI ' + d.models.llm + ' · TTS ' + d.models.tts;
+      ' · AI ' + d.models.llm + ' · TTS ' + (d.models.tts || '').replace('piper-', '');
     msearch.style.display = 'none';
     mlist.innerHTML = '';
     if (!(d.stages || []).length) {
@@ -971,8 +983,14 @@ async function refreshStats() {
         mlist.appendChild(el);
       }
     }
+    // stacco prima del toggle sospendi/riprendi: le barre RAM non lo toccano
+    if (mlist.lastChild) {
+      const sp = document.createElement('div');
+      sp.style.cssText = 'height:14px';
+      mlist.appendChild(sp);
+    }
     const tog = document.createElement('div'); tog.className = 'mitem click';
-    tog.innerHTML = '<div class="ic">' + (d.enabled ? '⏸' : '▶') + '</div><div class="tx"><b>' +
+    tog.innerHTML = '<div class="ic">' + (d.enabled ? pauseSVG : playSVG) + '</div><div class="tx"><b>' +
       (d.enabled ? 'Sospendi la raccolta dati' : 'Riprendi la raccolta dati') +
       '</b><small>il pannello continua a mostrare gli ultimi valori raccolti</small></div>';
     tog.onclick = async () => {
