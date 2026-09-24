@@ -641,7 +641,7 @@ bubble = Bubble()
 _PANEL_IMG = ImageTk.PhotoImage(_key(_rounded_panel(PANEL_W, PANEL_H, PANEL_R, PILL_BG, PILL_EDGE)))
 shell_canvas = tk.Canvas(root, width=PANEL_W, height=PANEL_H, bg=TRANSPARENT,
                          highlightthickness=0, bd=0, cursor="arrow")
-shell_canvas.create_image(0, 0, anchor="nw", image=_PANEL_IMG)
+panel_item = shell_canvas.create_image(0, 0, anchor="nw", image=_PANEL_IMG)
 shell_canvas.create_oval(20, 23, 25, 28, fill=ACCENT, outline="", tags="brand-dot")
 shell_canvas.create_text(32, 25, anchor="w", text="Ugo", fill=TXT,
                          font=(UI_FAMILY, 10, "bold"), tags="brand")
@@ -711,6 +711,94 @@ def _real_control(w, h, text, font):
 type_control = _real_control(34, 24, "T", (UI_FAMILY, 11, "bold"))
 settings_control = _real_control(34, 24, "•••", (UI_FAMILY, 9, "bold"))
 close_control = _real_control(22, 22, "×", (UI_FAMILY, 13, "bold"))
+
+
+# --- espansione/richiamo della card --------------------------------------------
+# Su Windows non esiste l'alpha parziale (colore-chiave): l'animazione e' una
+# scia di pannelli arrotondati pre-renderizzati a dimensioni crescenti. Il
+# cerchio del microfono resta SOPRA la card nello stacking, quindi la card
+# sembra gonfiarsi da dietro il microfono e richiudersi dentro di lui.
+SHELL_ANIM_MS = 190
+_MILL_W = max(PANEL_W // 2, MIC_X + C + 8)   # primo fotogramma: copre il quadrato opaco del mic
+_MILL_H = max(PANEL_H // 2, MIC_Y + C + 8)
+_GROW_FRAMES: dict = {}
+_grow = {"panel": None, "job": None}
+_shrink = {"panel": None, "job": None}
+
+
+def _ease(t):
+    return 1.0 - (1.0 - t) ** 3      # ease-out: parte decisa, atterra morbida
+
+
+def _shell_frame(t):
+    """Disegna la card al tempo t (0..1, gia' eased): 1 = card piena."""
+    if t >= 1.0:
+        shell_canvas.itemconfig(panel_item, image=_PANEL_IMG)
+        shell_canvas.config(width=PANEL_W, height=PANEL_H)
+        return
+    w = int(round(_MILL_W + (PANEL_W - _MILL_W) * t))
+    h = int(round(_MILL_H + (PANEL_H - _MILL_H) * t))
+    ph = _GROW_FRAMES.get((w, h))
+    if ph is None:
+        if len(_GROW_FRAMES) > 60:
+            _GROW_FRAMES.clear()
+        ph = _GROW_FRAMES[(w, h)] = ImageTk.PhotoImage(
+            _key(_rounded_panel(w, h, min(PANEL_R, h // 2), PILL_BG, PILL_EDGE)))
+    shell_canvas.itemconfig(panel_item, image=ph)
+    shell_canvas.config(width=w, height=h)
+
+
+def _anim_reset():
+    """Termina subito le animazioni: card completa, code fermate."""
+    for d in (_grow, _shrink):
+        if d["job"] is not None:
+            try:
+                root.after_cancel(d["job"])
+            except Exception:
+                pass
+        d["job"] = d["panel"] = None
+    _shell_frame(1.0)
+
+
+def _grow_step(seq, t0):
+    if _grow["panel"] != seq:
+        return                       # e' arrivata una chiusura: fermo tutto
+    t = min(1.0, (time.monotonic() - t0) / (SHELL_ANIM_MS / 1000.0))
+    if t >= 1.0:
+        _grow["panel"] = _grow["job"] = None
+        _shell_frame(1.0)
+        # a fine corsa il microfono torna opaco sulla card e i controlli
+        # veri compaiono sopra
+        canvas.config(bg=PILL_BG)
+        canvas.itemconfig(img_item, image=_mic_frame(True))
+        type_control.place(x=18, y=82)
+        settings_control.place(x=PANEL_W - 52, y=82)
+        close_control.place(x=PANEL_W - 39, y=12)
+        _to_top(type_control)
+        _to_top(settings_control)
+        _to_top(close_control)
+        return
+    _shell_frame(_ease(t))
+    _grow["job"] = root.after(16, _grow_step, seq, t0)
+
+
+def _shrink_step(seq, t0):
+    if _shrink["panel"] != seq:
+        return
+    t = min(1.0, (time.monotonic() - t0) / (SHELL_ANIM_MS / 1000.0))
+    if t >= 1.0:
+        _shrink["panel"] = _shrink["job"] = None
+        shell_canvas.place_forget()
+        return
+    _shell_frame(_ease(1.0 - t))
+    _shrink["job"] = root.after(16, _shrink_step, seq, t0)
+
+
+# pre-genera i fotogrammi: il primo hover e' gia' fluido (~13 passaggi di Pillow)
+_shell_frame(0.0)
+for _i in range(1, 13):
+    _shell_frame(_ease(_i / 12))
+_shell_frame(1.0)
 
 # --- cerchio microfono ---------------------------------------------------------
 canvas = tk.Canvas(root, width=C, height=C, bg=TRANSPARENT, highlightthickness=0, bd=0)
@@ -994,28 +1082,56 @@ def _to_top(w):
     w.tk.call("raise", w._w)
 
 
-def open_shell():
-    """Mostra la card al mouse-over, senza rubare il focus al desktop."""
+def open_shell(animate=True):
+    """Mostra la card al mouse-over, senza rubare il focus al desktop.
+
+    Con animate=True e card chiusa la card si espande da dietro il
+    microfono (i controlli veri compaiono solo a fine corsa); negli altri
+    casi la card e' subito completa.
+    """
+    animating = (animate and not shell_canvas.winfo_ismapped()
+                 and _grow["job"] is None and _shrink["job"] is None)
+    if not animating:
+        _anim_reset()
     if not shell_canvas.winfo_ismapped():
         shell_canvas.place(x=0, y=0)
-    # Versione opaca del frame: nessun buco trasparente dentro la card.
-    canvas.config(bg=PILL_BG)
-    canvas.itemconfig(img_item, image=_mic_frame(True))
     shell_canvas.tk.call("lower", shell_canvas._w)   # card sotto a tutto
-    close_control.place(x=PANEL_W - 39, y=12)
-    _to_top(close_control)
     if not entry_frame.winfo_ismapped():
         canvas.place(x=MIC_X, y=MIC_Y)
         _to_top(canvas)
-        type_control.place(x=18, y=82)
-        settings_control.place(x=PANEL_W - 52, y=82)
-        _to_top(type_control)
-        _to_top(settings_control)
+    if animating:
+        # apertura animata: microfono con la sua grafica trasparente sopra
+        # la card che cresce; i controlli nascono solo a fine corsa
+        canvas.config(bg=TRANSPARENT)
+        canvas.itemconfig(img_item, image=_mic_frame(False))
+        type_control.place_forget()
+        settings_control.place_forget()
+        close_control.place_forget()
+        _grow["panel"] = (_grow["panel"] or 0) + 1
+        _shell_frame(0.0)
+        _grow["job"] = root.after(16, _grow_step, _grow["panel"], time.monotonic())
+    else:
+        # Versione opaca del frame: nessun buco trasparente dentro la card.
+        canvas.config(bg=PILL_BG)
+        canvas.itemconfig(img_item, image=_mic_frame(True))
+        close_control.place(x=PANEL_W - 39, y=12)
+        _to_top(close_control)
+        if not entry_frame.winfo_ismapped():
+            type_control.place(x=18, y=82)
+            settings_control.place(x=PANEL_W - 52, y=82)
+            _to_top(type_control)
+            _to_top(settings_control)
+        _shell_frame(1.0)
     _start_hover_watch()
 
 
 def close_shell():
-    """Richiude la card e torna al solo microfono flottante."""
+    """Richiude la card e torna al solo microfono flottante.
+
+    Dalla sola card la chiusura e' animata: la card si richiude DENTRO il
+    microfono, che resta sopra e continua a vedersi. Con la textbox aperta
+    o un'animazione in corso la chiusura e' immediata.
+    """
     if hover.get("job") is not None:
         try:
             root.after_cancel(hover["job"])
@@ -1023,18 +1139,27 @@ def close_shell():
             pass
         hover["job"] = None
     hover["left_at"] = None
-    close_entry(restore_mic=True)
+    was_entry = entry_frame.winfo_ismapped()
+    close_entry(restore_mic=False)
     type_control.place_forget()
     settings_control.place_forget()
     close_control.place_forget()
-    shell_canvas.place_forget()
+    canvas.place(x=MIC_X, y=MIC_Y)
+    _to_top(canvas)
+    shell_canvas.tk.call("lower", shell_canvas._w)
     canvas.config(bg=TRANSPARENT)
     canvas.itemconfig(img_item, image=_mic_frame(False))
+    if was_entry or _grow["panel"] is not None or _shrink["panel"] is not None:
+        _anim_reset()
+        shell_canvas.place_forget()
+        return
+    _shrink["panel"] = (_shrink["panel"] or 0) + 1
+    _shrink["job"] = root.after(16, _shrink_step, _shrink["panel"], time.monotonic())
 
 
 def open_entry():
     """La T trasforma la card in una piccola modalità di scrittura."""
-    open_shell()
+    open_shell(animate=False)
     canvas.place_forget()
     type_control.place_forget()
     settings_control.place_forget()
@@ -1056,6 +1181,7 @@ def close_entry(restore_mic=True):
     shell_canvas.itemconfig("type", state="normal")
     shell_canvas.itemconfig("settings", state="normal")
     if restore_mic and shell_canvas.winfo_ismapped():
+        _anim_reset()   # niente animazioni a metà quando la textbox si chiude
         canvas.place(x=MIC_X, y=MIC_Y)
         _to_top(canvas)
         type_control.place(x=18, y=82)
@@ -1119,6 +1245,11 @@ def _hover_watch():
     if inside:
         hover["on"] = True
         hover["left_at"] = None
+        if _shrink["panel"] is not None and not entry_frame.winfo_ismapped():
+            # il mouse e' tornato mentre la card si richiudeva: la riapro
+            # al completo invece di lasciarla a meta' strada
+            _on_enter()
+            return
     else:
         hover["on"] = False
         if hover["left_at"] is None:
