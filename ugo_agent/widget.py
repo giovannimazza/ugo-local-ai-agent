@@ -235,12 +235,17 @@ def _overlay(img, color, mask) -> None:
     img.alpha_composite(layer)
 
 
-def _key(img: Image.Image, thr: int = 110) -> Image.Image:
-    """RGBA -> RGB con colore-chiave: niente alpha parziale (limite di Windows)."""
+def _key(img: Image.Image, thr: int = 110, base=None) -> Image.Image:
+    """RGBA -> RGB con colore-chiave: niente alpha parziale (limite di Windows).
+
+    Con base=(r,g,b) i buchi trasparenti prendono QUEL colore invece del
+    colore-chiave: per le immagini che stanno sempre sopra la card (pillola
+    della textbox) cosi' gli angoli non mostrano il desktop sotto.
+    """
     a = np.asarray(img.convert("RGBA"))
     out = a[..., :3].copy()
     holes = a[..., 3] < thr
-    out[holes] = _KEY_RGB
+    out[holes] = _hex(base) if base is not None else _KEY_RGB
     # un pixel opaco che per caso coincide con la chiave diventerebbe un buco
     clash = (~holes) & np.all(out == _KEY_RGB, axis=-1)
     out[clash] = (2, 2, 2)
@@ -957,11 +962,15 @@ def set_mic_color(color):
 # --- pillola con textbox + tasto invia -----------------------------------------
 # Un unico canvas: pillola e tasto invia sono la STESSA immagine, cosi' gli
 # angoli del tasto non "bucano" la pillola mostrando il desktop sotto.
-entry_frame = tk.Canvas(root, width=ENTRY_W, height=ENTRY_H, bg=TRANSPARENT,
+# La pillola vive SEMPRE sopra la card: i suoi angoli trasparenti non devono
+# bucare fino al desktop (i "triangolini piu' scuri" sui bordi) -> il colore-
+# chiave viene riempito col colore della card, identico a PILL_BG, cosi' la
+# cucitura con la card e' invisibile.
+entry_frame = tk.Canvas(root, width=ENTRY_W, height=ENTRY_H, bg=PILL_BG,
                         highlightthickness=0, bd=0, cursor="xterm")
 _SEND_SIZES = [SEND_D, SEND_D + 1, SEND_D + 2, SEND_D_HOVER]
 _PILLS = [ImageTk.PhotoImage(_key(_rounded_panel(ENTRY_W, ENTRY_H, ENTRY_H // 2, PILL_BG,
-                                                 PILL_EDGE, send_d=sd)))
+                                                 PILL_EDGE, send_d=sd), base=PILL_BG))
           for sd in _SEND_SIZES]
 _pill_item = entry_frame.create_image(0, 0, anchor="nw", image=_PILLS[0])
 
