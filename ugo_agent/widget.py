@@ -757,29 +757,22 @@ def _ease(t):
 
 
 def _shell_frame(t):
-    """Card al tempo t (0..1): 1 = card piena al suo posto. La crescita e'
-    simmetrica: centro interpolato dall'orb al centro card, lati che si
-    aprono insieme, angoli che partono tondi (cerchio) e finiscono a card."""
-    if t >= 1.0:
+    """Card al tempo t (0..1): 1 = card piena al suo posto.
+
+    I fotogrammi sono PRE-GENERATI in sequenza (forma e posizione gia'
+    calcolate): durante il volo si sceglie solo l'indice piu' vicino,
+    zero Pillow a runtime -> scorrimento fluido anche con il timer Tk.
+    """
+    if t >= 1.0 or not _SHELL_SEQ:
         shell_canvas.itemconfig(panel_item, image=_PANEL_IMG)
         shell_canvas.config(width=PANEL_W, height=PANEL_H)
         shell_canvas.place(x=0, y=0)
         return
-    w = int(round(_MILL_W + (PANEL_W - _MILL_W) * t))
-    h = int(round(_MILL_H + (PANEL_H - _MILL_H) * t))
-    r0 = _MILL_H / 2                                   # cerchio alla partenza
-    r = int(round(r0 + (PANEL_R - r0) * t))
-    cx = _MIC_CX + (_END_CX - _MIC_CX) * t
-    cy = _MIC_CY + (_END_CY - _MIC_CY) * t
-    ph = _GROW_FRAMES.get((w, h))
-    if ph is None:
-        if len(_GROW_FRAMES) > 60:
-            _GROW_FRAMES.clear()
-        ph = _GROW_FRAMES[(w, h)] = ImageTk.PhotoImage(
-            _key(_rounded_panel(w, h, max(1, min(r, h // 2)), PILL_BG, PILL_EDGE)))
-    shell_canvas.itemconfig(panel_item, image=ph)
+    idx = max(0, min(len(_SHELL_SEQ) - 1, int(round(t * (len(_SHELL_SEQ) - 1)))))
+    photo, w, h, x, y = _SHELL_SEQ[idx]
+    shell_canvas.itemconfig(panel_item, image=photo)
     shell_canvas.config(width=w, height=h)
-    shell_canvas.place(x=int(round(cx - w / 2)), y=int(round(cy - h / 2)))
+    shell_canvas.place(x=x, y=y)
 
 
 def _anim_reset():
@@ -815,7 +808,7 @@ def _grow_step(seq, t0):
         _to_top(close_control)
         return
     _shell_frame(_ease(t))
-    _grow["job"] = root.after(16, _grow_step, seq, t0)
+    _grow["job"] = root.after(10, _grow_step, seq, t0)
 
 
 def _shrink_step(seq, t0):
@@ -830,13 +823,24 @@ def _shrink_step(seq, t0):
         canvas.itemconfig(img_item, image=_mic_frame(False))
         return
     _shell_frame(_ease(1.0 - t))
-    _shrink["job"] = root.after(16, _shrink_step, seq, t0)
+    _shrink["job"] = root.after(10, _shrink_step, seq, t0)
 
 
-# pre-genera i fotogrammi: il primo hover e' gia' fluido (~21 passaggi di Pillow)
-_shell_frame(0.0)
-for _i in range(1, 20):
-    _shell_frame(_ease(_i / 20))
+# sequenza di 40 fotogrammi pre-generati (forma + posizione): il volo e'
+# solo una lettura di indice, nessun rendering Pillow durante l'animazione
+_SHELL_SEQ: list = []
+for _i in range(40):
+    _t = _ease(_i / 39)
+    _w = int(round(_MILL_W + (PANEL_W - _MILL_W) * _t))
+    _h = int(round(_MILL_H + (PANEL_H - _MILL_H) * _t))
+    _r = int(round(_MILL_H / 2 + (PANEL_R - _MILL_H / 2) * _t))
+    _cx = _MIC_CX + (_END_CX - _MIC_CX) * _t
+    _cy = _MIC_CY + (_END_CY - _MIC_CY) * _t
+    _SHELL_SEQ.append((
+        ImageTk.PhotoImage(_key(_rounded_panel(_w, _h, max(1, min(_r, _h // 2)),
+                                               PILL_BG, PILL_EDGE))),
+        _w, _h, int(round(_cx - _w / 2)), int(round(_cy - _h / 2)),
+    ))
 _shell_frame(1.0)
 
 # --- cerchio microfono ---------------------------------------------------------
