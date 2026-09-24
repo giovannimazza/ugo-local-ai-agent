@@ -121,8 +121,8 @@ S_MIN, S_MAX = 0.88, 1.18
 PULSE_N, PULSE_MS = 14, 1200   # fotogrammi e durata dell'anello di registrazione
 HALO_N, HALO_MS = 20, 2000     # anello "respirante" dell'ascolto passivo
 
-PANEL_W, PANEL_H = 216, 124    # card espansa (124: aria sotto la riga T/ascolto,
-                               # il tasto passivo non clippi il bordo inferiore)
+PANEL_W, PANEL_H = 216, 130    # card espansa: riga comandi a y=94, sotto il cerchio
+                               # (il tasto passivo al centro non tocca l'orb)
 PANEL_R = 25
 ENTRY_W, ENTRY_H = 176, 32     # pillola della textbox, aperta dal tasto T
 SEND_D, SEND_D_HOVER = 24, 27  # tasto invia a riposo / in hover
@@ -134,7 +134,7 @@ GAP = 6
 # A riposo si vede solo il cerchio; in hover la card occupa questa stessa
 # finestra. Il microfono resta centrato, come il mock-up di riferimento.
 WIN_W, WIN_H = PANEL_W, PANEL_H
-CIRCLE_CX, CIRCLE_CY = PANEL_W // 2, 63
+CIRCLE_CX, CIRCLE_CY = PANEL_W // 2, 58   # orb rialzato: la riga comandi gli sta sotto
 MIC_X, MIC_Y = CIRCLE_CX - C // 2, CIRCLE_CY - C // 2
 PILL_X, PILL_Y = (PANEL_W - ENTRY_W) // 2, 76
 
@@ -677,10 +677,10 @@ def _shell_pill(x0, y0, x1, y1, tag):
     shell_canvas.create_oval(x1 - 2 * r, y0, x1, y1, fill=SPK_BG, outline="", tags=(tag, tag + "_bg"))
 
 
-_shell_pill(18, 82, 52, 106, "type")
-shell_canvas.create_text(35, 94, text="T", fill=TXT, font=(UI_FAMILY, 11, "bold"), tags="type")
-_shell_pill(PANEL_W - 52, 82, PANEL_W - 18, 106, "settings")
-shell_canvas.create_text(PANEL_W - 35, 92, text="•••", fill=TXT,
+_shell_pill(18, 94, 52, 118, "type")
+shell_canvas.create_text(35, 106, text="T", fill=TXT, font=(UI_FAMILY, 11, "bold"), tags="type")
+_shell_pill(PANEL_W - 52, 94, PANEL_W - 18, 118, "settings")
+shell_canvas.create_text(PANEL_W - 35, 104, text="•••", fill=TXT,
                          font=(UI_FAMILY, 10, "bold"), tags="settings")
 shell_canvas.create_oval(PANEL_W - 39, 12, PANEL_W - 17, 34, fill=SPK_BG, outline="", tags=("close", "close_bg"))
 shell_canvas.create_text(PANEL_W - 28, 23, text="×", fill=MUT,
@@ -745,7 +745,7 @@ close_control = _real_control(22, 22, "×", (UI_FAMILY, 13, "bold"))
 SHELL_ANIM_MS = 320
 _MIC_CX, _MIC_CY = MIC_X + C // 2, MIC_Y + C // 2   # centro dell'orb
 _END_CX, _END_CY = PANEL_W // 2, PANEL_H // 2       # centro della card piena
-_MILL_W, _MILL_H = 116, 106   # primo fotogramma: cerchio che copre il quadrato opaco del mic
+_MILL_W, _MILL_H = 116, 116   # primo fotogramma: cerchio che copre il quadrato opaco del mic
 _GROW_FRAMES: dict = {}
 _grow = {"panel": None, "job": None}
 _shrink = {"panel": None, "job": None}
@@ -807,8 +807,8 @@ def _grow_step(seq, t0):
         # veri compaiono sopra
         canvas.config(bg=PILL_BG)
         canvas.itemconfig(img_item, image=_mic_frame(True))
-        type_control.place(x=18, y=82)
-        settings_control.place(x=PANEL_W - 52, y=82)
+        type_control.place(x=18, y=94)
+        settings_control.place(x=PANEL_W - 52, y=94)
         close_control.place(x=PANEL_W - 39, y=12)
         _place_listen()
         _to_top(type_control)
@@ -1183,8 +1183,8 @@ def open_shell(animate=True):
         close_control.place(x=PANEL_W - 39, y=12)
         _to_top(close_control)
         if not entry_frame.winfo_ismapped():
-            type_control.place(x=18, y=82)
-            settings_control.place(x=PANEL_W - 52, y=82)
+            type_control.place(x=18, y=94)
+            settings_control.place(x=PANEL_W - 52, y=94)
             _place_listen()
             _to_top(type_control)
             _to_top(settings_control)
@@ -1262,8 +1262,8 @@ def close_entry(restore_mic=True):
         _anim_reset()   # niente animazioni a metà quando la textbox si chiude
         canvas.place(x=MIC_X, y=MIC_Y)
         _to_top(canvas)
-        type_control.place(x=18, y=82)
-        settings_control.place(x=PANEL_W - 52, y=82)
+        type_control.place(x=18, y=94)
+        settings_control.place(x=PANEL_W - 52, y=94)
         _place_listen()
         _to_top(type_control)
         _to_top(settings_control)
@@ -1429,7 +1429,7 @@ listen_btn.bind("<Button-1>", toggle_listen)
 def _place_listen():
     """Il tasto on/off dell'ascolto passivo torna sulla card: centro della
     riga inferiore, tra la T e i puntini delle impostazioni."""
-    listen_btn.place(x=PANEL_W // 2 - 13, y=81)
+    listen_btn.place(x=PANEL_W // 2 - 13, y=94)
     _to_top(listen_btn)
 
 
@@ -1559,9 +1559,9 @@ def _shell_click(e):
     _wlog(f"shell_click x={e.x:.0f} y={e.y:.0f}")
     if PANEL_W - 46 <= e.x <= PANEL_W - 10 and 7 <= e.y <= 39:
         _quit()  # chiusura completa: ascolto, registrazione e TTS
-    elif 12 <= e.x <= 58 and 76 <= e.y <= 112:
+    elif 12 <= e.x <= 58 and 88 <= e.y <= 124:
         toggle_entry()
-    elif PANEL_W - 58 <= e.x <= PANEL_W - 12 and 76 <= e.y <= 112:
+    elif PANEL_W - 58 <= e.x <= PANEL_W - 12 and 88 <= e.y <= 124:
         show_stt_popup()
     return "break"
 
