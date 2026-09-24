@@ -809,6 +809,7 @@ def _grow_step(seq, t0):
         type_control.place(x=18, y=82)
         settings_control.place(x=PANEL_W - 52, y=82)
         close_control.place(x=PANEL_W - 39, y=12)
+        _place_listen()
         _to_top(type_control)
         _to_top(settings_control)
         _to_top(close_control)
@@ -1103,10 +1104,12 @@ mute_btn = tk.Label(root, bd=0, bg=TRANSPARENT, cursor="hand2")
 # --- toggle ascolto passivo (wake word), visibile in mouse-over ----------------
 listen_disabled = {"on": not bool(prefs.get("listen", True))}  # default: attivo
 _LSN = {
-    (False, False): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, ACCENT, _icon_mic_on))),
-    (False, True): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, _lighter(ACCENT, 0.12), _icon_mic_on))),
-    (True, False): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, SPK_BG, _icon_mic_off))),
-    (True, True): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, _lighter(SPK_BG, 0.12), _icon_mic_off))),
+    # base=PILL_BG: il tasto vive sempre sulla card, gli angoli trasparenti
+    # non devono bucare fino al desktop (vedi pillola della textbox)
+    (False, False): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, ACCENT, _icon_mic_on), base=_hex(PILL_BG))),
+    (False, True): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, _lighter(ACCENT, 0.12), _icon_mic_on), base=_hex(PILL_BG))),
+    (True, False): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, SPK_BG, _icon_mic_off), base=_hex(PILL_BG))),
+    (True, True): ImageTk.PhotoImage(_key(_glossy(LISTEN_D, _lighter(SPK_BG, 0.12), _icon_mic_off), base=_hex(PILL_BG))),
 }
 listen_hover = {"on": False}
 listen_btn = tk.Label(root, bd=0, bg=TRANSPARENT, cursor="hand2")
@@ -1167,6 +1170,7 @@ def open_shell(animate=True):
         type_control.place_forget()
         settings_control.place_forget()
         close_control.place_forget()
+        listen_btn.place_forget()
         _grow["panel"] = (_grow["panel"] or 0) + 1
         _shell_frame(0.0)
         _shell_content(False)   # in volo solo la forma, niente testi
@@ -1180,6 +1184,7 @@ def open_shell(animate=True):
         if not entry_frame.winfo_ismapped():
             type_control.place(x=18, y=82)
             settings_control.place(x=PANEL_W - 52, y=82)
+            _place_listen()
             _to_top(type_control)
             _to_top(settings_control)
         _shell_frame(1.0)
@@ -1194,6 +1199,7 @@ def close_shell():
     o un'animazione in corso la chiusura e' immediata.
     """
     _wlog("close_shell")
+    listen_btn.place_forget()
     if hover.get("job") is not None:
         try:
             root.after_cancel(hover["job"])
@@ -1232,6 +1238,7 @@ def open_entry():
     canvas.place_forget()
     type_control.place_forget()
     settings_control.place_forget()
+    listen_btn.place_forget()
     shell_canvas.itemconfig("type", state="hidden")
     shell_canvas.itemconfig("settings", state="hidden")
     entry_frame.place(x=PILL_X, y=PILL_Y)
@@ -1256,6 +1263,7 @@ def close_entry(restore_mic=True):
         _to_top(canvas)
         type_control.place(x=18, y=82)
         settings_control.place(x=PANEL_W - 52, y=82)
+        _place_listen()
         _to_top(type_control)
         _to_top(settings_control)
 
@@ -1417,6 +1425,75 @@ def toggle_listen(_e=None):
 listen_btn.bind("<Button-1>", toggle_listen)
 
 
+def _place_listen():
+    """Il tasto on/off dell'ascolto passivo torna sulla card: centro della
+    riga inferiore, tra la T e i puntini delle impostazioni."""
+    listen_btn.place(x=PANEL_W // 2 - 13, y=81)
+    _to_top(listen_btn)
+
+
+listen_btn.bind("<Enter>", lambda e: (listen_hover.__setitem__("on", True),
+                                      _listen_refresh()), add="+")
+listen_btn.bind("<Leave>", lambda e: (listen_hover.__setitem__("on", False),
+                                      _listen_refresh()), add="+")
+
+
+# --- tooltip dei controlli della card -------------------------------------------
+# I controlli non hanno etichette: senza tooltip la T, i puntini e la X
+# sono un enigma la prima volta che si apre la card. Tooltip leggero:
+# Toplevel senza decorazioni che appare dopo 650 ms di hover.
+_tip = {"win": None, "job": None}
+
+
+def _tip_hide(_e=None):
+    if _tip["job"] is not None:
+        try:
+            root.after_cancel(_tip["job"])
+        except Exception:
+            pass
+        _tip["job"] = None
+    if _tip["win"] is not None:
+        try:
+            _tip["win"].destroy()
+        except Exception:
+            pass
+        _tip["win"] = None
+
+
+def _tip_show(text, x, y):
+    _tip_hide()
+    win = tk.Toplevel(root)
+    win.overrideredirect(True)
+    win.attributes("-topmost", True)
+    tk.Label(win, text=text, bg=CARD, fg=TXT, font=FONT_MUT, padx=8, pady=3,
+             bd=1, relief="solid").pack()
+    win.wm_geometry(f"+{x}+{y}")
+    _tip["win"] = win
+
+
+def _tip_sched(text_getter, ev):
+    _tip_hide()
+
+    def fire():
+        _tip["job"] = None
+        try:
+            _tip_show(text_getter(), ev.x_root + 10, max(4, ev.y_root - 34))
+        except Exception:
+            pass
+    _tip["job"] = root.after(650, fire)
+
+
+def _bind_tip(widget, key):
+    widget.bind("<Enter>", lambda e: _tip_sched(lambda: W(key), e), add="+")
+    widget.bind("<Leave>", _tip_hide, add="+")
+    widget.bind("<Button-1>", _tip_hide, add="+")
+
+
+for _ctl, _tipkey in ((type_control, "tip_type"), (settings_control, "tip_settings"),
+                      (close_control, "tip_close"), (listen_btn, "tip_listen")):
+    _bind_tip(_ctl, _tipkey)
+
+
 # --- popup: quale trascrittore STT e' attivo (doppio click sul cerchio) -------
 def _fetch_json(path):
     with urllib.request.urlopen(ROOT_URL + path, timeout=5) as r:
@@ -1552,6 +1629,8 @@ _WSTR = {
         "vosk_missing": "Modello Vosk mancante: ascolto passivo non disponibile.",
         "stt": "Trascrittore", "model": "Modello", "device": "Dispositivo",
         "stt_unavail": "Trascrittore non disponibile ({e})",
+        "tip_type": "Scrivi a Ugo", "tip_settings": "Impostazioni",
+        "tip_close": "Chiudi Ugo", "tip_listen": "Ascolto passivo on/off",
     },
     "en": {
         "placeholder": "Type to Ugo…",
@@ -1574,6 +1653,8 @@ _WSTR = {
         "vosk_missing": "Vosk model missing: passive listening unavailable.",
         "stt": "Transcriber", "model": "Model", "device": "Device",
         "stt_unavail": "Transcriber unavailable ({e})",
+        "tip_type": "Type to Ugo", "tip_settings": "Settings",
+        "tip_close": "Close Ugo", "tip_listen": "Passive listening on/off",
     },
 }
 
