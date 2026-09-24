@@ -356,28 +356,23 @@ def _mic_orb_ss(n: int, tone, icon) -> Image.Image:
     return img
 
 
-# --- icone (disegnate in bianco su maschera, proporzioni relative al cerchio) ---
+# --- icone (disegnate su maschera; stile Lucide: tratto uniforme, cap tondi) ---
 def _icon_mic_body(d, n):
-    """Glifo microfono moderno: capsula snella + staffa a U pulita + base.
-
-    La staffa e' un SEMICERCHIO esatto (180->360): l'arco precedente
-    (-35..215) si arricciava a uncino e l'insieme risultava tozzo.
-    """
-    cx = cy = n / 2
-    lw = max(2, n * 0.042)
-    # capsula
-    bw, bh = n * 0.21, n * 0.25
-    top = cy - n * 0.30
-    d.rounded_rectangle([cx - bw / 2, top, cx + bw / 2, top + bh], radius=bw / 2, fill=255)
-    # staffa a coppa: abbraccia i fianchi e si ferma appena sotto la capsula
-    r = n * 0.16
-    acy = cy - n * 0.16
-    d.arc([cx - r, acy - r, cx + r, acy + r], start=0, end=180, fill=255, width=int(lw))
-    for sx in (cx - r, cx + r):
-        d.ellipse([sx - lw / 2, acy - lw / 2, sx + lw / 2, acy + lw / 2], fill=255)
-    # gambo e base con respiro sotto la coppa
-    _rline(d, [(cx, acy + r - lw / 2), (cx, cy + n * 0.19)], lw)
-    _rline(d, [(cx - n * 0.11, cy + n * 0.19), (cx + n * 0.11, cy + n * 0.19)], lw)
+    """Glifo mic stile Lucide/Feather su griglia 24u (reference utente):
+    capsula a contorno + staffa a U con montanti + gambo e base, tratto
+    uniforme dai cap tondi: elegante e riconoscibile a ogni dimensione."""
+    u = n / 24.0
+    lw = max(2, 2.0 * u)
+    # capsula a contorno (9..15 x, 2..12 y)
+    d.rounded_rectangle([9 * u, 2 * u, 15 * u, 12 * u], radius=3 * u,
+                        outline=255, width=int(lw))
+    # staffa: semicerchio inferiore r=7 centro (12,12) + montanti verso l'alto
+    d.arc([5 * u, 5 * u, 19 * u, 19 * u], start=0, end=180, fill=255, width=int(lw))
+    _rline(d, [(19 * u, 12 * u), (19 * u, 9.8 * u)], lw)
+    _rline(d, [(5 * u, 12 * u), (5 * u, 9.8 * u)], lw)
+    # gambo e base
+    _rline(d, [(12 * u, 19 * u), (12 * u, 22 * u)], lw)
+    _rline(d, [(8 * u, 22 * u), (16 * u, 22 * u)], lw)
 
 
 def _icon_mic(d, n):
