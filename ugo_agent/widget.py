@@ -82,6 +82,16 @@ def _log_crash(tp, val, tb):
 
 
 sys.excepthook = _log_crash
+
+
+def _log_tk_callback(tp, val, tb):
+    """Le eccezioni nei callback Tk non passano da sys.excepthook: senza
+    questo hook muoiono in silenzio (pythonw non mostra nulla) e un bug
+    diventa solo 'il tasto non funziona'."""
+    _log_crash(tp, val, tb)
+
+
+sys.report_callback_exception = _log_tk_callback
 PORT = 8123
 SR = 16000
 POS_FILE = BASE / "widget_pos.json"
@@ -1089,6 +1099,7 @@ def open_shell(animate=True):
     microfono (i controlli veri compaiono solo a fine corsa); negli altri
     casi la card e' subito completa.
     """
+    _wlog(f"open_shell animate={animate} mapped={shell_canvas.winfo_ismapped()}")
     animating = (animate and not shell_canvas.winfo_ismapped()
                  and _grow["job"] is None and _shrink["job"] is None)
     if not animating:
@@ -1132,6 +1143,7 @@ def close_shell():
     microfono, che resta sopra e continua a vedersi. Con la textbox aperta
     o un'animazione in corso la chiusura e' immediata.
     """
+    _wlog("close_shell")
     if hover.get("job") is not None:
         try:
             root.after_cancel(hover["job"])
@@ -1159,6 +1171,7 @@ def close_shell():
 
 def open_entry():
     """La T trasforma la card in una piccola modalità di scrittura."""
+    _wlog("open_entry (click sulla T)")
     open_shell(animate=False)
     canvas.place_forget()
     type_control.place_forget()
@@ -1173,6 +1186,7 @@ def open_entry():
 
 
 def close_entry(restore_mic=True):
+    _wlog(f"close_entry restore_mic={restore_mic}")
     entry_frame.place_forget()
     entry.delete(0, "end")
     ph["on"] = False
@@ -1245,6 +1259,9 @@ def _hover_watch():
     if inside:
         hover["on"] = True
         hover["left_at"] = None
+        if not hover.get("out_logged"):
+            hover["out_logged"] = True
+            _wlog("watch: mouse dentro la finestra")
         if _shrink["panel"] is not None and not entry_frame.winfo_ismapped():
             # il mouse e' tornato mentre la card si richiudeva: la riapro
             # al completo invece di lasciarla a meta' strada
@@ -1252,6 +1269,9 @@ def _hover_watch():
             return
     else:
         hover["on"] = False
+        if not hover.get("out_logged", False):
+            hover["out_logged"] = True
+            _wlog("watch: mouse fuori dalla finestra (attesa 2s)")
         if hover["left_at"] is None:
             hover["left_at"] = time.monotonic()
         elif time.monotonic() - hover["left_at"] >= 2.0:
@@ -1402,6 +1422,7 @@ canvas.bind("<Double-Button-1>", lambda e: show_stt_popup())
 
 def _shell_click(e):
     """Hit area esplicite: il click funziona anche sui bordi delle pillole."""
+    _wlog(f"shell_click x={e.x:.0f} y={e.y:.0f}")
     if PANEL_W - 46 <= e.x <= PANEL_W - 10 and 7 <= e.y <= 39:
         _quit()  # chiusura completa: ascolto, registrazione e TTS
     elif 12 <= e.x <= 58 and 76 <= e.y <= 112:
@@ -1566,17 +1587,33 @@ entry.bind("<Escape>", lambda e: close_entry())
 
 
 def _on_focus_out(_e=None):
-    # la textbox si chiude da sola all'uscita del mouse; il focus-out resta
-    # come sicurezza quando si clicca in un'altra app
+    # la textbox si chiude da sola quando il focus va a un'altra app.
+    # ATTENZIONE: focus_force + focus_set di open_entry generano un
+    # <FocusOut> su root ANCHE quando il focus resta dentro Ugo (root ->
+    # entry): chiudere in quel caso fa aprire/chiudere la textbox nello
+    # stesso istante ("la T non funziona"). Chiudiamo SOLO quando e'
+    # CERTO che il primo piano e' di un'altra applicazione.
     if not entry_frame.winfo_ismapped():
         return
-    try:
-        w = root.focus_get()
-        if w is not None and bubble.win is not None and str(w).startswith(str(bubble.win)):
-            return
-    except Exception:
-        pass
+    if pu.IS_WINDOWS:
+        try:
+            import ctypes
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if fg:  # c'e' una finestra in primo piano
+                mine = int(root.wm_frame(), 16)
+                if fg == mine:
+                    return  # siamo noi in primo piano: focus nostro
+        except Exception:
+            _wlog("focus_out: fg non leggibile, non chiudo")
+            return  # in dubbio NON chiudere: il mouse-out resta la rete
+    else:
+        try:
+            if root.focus_get() is not None:
+                return
+        except Exception:
+            return  # focus non determinabile: non chiudere
     if not entry_text():  # con testo dentro resta aperta
+        _wlog("focus_out: chiudo (focus a altra app)")
         close_entry()
 
 
@@ -2023,7 +2060,24 @@ def on_release(e):
     root.after(260, lambda: toggle_recording() if on_release._n == click["seq"] else None)
 
 
+# --- log eventi UI (come passive_log: serve a diagnosticare a distanza) -------
+_WLOG = BASE / "widget_debug.txt"
+
+
+def _wlog(msg: str) -> None:
+    try:
+        if _WLOG.exists() and _WLOG.stat().st_size > 1_000_000:
+            _WLOG.unlink()
+        with _WLOG.open("a", encoding="utf-8") as f:
+            f.write(time.strftime("[%H:%M:%S] ") + msg + "\n")
+    except Exception:
+        pass
+
+
 def _quit(_e=None):
+    import traceback as _t4
+    _wlog("quit da: " + " | ".join(
+        l.strip() for l in _t4.format_stack(limit=6) if ".py" in l)[-300:])
     listen_disabled["on"] = True  # ferma il ciclo passivo
     _passive["on"] = False
     rec_flag.clear()
