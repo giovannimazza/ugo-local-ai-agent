@@ -49,8 +49,12 @@ reads the **native libraries of game launchers**: Steam `.acf` manifests, Epic `
 GOG `.info`, plus Riot/EA/Ubisoft/Battle.net launchers. The library gives the AI context
 (to open the right app) and powers the "what games/apps do I have" command.
 
-The desktop widget: transparent floating draggable circle, input pill that appears on
-mouse hover, TTS mute toggle, answers in a self-dismissing bubble.
+The desktop widget: a transparent floating draggable circle; on mouse hover a compact
+card **expands out of the circle** (smooth animation, 40 pre-rendered frames) and
+collapses back into it when the mouse leaves — at startup only the circle is visible.
+The card has: **T** = write to Ugo, **•••** = settings, a microphone button = passive
+listening on/off, **×** = collapse; every control shows a tooltip. Answers appear in
+a self-dismissing bubble.
 
 **Automatic input correction**: every command — spoken *or typed* — goes through Qwen
 before execution, which cleans up misheard/mistyped words and garbled app names
@@ -348,8 +352,8 @@ single one remains.
 - **Passive listening** 🎙️: say **"Ugo"** (or *ehi/oh/a Ugo*) and immediately the
   command — *"Ugo apri Spotify"* — without touching anything. Streaming Vosk, near
   zero CPU; it pauses during manual recording and for a few seconds after every
-  answer (so Ugo's own voice doesn't retrigger it). The crossed-out microphone button
-  (next to the TTS mute, on mouse over) turns passive listening off/on
+  answer (so Ugo's own voice doesn't retrigger it). The microphone button on the hover
+  card (bottom row, center) turns passive listening off/on
 - **Whisper wake-guard**: the cheap detector in the widget (Vosk) can mistake TV,
   conversations or noise for the wake word. The server verifies with **Whisper
   large-v3-turbo** that "Ugo" (or one of its garblings: *uga, oga, u go, sugo…*) is
@@ -366,9 +370,12 @@ single one remains.
 - **Automatic microphone choice**: if the default device is mute (e.g. an audio
   interface with no input plugged in), the widget probes the inputs and uses the live
   one; the choice is remembered
-- **Double-click** → info about the active transcriber (Whisper/Vosk, model, device)
-- **Mouse over** → input pill appears (Enter = send), **TTS mute toggle** 🔊/🔇
-  and **passive listening toggle** 🎙️/🚫🎙️
+- **Mouse over** → the card expands from behind the circle: **T** = write to Ugo
+  (Enter = send, Esc = close; an unsent draft is kept even if the mouse leaves),
+  **•••** = settings menu (transcriber info, TTS mute 🔊/🔇, AI model),
+  **mic button** = passive listening toggle 🎙️/🚫🎙️, **×** = collapse —
+  with tooltips on every control
+- **Double-click** → settings menu (active transcriber, TTS mute, AI model)
 - **Drag** the widget anywhere (position is remembered)
 - **Right-click** → close
 
