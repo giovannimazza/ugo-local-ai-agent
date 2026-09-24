@@ -357,21 +357,32 @@ def _mic_orb_ss(n: int, tone, icon) -> Image.Image:
 
 
 # --- icone (disegnate in bianco su maschera, proporzioni relative al cerchio) ---
-def _icon_mic(d, n):
+def _icon_mic_body(d, n):
+    """Glifo microfono moderno: capsula snella + staffa a U pulita + base.
+
+    La staffa e' un SEMICERCHIO esatto (180->360): l'arco precedente
+    (-35..215) si arricciava a uncino e l'insieme risultava tozzo.
+    """
     cx = cy = n / 2
-    w, h = n * 0.25, n * 0.28
+    lw = max(2, n * 0.042)
+    # capsula
+    bw, bh = n * 0.21, n * 0.25
     top = cy - n * 0.30
-    d.rounded_rectangle([cx - w / 2, top, cx + w / 2, top + h], radius=w / 2, fill=255)
-    lw = max(2, n * 0.045)
-    r = n * 0.20
-    acy = cy - n * 0.07
-    d.arc([cx - r, acy - r, cx + r, acy + r], start=-35, end=215, fill=255, width=int(lw))
-    for ang in (-35, 215):  # estremi dell'archetto arrotondati
-        a = np.radians(ang)
-        px, py = cx + r * np.cos(a) - lw / 2 * np.cos(a), acy + r * np.sin(a) - lw / 2 * np.sin(a)
-        d.ellipse([px - lw / 2, py - lw / 2, px + lw / 2, py + lw / 2], fill=255)
-    _rline(d, [(cx, acy + r - lw / 2), (cx, cy + n * 0.185)], lw)
-    _rline(d, [(cx - n * 0.105, cy + n * 0.185), (cx + n * 0.105, cy + n * 0.185)], lw)
+    d.rounded_rectangle([cx - bw / 2, top, cx + bw / 2, top + bh], radius=bw / 2, fill=255)
+    # staffa a coppa: abbraccia i fianchi e si ferma appena sotto la capsula
+    r = n * 0.16
+    acy = cy - n * 0.16
+    d.arc([cx - r, acy - r, cx + r, acy + r], start=0, end=180, fill=255, width=int(lw))
+    for sx in (cx - r, cx + r):
+        d.ellipse([sx - lw / 2, acy - lw / 2, sx + lw / 2, acy + lw / 2], fill=255)
+    # gambo e base con respiro sotto la coppa
+    _rline(d, [(cx, acy + r - lw / 2), (cx, cy + n * 0.19)], lw)
+    _rline(d, [(cx - n * 0.11, cy + n * 0.19), (cx + n * 0.11, cy + n * 0.19)], lw)
+
+
+def _icon_mic(d, n):
+    """Microfono attivo (stesso glifo del corpo)."""
+    _icon_mic_body(d, n)
 
 
 def _icon_send(d, n):
@@ -379,24 +390,6 @@ def _icon_send(d, n):
     lw = n * 0.115
     _rline(d, [(cx, cy + n * 0.21), (cx, cy - n * 0.19)], lw)
     _rline(d, [(cx - n * 0.17, cy - n * 0.02), (cx, cy - n * 0.19), (cx + n * 0.17, cy - n * 0.02)], lw)
-
-
-def _icon_mic_body(d, n):
-    """Corpo del microfono (stesso stile dell'icona mic attiva)."""
-    cx = cy = n / 2
-    w, h = n * 0.25, n * 0.28
-    top = cy - n * 0.30
-    d.rounded_rectangle([cx - w / 2, top, cx + w / 2, top + h], radius=w / 2, fill=255)
-    lw = max(2, n * 0.045)
-    r = n * 0.20
-    acy = cy - n * 0.07
-    d.arc([cx - r, acy - r, cx + r, acy + r], start=-35, end=215, fill=255, width=int(lw))
-    for ang in (-35, 215):
-        a = np.radians(ang)
-        px, py = cx + r * np.cos(a) - lw / 2 * np.cos(a), acy + r * np.sin(a) - lw / 2 * np.sin(a)
-        d.ellipse([px - lw / 2, py - lw / 2, px + lw / 2, py + lw / 2], fill=255)
-    _rline(d, [(cx, acy + r - lw / 2), (cx, cy + n * 0.185)], lw)
-    _rline(d, [(cx - n * 0.105, cy + n * 0.185), (cx + n * 0.105, cy + n * 0.185)], lw)
 
 
 def _icon_mic_on(d, n):
