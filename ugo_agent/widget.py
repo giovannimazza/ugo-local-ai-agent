@@ -317,35 +317,41 @@ def _glossy(d: int, base, icon=None) -> Image.Image:
     return _premul_resize(_glossy_ss(d * SS, base, icon), (d, d))
 
 
-def _mic_orb_ss(n: int, base, icon) -> Image.Image:
-    """Sfera microfono morbida, ispirata al riferimento ma nella palette Ugo.
+def _mic_orb_ss(n: int, tone, icon) -> Image.Image:
+    """Cerchio microfono in stile card: disco scuro sobrio, icona colorata.
 
-    Rispetto al vecchio bottone elimina il bordo nero spesso e il riflesso a
-    lente: resta una sfera calda, chiara in alto e arancione in basso.
+    `tone` e' il COLORE DELL'ICONA (ACCENT a riposo, RED in registrazione):
+    il disco segue la palette della card (SPK_BG con bordo scuro e riflesso
+    leggeri, come i tasti T/puntini) invece di essere una pallina arancione
+    che stona con tutto il resto.
     """
-    b = _hex(base)
+    b = _hex(SPK_BG)
+    t = _hex(tone)
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    edge = max(SS, int(n * 0.025))
-    d.ellipse([0, 0, n - 1, n - 1], fill=_darker(b, 0.26) + (255,))
+    edge = max(SS, int(n * 0.03))
+    # anello esterno scuro: definisce la forma su qualsiasi sfondo
+    d.ellipse([0, 0, n - 1, n - 1], fill=_darker(b, 0.5) + (255,))
 
     body = Image.new("L", (n, n), 0)
     ImageDraw.Draw(body).ellipse([edge, edge, n - 1 - edge, n - 1 - edge], fill=255)
-    img.paste(_vgrad(n, n, _lighter(b, 0.58), _darker(b, 0.08)), (0, 0), body)
+    img.paste(_vgrad(n, n, _lighter(b, 0.22), _darker(b, 0.18)), (0, 0), body)
 
-    # Bagliore diffuso in alto a sinistra, tutto interno alla sfera.
-    glow = Image.new("L", (n, n), 0)
-    ImageDraw.Draw(glow).ellipse([n * 0.12, n * 0.06, n * 0.72, n * 0.52], fill=118)
-    glow = ImageChops.multiply(glow, body).filter(ImageFilter.GaussianBlur(SS * 2.2))
-    _overlay(img, (255, 247, 232), glow)
+    # riflesso sul bordo superiore, sobrio come sulla card
+    rim = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(rim).ellipse([edge, edge, n - 1 - edge, n - 1 - edge],
+                                outline=255, width=max(1, int(SS * 1.2)))
+    _overlay(img, (255, 255, 255), ImageChops.multiply(rim, _ramp(n, n, 0, n * 0.5, 60, 0)))
 
+    # icona colorata con ombra morbida sotto
     mask = Image.new("L", (n, n), 0)
     icon(ImageDraw.Draw(mask), n)
     shadow = mask.filter(ImageFilter.GaussianBlur(SS * 1.2))
     shifted = Image.new("L", (n, n), 0)
-    shifted.paste(shadow, (0, int(SS * 1.2)))
-    _overlay(img, _darker(b, 0.45), ImageChops.multiply(shifted, body))
-    _overlay(img, (255, 255, 255), mask)
+    shifted.paste(shadow, (0, int(SS * 1.4)))
+    _overlay(img, (0, 0, 0),
+             ImageChops.multiply(shifted, body).point(lambda v: int(v * 0.5)))
+    _overlay(img, t, mask)
     return img
 
 
