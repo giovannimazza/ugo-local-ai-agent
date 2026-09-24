@@ -358,16 +358,19 @@ def _mic_orb_ss(n: int, tone, icon) -> Image.Image:
 
 # --- icone (disegnate su maschera; stile Lucide: tratto uniforme, cap tondi) ---
 def _icon_mic_body(d, n):
-    """Glifo mic PIENO (scelta utente, variante B): capsula solida + coppa
-    a U con montanti + gambo e base. Solido, pulito, stile Material.
+    """Glifo mic PIENO alla Material: capsula solida + arco che parte DAI
+    FIANCHI della capsula e gira sotto (niente montanti/cornetti laterali,
+    erano il difetto sempre visibile) + gambo e base.
     """
     u = n / 24.0
     lw = max(2, 2.0 * u)
+    # capsula solida (9.4..14.6 x, 3..12.5 y)
     d.rounded_rectangle([9.4 * u, 3 * u, 14.6 * u, 12.5 * u], radius=2.6 * u, fill=255)
-    d.arc([5 * u, 5 * u, 19 * u, 19 * u], start=0, end=180, fill=255, width=int(lw))
-    _rline(d, [(5 * u, 12 * u), (5 * u, 10.4 * u)], lw)
-    _rline(d, [(19 * u, 12 * u), (19 * u, 10.4 * u)], lw)
-    _rline(d, [(12 * u, 19 * u), (12 * u, 21.5 * u)], lw)
+    # arco: centro (12,11), raggio 7 -> le estremita' stanno ai fianchi
+    # della capsula (y=11), il fondo tocca y=18; nessun pezzo aggiunto
+    d.arc([5 * u, 4 * u, 19 * u, 18 * u], start=0, end=180, fill=255, width=int(lw))
+    # gambo dal fondo dell'arco e base
+    _rline(d, [(12 * u, 18 * u), (12 * u, 21.5 * u)], lw)
     _rline(d, [(8.4 * u, 21.5 * u), (15.6 * u, 21.5 * u)], lw)
 
 
