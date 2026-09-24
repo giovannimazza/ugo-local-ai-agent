@@ -121,7 +121,8 @@ S_MIN, S_MAX = 0.88, 1.18
 PULSE_N, PULSE_MS = 14, 1200   # fotogrammi e durata dell'anello di registrazione
 HALO_N, HALO_MS = 20, 2000     # anello "respirante" dell'ascolto passivo
 
-PANEL_W, PANEL_H = 216, 116    # card espansa, ispirata al widget di riferimento
+PANEL_W, PANEL_H = 216, 124    # card espansa (124: aria sotto la riga T/ascolto,
+                               # il tasto passivo non clippi il bordo inferiore)
 PANEL_R = 25
 ENTRY_W, ENTRY_H = 176, 32     # pillola della textbox, aperta dal tasto T
 SEND_D, SEND_D_HOVER = 24, 27  # tasto invia a riposo / in hover
