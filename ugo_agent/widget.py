@@ -358,21 +358,17 @@ def _mic_orb_ss(n: int, tone, icon) -> Image.Image:
 
 # --- icone (disegnate su maschera; stile Lucide: tratto uniforme, cap tondi) ---
 def _icon_mic_body(d, n):
-    """Glifo mic stile Lucide/Feather su griglia 24u (reference utente):
-    capsula a contorno + staffa a U con montanti + gambo e base, tratto
-    uniforme dai cap tondi: elegante e riconoscibile a ogni dimensione."""
+    """Glifo mic PIENO (scelta utente, variante B): capsula solida + coppa
+    a U con montanti + gambo e base. Solido, pulito, stile Material.
+    """
     u = n / 24.0
     lw = max(2, 2.0 * u)
-    # capsula a contorno (9..15 x, 2..12 y)
-    d.rounded_rectangle([9 * u, 2 * u, 15 * u, 12 * u], radius=3 * u,
-                        outline=255, width=int(lw))
-    # staffa: semicerchio inferiore r=7 centro (12,12) + montanti verso l'alto
+    d.rounded_rectangle([9.4 * u, 3 * u, 14.6 * u, 12.5 * u], radius=2.6 * u, fill=255)
     d.arc([5 * u, 5 * u, 19 * u, 19 * u], start=0, end=180, fill=255, width=int(lw))
-    _rline(d, [(19 * u, 12 * u), (19 * u, 9.8 * u)], lw)
-    _rline(d, [(5 * u, 12 * u), (5 * u, 9.8 * u)], lw)
-    # gambo e base
-    _rline(d, [(12 * u, 19 * u), (12 * u, 22 * u)], lw)
-    _rline(d, [(8 * u, 22 * u), (16 * u, 22 * u)], lw)
+    _rline(d, [(5 * u, 12 * u), (5 * u, 10.4 * u)], lw)
+    _rline(d, [(19 * u, 12 * u), (19 * u, 10.4 * u)], lw)
+    _rline(d, [(12 * u, 19 * u), (12 * u, 21.5 * u)], lw)
+    _rline(d, [(8.4 * u, 21.5 * u), (15.6 * u, 21.5 * u)], lw)
 
 
 def _icon_mic(d, n):
