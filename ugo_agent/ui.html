@@ -961,29 +961,7 @@ async function refreshStats() {
         (LANG === 'en' ? ' threads</small></div>' : ' thread</small></div>');
       mlist.appendChild(p);
     }
-    // RAM per tool (Ollama reale, modelli interni stimati)
-    if ((d.tools || []).length) {
-      const h = document.createElement('div'); h.className = 'mcat';
-      h.textContent = LANG === 'en' ? 'Memory by tool' : 'Memoria per tool';
-      mlist.appendChild(h);
-      const maxmb = Math.max(...d.tools.map(t => t.mb), 1);
-      for (const t of d.tools) {
-        const el = document.createElement('div'); el.className = 'mitem';
-        const mb = t.mb >= 1024 ? (t.mb / 1024).toFixed(1) + ' GB' : t.mb + ' MB';
-        const tx = document.createElement('div'); tx.className = 'tx';
-        const b = document.createElement('b'); b.textContent = t.name;
-        const sm = document.createElement('small');
-        sm.textContent = mb + (t.note ? ' · ' + t.note : '');
-        const bar = document.createElement('div');
-        bar.style.cssText = 'height:6px;background:var(--border);border-radius:3px;margin-top:5px;overflow:hidden';
-        const fill = document.createElement('div');
-        fill.style.cssText = 'height:100%;width:' + Math.round(t.mb / maxmb * 100) +
-          '%;background:var(--acc2)';
-        bar.appendChild(fill); tx.append(b, sm, bar); el.appendChild(tx);
-        mlist.appendChild(el);
-      }
-    }
-    // stacco prima del toggle sospendi/riprendi: le barre RAM non lo toccano
+    // stacco prima del toggle sospendi/riprendi
     if (mlist.lastChild) {
       const sp = document.createElement('div');
       sp.style.cssText = 'height:14px';
