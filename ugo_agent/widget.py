@@ -730,15 +730,26 @@ close_control = _real_control(22, 22, "×", (UI_FAMILY, 13, "bold"))
 
 # --- espansione/richiamo della card --------------------------------------------
 # Su Windows non esiste l'alpha parziale (colore-chiave): l'animazione e' una
-# scia di pannelli arrotondati pre-renderizzati a dimensioni crescenti. Il
-# cerchio del microfono resta SOPRA la card nello stacking, quindi la card
-# sembra gonfiarsi da dietro il microfono e richiudersi dentro di lui.
-SHELL_ANIM_MS = 190
-_MILL_W = max(PANEL_W // 2, MIC_X + C + 8)   # primo fotogramma: copre il quadrato opaco del mic
-_MILL_H = max(PANEL_H // 2, MIC_Y + C + 8)
+# scia di pannelli arrotondati pre-renderizzati. Il centro della card scivola
+# dal CENTRO DEL MICROFONO al centro della card finale: entrambi i lati si
+# muovono insieme (espansione totale, non solo verso destra). Il primo
+# fotogramma e' quasi un cerchio dietro l'orb e si apre fino alla card;
+# alla chiusura si richiude a cerchio dentro il microfono.
+SHELL_ANIM_MS = 320
+_MIC_CX, _MIC_CY = MIC_X + C // 2, MIC_Y + C // 2   # centro dell'orb
+_END_CX, _END_CY = PANEL_W // 2, PANEL_H // 2       # centro della card piena
+_MILL_W, _MILL_H = 116, 106   # primo fotogramma: cerchio che copre il quadrato opaco del mic
 _GROW_FRAMES: dict = {}
 _grow = {"panel": None, "job": None}
 _shrink = {"panel": None, "job": None}
+_SHELL_CONTENT = ("brand-dot", "brand", "type", "settings", "close")
+
+
+def _shell_content(show):
+    """Nasconde/mostra i testi della card durante il volo: si muove solo la forma."""
+    st = "normal" if show else "hidden"
+    for tag in _SHELL_CONTENT:
+        shell_canvas.itemconfig(tag, state=st)
 
 
 def _ease(t):
@@ -746,21 +757,29 @@ def _ease(t):
 
 
 def _shell_frame(t):
-    """Disegna la card al tempo t (0..1, gia' eased): 1 = card piena."""
+    """Card al tempo t (0..1): 1 = card piena al suo posto. La crescita e'
+    simmetrica: centro interpolato dall'orb al centro card, lati che si
+    aprono insieme, angoli che partono tondi (cerchio) e finiscono a card."""
     if t >= 1.0:
         shell_canvas.itemconfig(panel_item, image=_PANEL_IMG)
         shell_canvas.config(width=PANEL_W, height=PANEL_H)
+        shell_canvas.place(x=0, y=0)
         return
     w = int(round(_MILL_W + (PANEL_W - _MILL_W) * t))
     h = int(round(_MILL_H + (PANEL_H - _MILL_H) * t))
+    r0 = _MILL_H / 2                                   # cerchio alla partenza
+    r = int(round(r0 + (PANEL_R - r0) * t))
+    cx = _MIC_CX + (_END_CX - _MIC_CX) * t
+    cy = _MIC_CY + (_END_CY - _MIC_CY) * t
     ph = _GROW_FRAMES.get((w, h))
     if ph is None:
         if len(_GROW_FRAMES) > 60:
             _GROW_FRAMES.clear()
         ph = _GROW_FRAMES[(w, h)] = ImageTk.PhotoImage(
-            _key(_rounded_panel(w, h, min(PANEL_R, h // 2), PILL_BG, PILL_EDGE)))
+            _key(_rounded_panel(w, h, max(1, min(r, h // 2)), PILL_BG, PILL_EDGE)))
     shell_canvas.itemconfig(panel_item, image=ph)
     shell_canvas.config(width=w, height=h)
+    shell_canvas.place(x=int(round(cx - w / 2)), y=int(round(cy - h / 2)))
 
 
 def _anim_reset():
@@ -773,6 +792,7 @@ def _anim_reset():
                 pass
         d["job"] = d["panel"] = None
     _shell_frame(1.0)
+    _shell_content(True)
 
 
 def _grow_step(seq, t0):
@@ -782,6 +802,7 @@ def _grow_step(seq, t0):
     if t >= 1.0:
         _grow["panel"] = _grow["job"] = None
         _shell_frame(1.0)
+        _shell_content(True)
         # a fine corsa il microfono torna opaco sulla card e i controlli
         # veri compaiono sopra
         canvas.config(bg=PILL_BG)
@@ -812,10 +833,10 @@ def _shrink_step(seq, t0):
     _shrink["job"] = root.after(16, _shrink_step, seq, t0)
 
 
-# pre-genera i fotogrammi: il primo hover e' gia' fluido (~13 passaggi di Pillow)
+# pre-genera i fotogrammi: il primo hover e' gia' fluido (~21 passaggi di Pillow)
 _shell_frame(0.0)
-for _i in range(1, 13):
-    _shell_frame(_ease(_i / 12))
+for _i in range(1, 20):
+    _shell_frame(_ease(_i / 20))
 _shell_frame(1.0)
 
 # --- cerchio microfono ---------------------------------------------------------
@@ -1136,6 +1157,7 @@ def open_shell(animate=True):
         close_control.place_forget()
         _grow["panel"] = (_grow["panel"] or 0) + 1
         _shell_frame(0.0)
+        _shell_content(False)   # in volo solo la forma, niente testi
         _grow["job"] = root.after(16, _grow_step, _grow["panel"], time.monotonic())
     else:
         # Versione opaca del frame: nessun buco trasparente dentro la card.
@@ -1187,6 +1209,7 @@ def close_shell():
         canvas.itemconfig(img_item, image=_mic_frame(False))
         return
     _shrink["panel"] = (_shrink["panel"] or 0) + 1
+    _shell_content(False)       # in volo solo la forma, niente testi
     _shrink["job"] = root.after(16, _shrink_step, _shrink["panel"], time.monotonic())
 
 
