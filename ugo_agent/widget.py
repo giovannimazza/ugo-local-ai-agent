@@ -847,7 +847,9 @@ for _i in range(40):
                                                PILL_BG, PILL_EDGE))),
         _w, _h, int(round(_cx - _w / 2)), int(round(_cy - _h / 2)),
     ))
-_shell_frame(1.0)
+# NB: niente _shell_frame(1.0) qui: piazzerebbe la card GIA' ALLO STARTUP
+# (place dentro _shell_frame). Al via il widget deve essere COLlassato:
+# solo il cerchietto, la card nasce al primo hover.
 
 # --- cerchio microfono ---------------------------------------------------------
 canvas = tk.Canvas(root, width=C, height=C, bg=TRANSPARENT, highlightthickness=0, bd=0)
