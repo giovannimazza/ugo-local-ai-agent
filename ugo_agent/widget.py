@@ -6,9 +6,10 @@ Finestrella senza barra titolo, sempre in primo piano, TRASCINABILE ovunque:
   - cerchio microfono: 1 click = registra, 2o click = invia
     (in hover si gonfia come una bollicina, alla pressione si schiaccia,
      durante la registrazione pulsa un anello rosso)
-  - pillola "Scrivi a Ugo...": appare in hover, invio con Enter o col tasto
+  - in hover si apre una card compatta: nome Ugo, tasto T per scrivere,
+    tre puntini per le impostazioni e X per richiuderla
   - bolla di risposta arrotondata che compare/svanisce in dissolvenza + voce TTS
-  - doppio click sul cerchio = info trascrittore
+  - doppio click sul cerchio = scorciatoia per le impostazioni
   - click destro sul cerchio = chiudi il widget
 
 Avvio consigliato (niente console):  pythonw assistant_widget.py
@@ -110,20 +111,21 @@ S_MIN, S_MAX = 0.88, 1.18
 PULSE_N, PULSE_MS = 14, 1200   # fotogrammi e durata dell'anello di registrazione
 HALO_N, HALO_MS = 20, 2000     # anello "respirante" dell'ascolto passivo
 
-ENTRY_W, ENTRY_H = 190, 32     # pillola della textbox
+PANEL_W, PANEL_H = 216, 116    # card espansa, ispirata al widget di riferimento
+PANEL_R = 25
+ENTRY_W, ENTRY_H = 176, 32     # pillola della textbox, aperta dal tasto T
 SEND_D, SEND_D_HOVER = 24, 27  # tasto invia a riposo / in hover
 SPK_D = 26                     # tasto mute TTS
 LISTEN_D = 26                  # tasto on/off ascolto passivo (wake word)
+CLOSE_D = 22                   # X per richiudere la card
 GAP = 6
 
-# il cerchio e' centrato sopra il "tappo" destro della pillola
-WIN_W = GAP + SPK_D + GAP + LISTEN_D + GAP + ENTRY_W - ENTRY_H // 2 + C // 2
-CIRCLE_CX = WIN_W - C // 2
-PILL_X = CIRCLE_CX + ENTRY_H // 2 - ENTRY_W
-PILL_Y = C - 4
-SPK_X = PILL_X - GAP - SPK_D
-LISTEN_X = SPK_X - GAP - LISTEN_D
-WIN_H = PILL_Y + ENTRY_H + 4
+# A riposo si vede solo il cerchio; in hover la card occupa questa stessa
+# finestra. Il microfono resta centrato, come il mock-up di riferimento.
+WIN_W, WIN_H = PANEL_W, PANEL_H
+CIRCLE_CX, CIRCLE_CY = PANEL_W // 2, 63
+MIC_X, MIC_Y = CIRCLE_CX - C // 2, CIRCLE_CY - C // 2
+PILL_X, PILL_Y = (PANEL_W - ENTRY_W) // 2, 76
 
 SS = 6  # supersampling per l'anti-alias (piu' alto = bordi piu' lisci,
         # importante perche' il colore-chiave di Windows taglia l'alpha in
@@ -195,6 +197,11 @@ def _lighter(c, t):
 
 def _darker(c, t):
     return _mix(c, (0, 0, 0), t)
+
+
+def _css(c):
+    """Tupla RGB -> stringa colore Tk (itemconfig non accetta tuple)."""
+    return c if isinstance(c, str) else "#%02x%02x%02x" % tuple(_hex(c))
 
 
 def _vgrad(w, h, top, bottom) -> Image.Image:
@@ -295,6 +302,38 @@ def _glossy(d: int, base, icon=None) -> Image.Image:
     return _premul_resize(_glossy_ss(d * SS, base, icon), (d, d))
 
 
+def _mic_orb_ss(n: int, base, icon) -> Image.Image:
+    """Sfera microfono morbida, ispirata al riferimento ma nella palette Ugo.
+
+    Rispetto al vecchio bottone elimina il bordo nero spesso e il riflesso a
+    lente: resta una sfera calda, chiara in alto e arancione in basso.
+    """
+    b = _hex(base)
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    edge = max(SS, int(n * 0.025))
+    d.ellipse([0, 0, n - 1, n - 1], fill=_darker(b, 0.26) + (255,))
+
+    body = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(body).ellipse([edge, edge, n - 1 - edge, n - 1 - edge], fill=255)
+    img.paste(_vgrad(n, n, _lighter(b, 0.58), _darker(b, 0.08)), (0, 0), body)
+
+    # Bagliore diffuso in alto a sinistra, tutto interno alla sfera.
+    glow = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(glow).ellipse([n * 0.12, n * 0.06, n * 0.72, n * 0.52], fill=118)
+    glow = ImageChops.multiply(glow, body).filter(ImageFilter.GaussianBlur(SS * 2.2))
+    _overlay(img, (255, 247, 232), glow)
+
+    mask = Image.new("L", (n, n), 0)
+    icon(ImageDraw.Draw(mask), n)
+    shadow = mask.filter(ImageFilter.GaussianBlur(SS * 1.2))
+    shifted = Image.new("L", (n, n), 0)
+    shifted.paste(shadow, (0, int(SS * 1.2)))
+    _overlay(img, _darker(b, 0.45), ImageChops.multiply(shifted, body))
+    _overlay(img, (255, 255, 255), mask)
+    return img
+
+
 # --- icone (disegnate in bianco su maschera, proporzioni relative al cerchio) ---
 def _icon_mic(d, n):
     cx = cy = n / 2
@@ -369,6 +408,14 @@ def _icon_speaker(muted):
     return draw
 
 
+def _icon_close(d, n):
+    """X sottile, stile pillola 'yapper' in alto a destra."""
+    cx = cy = n / 2
+    r, lw = n * 0.22, n * 0.10
+    _rline(d, [(cx - r, cy - r), (cx + r, cy + r)], lw)
+    _rline(d, [(cx - r, cy + r), (cx + r, cy - r)], lw)
+
+
 def _rounded_panel(w, h, radius, fill, edge, send_d=None) -> Image.Image:
     """Pillola/bolla scura con bordo sottile e riflesso in alto (+ tasto invia opzionale)."""
     N, M, R = w * SS, h * SS, radius * SS
@@ -412,18 +459,18 @@ FONT_MUT = (UI_FAMILY, 8)
 prefs = _load_prefs()
 x, y = prefs.get("x"), prefs.get("y")
 if x is None or y is None:
-    # stesso punto di prima: cerchio in basso a destra
-    x, y = root.winfo_screenwidth() - 150, root.winfo_screenheight() - 260
-    prefs["v"] = 1
-if prefs.get("v") == 2:
-    # dalla v3 la finestra e' piu' larga (nuovo tasto ascolto passivo a
-    # sinistra): sposto l'origine perche' il cerchio resti esattamente dov'era
-    x = x - (LISTEN_D + GAP)
-    prefs["v"] = 3
-elif prefs.get("v") != 3:
-    # posizione dalla versione vecchia (finestra 92px, cerchio in 14,10)
-    x = x + 14 + 32 - CIRCLE_CX
-    y = y + 10 + 32 - C // 2
+    # cerchio in basso a destra, con card interamente nello schermo in hover
+    x, y = root.winfo_screenwidth() - WIN_W - 24, root.winfo_screenheight() - WIN_H - 120
+    prefs["v"] = 4
+elif prefs.get("v") != 4:
+    # Nelle versioni precedenti il punto salvato era l'angolo di una finestra
+    # molto piu' larga e il microfono stava a x=244/y=50. Conservo quindi la
+    # posizione percepita del microfono e limito la nuova card allo schermo.
+    x = x + 244 - CIRCLE_CX
+    y = y + 50 - CIRCLE_CY
+    x = max(0, min(root.winfo_screenwidth() - WIN_W, x))
+    y = max(0, min(root.winfo_screenheight() - WIN_H, y))
+    prefs["v"] = 4
 root.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
 
 # code di aggiornamento UI: tkinter NON e' thread-safe, i thread di rete e
@@ -587,15 +634,93 @@ class Bubble:
 
 bubble = Bubble()
 
+# --- card espansa --------------------------------------------------------------
+# La card e' un solo canvas: quando non e' mappato il colore-chiave lascia
+# passare il desktop e rimane soltanto il microfono. I controlli sono volutamente
+# pochi e leggibili: T = scrivi, … = impostazioni, X = richiudi la card.
+_PANEL_IMG = ImageTk.PhotoImage(_key(_rounded_panel(PANEL_W, PANEL_H, PANEL_R, PILL_BG, PILL_EDGE)))
+shell_canvas = tk.Canvas(root, width=PANEL_W, height=PANEL_H, bg=TRANSPARENT,
+                         highlightthickness=0, bd=0, cursor="arrow")
+shell_canvas.create_image(0, 0, anchor="nw", image=_PANEL_IMG)
+shell_canvas.create_oval(20, 23, 25, 28, fill=ACCENT, outline="", tags="brand-dot")
+shell_canvas.create_text(32, 25, anchor="w", text="Ugo", fill=TXT,
+                         font=(UI_FAMILY, 10, "bold"), tags="brand")
+
+# Tasto testo: il campo appare solo su richiesta, cosi' il widget resta pulito.
+# Pillole di controllo con estremita' tonde costruite da rettangolo + due cerchi.
+def _shell_pill(x0, y0, x1, y1, tag):
+    r = (y1 - y0) / 2
+    shell_canvas.create_rectangle(x0 + r, y0, x1 - r, y1, fill=SPK_BG, outline="", tags=(tag, tag + "_bg"))
+    shell_canvas.create_oval(x0, y0, x0 + 2 * r, y1, fill=SPK_BG, outline="", tags=(tag, tag + "_bg"))
+    shell_canvas.create_oval(x1 - 2 * r, y0, x1, y1, fill=SPK_BG, outline="", tags=(tag, tag + "_bg"))
+
+
+_shell_pill(18, 82, 52, 106, "type")
+shell_canvas.create_text(35, 94, text="T", fill=TXT, font=(UI_FAMILY, 11, "bold"), tags="type")
+_shell_pill(PANEL_W - 52, 82, PANEL_W - 18, 106, "settings")
+shell_canvas.create_text(PANEL_W - 35, 92, text="•••", fill=TXT,
+                         font=(UI_FAMILY, 10, "bold"), tags="settings")
+shell_canvas.create_oval(PANEL_W - 39, 12, PANEL_W - 17, 34, fill=SPK_BG, outline="", tags=("close", "close_bg"))
+shell_canvas.create_text(PANEL_W - 28, 23, text="×", fill=MUT,
+                         font=(UI_FAMILY, 13, "bold"), tags=("close", "close_icon"))
+
+
+def _shell_hover(tag, on):
+    """Piccolo riscontro al mouse senza rendere la card rumorosa."""
+    fill = _css(_lighter(SPK_BG, 0.18)) if on else SPK_BG
+    shell_canvas.itemconfig(tag + "_bg", fill=fill)
+    if tag == "close":
+        # Il tag "close" comprende sia il disco sia la X: coloro solo
+        # l'icona, altrimenti diventano dello stesso colore e la X sparisce.
+        shell_canvas.itemconfig("close_icon", fill=TXT if on else MUT)
+
+
+for _tag in ("type", "settings", "close"):
+    shell_canvas.tag_bind(_tag, "<Enter>", lambda e, t=_tag: _shell_hover(t, True))
+    shell_canvas.tag_bind(_tag, "<Leave>", lambda e, t=_tag: _shell_hover(t, False))
+
+
+def _real_control(w, h, text, font):
+    """Controllo Tk reale sopra la grafica della card.
+
+    Su Windows una zona disegnata in un Canvas con colore-chiave puo' essere
+    visibile ma non ricevere il click. Questo piccolo Canvas figlio ha invece
+    una propria area input opaca e affidabile.
+    """
+    cv = tk.Canvas(root, width=w, height=h, bg=PILL_BG,
+                   highlightthickness=0, bd=0, cursor="hand2")
+    r = h / 2
+    body = (
+        cv.create_rectangle(r, 0, w - r, h, fill=SPK_BG, outline=""),
+        cv.create_oval(0, 0, 2 * r, h, fill=SPK_BG, outline=""),
+        cv.create_oval(w - 2 * r, 0, w, h, fill=SPK_BG, outline=""),
+    )
+    label = cv.create_text(w / 2, h / 2, text=text, fill=TXT, font=font)
+
+    def hover_control(on):
+        color = _css(_lighter(SPK_BG, 0.18)) if on else SPK_BG
+        for item in body:
+            cv.itemconfig(item, fill=color)
+        cv.itemconfig(label, fill="#ffffff" if on else TXT)
+
+    cv.bind("<Enter>", lambda e: hover_control(True))
+    cv.bind("<Leave>", lambda e: hover_control(False))
+    return cv
+
+
+type_control = _real_control(34, 24, "T", (UI_FAMILY, 11, "bold"))
+settings_control = _real_control(34, 24, "•••", (UI_FAMILY, 9, "bold"))
+close_control = _real_control(22, 22, "×", (UI_FAMILY, 13, "bold"))
+
 # --- cerchio microfono ---------------------------------------------------------
 canvas = tk.Canvas(root, width=C, height=C, bg=TRANSPARENT, highlightthickness=0, bd=0)
-canvas.place(x=WIN_W - C, y=0)
+canvas.place(x=MIC_X, y=MIC_Y)
 
 # master grandi, poi ridotti a ogni scala: qualita' alta e avvio rapido
 _MASTER_D = int(BD * S_MAX) + 1
 _mic_master = {
-    "idle": _glossy_ss(_MASTER_D * SS, ACCENT, _icon_mic),
-    "rec": _glossy_ss(_MASTER_D * SS, RED, _icon_mic),
+    "idle": _mic_orb_ss(_MASTER_D * SS, ACCENT, _icon_mic),
+    "rec": _mic_orb_ss(_MASTER_D * SS, RED, _icon_mic),
 }
 _disc_cache, _ring_cache, _photo_cache = {}, {}, {}
 
@@ -653,13 +778,15 @@ mic_state = {"color": ACCENT}   # colore corrente del cerchio (viola / rosso)
 _passive = {"on": False, "mic": None}
 
 
-def _mic_frame():
+def _mic_frame(on_panel=None):
+    if on_panel is None:
+        on_panel = shell_canvas.winfo_ismapped()
     rec = mic_state["color"] == RED
     passive = _passive["on"] and not rec
     s100 = int(round(min(max(anim["s"], S_MIN), S_MAX) * 100))
     k = int(anim["phase"] * PULSE_N) % PULSE_N if rec else -1
     hk = int(anim["pphase"] * HALO_N) % HALO_N if passive else -1
-    key = ("rec" if rec else "idle", s100, k if rec else hk)
+    key = ("rec" if rec else "idle", s100, k if rec else hk, bool(on_panel))
     ph = _photo_cache.get(key)
     if ph is None:
         if len(_photo_cache) > 400:
@@ -669,7 +796,15 @@ def _mic_frame():
             frame = Image.alpha_composite(_ring(k), frame)
         elif passive:
             frame = Image.alpha_composite(_halo(hk), frame)
-        ph = _photo_cache[key] = ImageTk.PhotoImage(_key(frame))
+        if on_panel:
+            # Sopra la card non uso il colore-chiave: altrimenti Windows
+            # ritaglia un buco rettangolare e mostra il desktop sottostante.
+            bg = Image.new("RGBA", (C, C), _hex(PILL_BG) + (255,))
+            frame = Image.alpha_composite(bg, frame)
+            rendered = frame.convert("RGB")
+        else:
+            rendered = _key(frame)
+        ph = _photo_cache[key] = ImageTk.PhotoImage(rendered)
     return ph
 anim = {"s": 1.0, "v": 0.0, "target": 1.0, "phase": 0.0, "pphase": 0.0, "job": None}
 mic_hover = {"on": False}
@@ -708,7 +843,7 @@ def _animate(target=None):
 
 # pre-genera i fotogrammi dell'hover (cosi' il primo passaggio e' gia' fluido)
 for _s in range(int(S_MIN * 100), int(S_MAX * 100) + 1):
-    _photo_cache[("idle", _s, -1)] = ImageTk.PhotoImage(_key(_disc("idle", _s)))
+    _photo_cache[("idle", _s, -1, False)] = ImageTk.PhotoImage(_key(_disc("idle", _s)))
 
 img_item = canvas.create_image(C // 2, C // 2, anchor="center", image=_mic_frame())
 
@@ -847,22 +982,86 @@ def _spk_refresh():
 _spk_refresh()
 
 
+# --- card / modalità testo -----------------------------------------------------
+def _to_top(w):
+    """Widget in cima allo stacking, col comando Tcl nativo.
+
+    lift()/lower() dei widget Canvas sono in realta' tag_raise/tag_lower e
+    SENZA argomenti sollevano TclError ("wrong # args"): l'eccezione muore
+    nel callback Tk e la card resta mezza costruita (la T non apre la
+    textbox e l'orologio di chiusura al mouse-leave non parte mai).
+    """
+    w.tk.call("raise", w._w)
+
+
+def open_shell():
+    """Mostra la card al mouse-over, senza rubare il focus al desktop."""
+    if not shell_canvas.winfo_ismapped():
+        shell_canvas.place(x=0, y=0)
+    # Versione opaca del frame: nessun buco trasparente dentro la card.
+    canvas.config(bg=PILL_BG)
+    canvas.itemconfig(img_item, image=_mic_frame(True))
+    shell_canvas.tk.call("lower", shell_canvas._w)   # card sotto a tutto
+    close_control.place(x=PANEL_W - 39, y=12)
+    _to_top(close_control)
+    if not entry_frame.winfo_ismapped():
+        canvas.place(x=MIC_X, y=MIC_Y)
+        _to_top(canvas)
+        type_control.place(x=18, y=82)
+        settings_control.place(x=PANEL_W - 52, y=82)
+        _to_top(type_control)
+        _to_top(settings_control)
+    _start_hover_watch()
+
+
+def close_shell():
+    """Richiude la card e torna al solo microfono flottante."""
+    if hover.get("job") is not None:
+        try:
+            root.after_cancel(hover["job"])
+        except Exception:
+            pass
+        hover["job"] = None
+    hover["left_at"] = None
+    close_entry(restore_mic=True)
+    type_control.place_forget()
+    settings_control.place_forget()
+    close_control.place_forget()
+    shell_canvas.place_forget()
+    canvas.config(bg=TRANSPARENT)
+    canvas.itemconfig(img_item, image=_mic_frame(False))
+
+
 def open_entry():
+    """La T trasforma la card in una piccola modalità di scrittura."""
+    open_shell()
+    canvas.place_forget()
+    type_control.place_forget()
+    settings_control.place_forget()
+    shell_canvas.itemconfig("type", state="hidden")
+    shell_canvas.itemconfig("settings", state="hidden")
     entry_frame.place(x=PILL_X, y=PILL_Y)
-    mute_btn.place(x=SPK_X, y=PILL_Y + (ENTRY_H - SPK_D) // 2)
-    listen_btn.place(x=LISTEN_X, y=PILL_Y + (ENTRY_H - LISTEN_D) // 2)
+    _to_top(entry_frame)
     _ph_show()
+    root.focus_force()
     entry.focus_set()
 
 
-def close_entry():
+def close_entry(restore_mic=True):
     entry_frame.place_forget()
-    mute_btn.place_forget()
-    listen_btn.place_forget()
     entry.delete(0, "end")
     ph["on"] = False
     entry.config(fg=TXT)
     _send_hover(False)
+    shell_canvas.itemconfig("type", state="normal")
+    shell_canvas.itemconfig("settings", state="normal")
+    if restore_mic and shell_canvas.winfo_ismapped():
+        canvas.place(x=MIC_X, y=MIC_Y)
+        _to_top(canvas)
+        type_control.place(x=18, y=82)
+        settings_control.place(x=PANEL_W - 52, y=82)
+        _to_top(type_control)
+        _to_top(settings_control)
 
 
 def toggle_entry():
@@ -872,27 +1071,87 @@ def toggle_entry():
         open_entry()
 
 
-# la textbox appare quando il mouse entra nel widget e si chiude quando esce
-hover = {"on": False}
+# La card appare al mouse-over e svanisce poco dopo l'uscita. La T e' l'unico
+# punto che apre l'input: cosi' non sembra una barra di chat appiccicata al PC.
+hover = {"on": False, "left_at": None, "job": None}
+
+
+def _pointer_inside_widget():
+    """Usa lo stesso sistema di coordinate della finestra.
+
+    Con scaling 125/150% Tk puo' restituire puntatore e geometria in scale
+    diverse. Le API Win32 lavorano entrambe in pixel fisici e non sbagliano il
+    test; sugli altri sistemi uso il widget realmente sotto al puntatore.
+    """
+    if pu.IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            point = wintypes.POINT()
+            rect = wintypes.RECT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+            ctypes.windll.user32.GetWindowRect(root.winfo_id(), ctypes.byref(rect))
+            return rect.left <= point.x < rect.right and rect.top <= point.y < rect.bottom
+        except Exception:
+            pass
+    try:
+        px, py = root.winfo_pointerxy()
+        pointed = root.winfo_containing(px, py)
+        return pointed is not None and (
+            pointed == root or str(pointed).startswith(str(root) + ".")
+        )
+    except Exception:
+        return False
+
+
+def _hover_watch():
+    """Chiude la card dopo 2 s fuori dai suoi limiti reali.
+
+    Su Windows i pixel a colore-chiave possono non generare sempre gli eventi
+    Leave di Tk. Leggere il puntatore rende il comportamento deterministico.
+    """
+    hover["job"] = None
+    if not shell_canvas.winfo_ismapped():
+        return
+    inside = _pointer_inside_widget()
+
+    if inside:
+        hover["on"] = True
+        hover["left_at"] = None
+    else:
+        hover["on"] = False
+        if hover["left_at"] is None:
+            hover["left_at"] = time.monotonic()
+        elif time.monotonic() - hover["left_at"] >= 2.0:
+            if entry_frame.winfo_ismapped() and entry_text():
+                # c'e' un messaggio non ancora inviato: la card resta aperta,
+                # come al focus-out ("con testo dentro resta aperta")
+                hover["left_at"] = None
+            else:
+                close_shell()
+                return
+    hover["job"] = root.after(100, _hover_watch)
+
+
+def _start_hover_watch():
+    if hover["job"] is None:
+        hover["job"] = root.after(100, _hover_watch)
 
 
 def _on_enter(_e=None):
     hover["on"] = True
-    if not entry_frame.winfo_ismapped():
-        open_entry()
+    hover["left_at"] = None
+    open_shell()
 
 
 def _on_leave(_e=None):
     hover["on"] = False
-    root.after(350, _leave_close)  # piccolo ritardo: evita sfarfallio
+    # La verifica temporale viene eseguita da _hover_watch: gli eventi Leave
+    # servono solo come indicazione immediata, non come unica fonte di verita'.
 
 
-def _leave_close():
-    if not hover["on"] and entry_frame.winfo_ismapped() and not entry_text():
-        close_entry()
-
-
-for _w in (root, canvas, entry_frame, entry, mute_btn, listen_btn):
+for _w in (root, canvas, shell_canvas, entry_frame, entry):
     _w.bind("<Enter>", _on_enter)
     _w.bind("<Leave>", _on_leave)
 
@@ -969,7 +1228,7 @@ def _set_model(name):
 
 
 def show_stt_popup():
-    """Doppio click: menu con info trascrittore + scelta del modello AI."""
+    """Menu impostazioni: info trascrittore + scelta del modello AI."""
     on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
 
     def work():
@@ -992,17 +1251,42 @@ def show_stt_popup():
                         activebackground=ACCENT, activeforeground="#ffffff")
             m.add_command(label="🎙️ " + stt_text, state="disabled")
             m.add_separator()
+            m.add_command(label=("🔊 " + (W("voice_on") if tts_muted["on"] else W("voice_off"))),
+                          command=toggle_mute)
+            m.add_command(label=("🎙️ " + (W("listen_off") if not listen_disabled["on"] else W("listen_on"))),
+                          command=toggle_listen)
+            m.add_separator()
             m.add_command(label=W("model") + " AI:", state="disabled")
             for name in available:
                 mark = "  ✓ " if name == current else "     "
                 m.add_command(label=f"{mark}{name.replace('qwen2.5:', 'Qwen ')}",
                               command=lambda n=name: _set_model(n))
-            m.tk_popup(root.winfo_x() + CIRCLE_CX - 60, root.winfo_y() + C // 2)
+            m.tk_popup(root.winfo_x() + PANEL_W - 160, root.winfo_y() + 38)
         ui(build)
     threading.Thread(target=work, daemon=True).start()
 
 
 canvas.bind("<Double-Button-1>", lambda e: show_stt_popup())
+
+
+def _shell_click(e):
+    """Hit area esplicite: il click funziona anche sui bordi delle pillole."""
+    if PANEL_W - 46 <= e.x <= PANEL_W - 10 and 7 <= e.y <= 39:
+        _quit()  # chiusura completa: ascolto, registrazione e TTS
+    elif 12 <= e.x <= 58 and 76 <= e.y <= 112:
+        toggle_entry()
+    elif PANEL_W - 58 <= e.x <= PANEL_W - 12 and 76 <= e.y <= 112:
+        show_stt_popup()
+    return "break"
+
+
+shell_canvas.bind("<Button-1>", _shell_click)
+type_control.bind("<Button-1>", lambda e: toggle_entry())
+settings_control.bind("<Button-1>", lambda e: show_stt_popup())
+close_control.bind("<Button-1>", lambda e: _quit())
+for _control in (type_control, settings_control, close_control):
+    _control.bind("<Enter>", _on_enter, add="+")
+    _control.bind("<Leave>", _on_leave, add="+")
 
 
 # --- rete ---------------------------------------------------------------------
