@@ -113,7 +113,7 @@ _KEY_RGB = (1, 1, 1)
 # trasparenti e click-through, quindi non danno fastidio)
 # ---------------------------------------------------------------------------
 C = 100                  # lato del canvas del cerchio
-BD = 62                  # diametro del cerchio a riposo
+BD = 52                  # diametro del cerchio a riposo (richiesta utente: piu' piccolo)
 HOVER_SCALE = 1.10       # quanto si gonfia in hover
 PRESS_SCALE = 0.92       # quanto si schiaccia alla pressione
 DRAG_SCALE = 1.05        # "sollevato" mentre lo trascini
