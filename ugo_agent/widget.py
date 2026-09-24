@@ -804,6 +804,9 @@ def _shrink_step(seq, t0):
     if t >= 1.0:
         _shrink["panel"] = _shrink["job"] = None
         shell_canvas.place_forget()
+        # card via: il microfono torna flottante (trasparente)
+        canvas.config(bg=TRANSPARENT)
+        canvas.itemconfig(img_item, image=_mic_frame(False))
         return
     _shell_frame(_ease(1.0 - t))
     _shrink["job"] = root.after(16, _shrink_step, seq, t0)
@@ -1120,10 +1123,14 @@ def open_shell(animate=True):
         canvas.place(x=MIC_X, y=MIC_Y)
         _to_top(canvas)
     if animating:
-        # apertura animata: microfono con la sua grafica trasparente sopra
-        # la card che cresce; i controlli nascono solo a fine corsa
-        canvas.config(bg=TRANSPARENT)
-        canvas.itemconfig(img_item, image=_mic_frame(False))
+        # apertura animata: il microfono resta OPACO (bg = colore card).
+        # NON usare il colore-chiave qui: su Windows i pixel chiave bucano
+        # fino al DESKTOP (non al widget fratello sotto) e durante
+        # l'animazione si vedrebbe il rettangolo scuro attorno all'orb.
+        # La card copre sempre il quadrato del mic (minimo 166x121), quindi
+        # lo square opaco si cuce invisibile alla card che cresce.
+        canvas.config(bg=PILL_BG)
+        canvas.itemconfig(img_item, image=_mic_frame(True))
         type_control.place_forget()
         settings_control.place_forget()
         close_control.place_forget()
@@ -1168,11 +1175,16 @@ def close_shell():
     canvas.place(x=MIC_X, y=MIC_Y)
     _to_top(canvas)
     shell_canvas.tk.call("lower", shell_canvas._w)
-    canvas.config(bg=TRANSPARENT)
-    canvas.itemconfig(img_item, image=_mic_frame(False))
+    # microfono OPACO durante lo shrink (vedi open_shell: i pixel chiave
+    # bucherebbero fino al desktop mostrando il rettangolo scuro)
+    canvas.config(bg=PILL_BG)
+    canvas.itemconfig(img_item, image=_mic_frame(True))
     if was_entry or _grow["panel"] is not None or _shrink["panel"] is not None:
         _anim_reset()
         shell_canvas.place_forget()
+        # card via: ora il mic torna flottante trasparente
+        canvas.config(bg=TRANSPARENT)
+        canvas.itemconfig(img_item, image=_mic_frame(False))
         return
     _shrink["panel"] = (_shrink["panel"] or 0) + 1
     _shrink["job"] = root.after(16, _shrink_step, _shrink["panel"], time.monotonic())
