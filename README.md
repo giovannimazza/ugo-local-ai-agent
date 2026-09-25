@@ -200,6 +200,16 @@ and the Vosk fallback, then starts the server and the widget.
 
 ### Windows
 
+**Zero-touch install** (Windows 10/11, no prerequisites — installs Python too if
+missing, then the source, a dedicated venv, all the components and starts Ugo):
+
+```bat
+powershell -c "irm https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.ps1 | iex"
+```
+
+The same installer doubles as **repair/update**: running it again refreshes the
+source and re-runs setup. Everyday updates stay with `ugo update`.
+
 **With winget** (Windows Package Manager, included in Windows 10/11). The
 `Ugo.Agent` package is not yet in the winget community catalog, so today you
 install it from the **manifest bundle attached to every release** (no admin
