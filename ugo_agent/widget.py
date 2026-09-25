@@ -2234,12 +2234,18 @@ _PLOG = BASE / "passive_log.txt"
 
 
 def _plog(msg: str) -> None:
-    """Log diagnostico del passivo: cosa sente Vosk, livello, wake, invii."""
+    """Log diagnostico del passivo: cosa sente Vosk, livello, wake, invii.
+    Le righe hanno SOLO l'ora: per non confondere le sessioni di giorni
+    diversi, a ogni avvio del widget scriviamo un separatore datato+PID."""
     try:
         with _PLOG.open("a", encoding="utf-8") as f:
             f.write(time.strftime("[%H:%M:%S] ") + msg + "\n")
     except Exception:
         pass
+
+
+_plog(f"--- sessione widget {time.strftime('%Y-%m-%d %H:%M:%S')} "
+      f"pid={os.getpid()} ---")
 
 
 def _norm_tok(t: str) -> str:
@@ -2498,12 +2504,14 @@ def _passive_loop():
                         if cut == 0:
                             cut = len(chunks)
                         trimmed = b"".join(chunks[:cut])
-                        rms_all = float(np.sqrt(np.mean([
-                            float(np.sqrt(np.mean(np.frombuffer(c, "<i2")
-                             .astype(np.float32) ** 2))) for c in chunks]) ** 2))
-                        rms_send = float(np.sqrt(np.mean([
-                            float(np.sqrt(np.mean(np.frombuffer(c, "<i2")
-                             .astype(np.float32) ** 2))) for c in trimmed]) ** 2))
+                        # RMS su buffer PCM (bytes): iterare bytes produce INT e
+                        # np.frombuffer(int) esplodeva qui, uccidendo il loop a
+                        # ogni invio armed ('a bytes-like object is required')
+                        def _rms_pcm(buf: bytes) -> float:
+                            v = np.frombuffer(buf, "<i2").astype(np.float32)
+                            return float(np.sqrt(np.mean(v ** 2))) if v.size else 0.0
+                        rms_all = _rms_pcm(b"".join(chunks))
+                        rms_send = _rms_pcm(trimmed)
                         _plog(f"SEND: {dur:.1f}s -> "
                               f"{len(trimmed) / 2 / SR:.1f}s dopo il taglio "
                               f"(rms {rms_all:.0f} -> {rms_send:.0f}, picco {peak:.0f})")
@@ -2557,7 +2565,10 @@ def _passive_loop():
                     ui(lambda: (set_mic_color(RED),
                                 bubble.show(W("i_listen"), sticky=True)))
     except Exception as exc:
-        _plog(f"ERRORE: {_err_text(exc)}")
+        import traceback as _tb
+        _plog("ERRORE: " + _err_text(exc) + "\n" +
+              "".join(_tb.format_stack(limit=8)[:-1]) +
+              _tb.format_exc(limit=6))
         if _passive["on"]:
             ui(lambda: bubble.show(f"Ascolto passivo fermo ({_err_text(exc)})"))
     finally:

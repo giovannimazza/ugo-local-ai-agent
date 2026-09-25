@@ -2632,8 +2632,9 @@ _FAST_TAIL_NOISE = re.compile(
 # pre-intent lo vedrebbe come app "chicco apri spotify" -> nessuna app
 _WAKE_RESIDUE = re.compile(
     r"^\s*(?:(?:ehi|oh|hey|e|a|he)\s+)?"
-    r"(?:ugo|hugo|sugo|wugo|yugo|jugo|ugoo|uugo|uhgo|riugo|truogo|fuoco)\b[,\s]*",
-    re.IGNORECASE)
+    r"(?:ugo|hugo|sugo|wugo|yugo|jugo|ugoo|uugo|uhgo|riugo|truogo|fuoco)\b[,\s.:;!?]*",
+    re.IGNORECASE)   # coda con punteggiatura: Vosk scrive 'ugo.' e senza il punto
+                     # il fastlane non matchava -> Whisper CPU (14 s invece di 1)
 
 
 def _strip_wake(text: str) -> str:
