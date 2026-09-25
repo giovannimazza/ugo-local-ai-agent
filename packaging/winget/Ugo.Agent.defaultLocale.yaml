@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 PackageIdentifier: Ugo.Agent
-PackageVersion: 0.3.1
+PackageVersion: 0.3.2
 PackageLocale: en-US
 Publisher: Giovanni Mazza
 PublisherUrl: https://github.com/giovannimazza
