@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Ugo.Agent
+PackageVersion: 0.3.1
+PackageLocale: en-US
+Publisher: Giovanni Mazza
+PublisherUrl: https://github.com/giovannimazza
+Author: Giovanni Mazza
+PackageName: Ugo
+PackageUrl: https://github.com/giovannimazza/ugo-local-ai-agent
+License: MIT
+LicenseUrl: https://github.com/giovannimazza/ugo-local-ai-agent/blob/main/README.md
+Copyright: Copyright (c) 2026 Giovanni Mazza
+ShortDescription: Local, offline voice assistant for Windows (Whisper + Qwen + Piper TTS).
+Description: >-
+  Ugo is a 100% local and offline voice assistant: you talk into the microphone,
+  it understands (faster-whisper), executes real commands on your PC (files,
+  apps, websites, volume) and answers by voice (Piper TTS). The LLM layer
+  (Qwen2.5 via Ollama) corrects misheard words and translates commands into
+  actions. No API keys, no cloud, no per-token cost. The package installs the
+  ugo launcher: on first run it provisions Python, the ugo-agent package and
+  the local models automatically.
+Moniker: ugo
+Tags:
+  - voice-assistant
+  - local-ai
+  - offline
+  - whisper
+  - ollama
+  - llm
+  - stt
+  - tts
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: Ugo.Agent
+PackageVersion: 0.3.1
+InstallerLocale: en-US
+MinimumOSVersion: 10.0.17763.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: ugo.exe
+    PortableCommandAlias: ugo
+ElevationRequirement: elevationProhibited
+InstallModes:
+  - silent
+  - silentWithProgress
+  - interactive
+UpgradeBehavior: install
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/giovannimazza/ugo-local-ai-agent/releases/download/v0.3.1/ugo-0.3.1-winget.zip
+    InstallerSha256: 6e5571d7cfebd07cffbb5b4adc47c179303fcc986a17a05aee11561f11102ccf
+    ReleaseDate: "2026-09-25"
+ManifestType: installer
+ManifestVersion: 1.6.0

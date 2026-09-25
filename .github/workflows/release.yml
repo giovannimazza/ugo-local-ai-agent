@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -17,8 +18,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      # il pacchetto e' Python puro: il "manufatto" della release e' il tag
-      # stesso; qui verifichiamo solo che la versione nel pyproject coincida
+      # il pacchetto e' Python puro, ma la release include anche l'installer
+      # winget: ugo.exe (bootstrap, compilato con il csc del .NET Framework)
+      # + zip deterministico + manifest allineati (versione, URL, SHA256)
       - name: Verifica coerenza versione/pyproject
         run: |
           python - <<'EOF'
@@ -30,11 +32,17 @@ jobs:
           print(f"release {tag}: versione allineata")
           EOF
 
-      - name: Crea la GitHub Release con note automatiche
+      - name: Build installer winget (ugo.exe + zip + manifest)
+        run: python packaging/make_winget_zip.py --tag ${{ github.ref_name }}
+
+      - name: Crea la GitHub Release con note automatiche e installer winget
         uses: softprops/action-gh-release@v2
         with:
           name: Ugo ${{ github.ref_name }}
           generate_release_notes: true
+          files: |
+            dist/ugo-*-winget.zip
+            dist/ugo-*-winget-manifests.zip
           body: |
             Installazione / aggiornamento a questa versione:
             ```
@@ -42,3 +50,14 @@ jobs:
             ugo update
             ```
             (o da zero: `pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git@${{ github.ref_name }}`)
+
+            ### Windows — winget
+            Con i manifest pubblicati nel repo [winget-pkgs](https://github.com/microsoft/winget-pkgs):
+            ```
+            winget install Ugo.Agent
+            ```
+            Con il bundle allegato (source custom, niente attesa review):
+            ```
+            winget source add --name ugo --arg "https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/packaging/winget-source/" --type "Microsoft.PreIndexed.Package"
+            winget install -e Ugo.Agent --source ugo
+            ```

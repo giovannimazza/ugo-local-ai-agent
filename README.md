@@ -181,6 +181,7 @@ on Windows, macOS and Linux runners at every push.
 | Listing processes | tasklist | psutil | psutil |
 | Sites and web searches | default browser | default browser | default browser |
 | Data folders | `%LOCALAPPDATA%\ugo` | `~/Library/Application Support/ugo` | `~/.local/share/ugo` |
+| Package install | **winget** (`Ugo.Agent`) + pip | pip | pip |
 | Ollama installation (`ugo setup`) | winget | brew | official script |
 
 Note: the official Systran model repo turned out to be unreachable, so we use the
@@ -196,6 +197,29 @@ otherwise int8 CPU.
 and the Vosk fallback, then starts the server and the widget.
 
 ### Windows
+
+**Con winget** (Windows Package Manager, incluso in Windows 10/11):
+
+```bat
+winget install Ugo.Agent
+```
+
+Installa il launcher `ugo` nel PATH (pacchetto portable, niente admin; appare
+anche in "App installate", disinstallazione con `winget uninstall Ugo.Agent`).
+Al primo avvio `ugo run` il launcher si procura tutto da solo: Python 3.10+
+(se manca, lo installa via winget), il pacchetto ugo-agent da GitHub e poi,
+come al solito, i modelli locali (Whisper, Qwen, Piper). Gli aggiornamenti
+restano automatici (`ugo update`); quando esce una release nuova anche
+`winget upgrade Ugo.Agent` funziona.
+
+> Finché il pacchetto non è nel catalogo community di winget, puoi installarlo
+> con il **bundle di manifest allegato a ogni release**: scarica
+> `ugo-<versione>-winget-manifests.zip` da
+> [Releases](https://github.com/giovannimazza/ugo-local-ai-agent/releases/latest),
+> estrailo in una cartella e lancia `winget install --manifest <cartella> -e Ugo.Agent`
+> (richiede una tantum `winget settings --enable LocalManifestFiles`).
+
+**Con pip**:
 
 ```bat
 pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git

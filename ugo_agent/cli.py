@@ -11,6 +11,7 @@ Interfaccia a riga di comando di Ugo.
 Uso tipico su una macchina nuova:
   pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
   ugo run
+  (su Windows in alternativa:  winget install Ugo.Agent)
 """
 import json
 import os
@@ -463,6 +464,22 @@ def cmd_stop() -> int:
     return 0
 
 
+def cmd_winget() -> int:
+    """Info sull'installazione via Windows Package Manager (winget)."""
+    print("""Installazione via winget (Windows Package Manager, solo Windows):
+
+  winget install Ugo.Agent     prima installazione: mette il launcher 'ugo' nel PATH
+  winget upgrade Ugo.Agent     aggiorna all'ultima release pubblicata
+  winget uninstall Ugo.Agent   rimuove il launcher (i modelli restano su disco)
+
+Il pacchetto e' portable (niente admin): al primo 'ugo run' il launcher si
+procura Python e il pacchetto ugo-agent da solo, poi i modelli come al solito.
+Gli aggiornamenti automatici restano attivi anche senza winget: ugo update
+(mentre 'winget upgrade' porta solo alle release ufficiali, come il canale stable).
+""")
+    return 0
+
+
 def cmd_help() -> int:
     """Aiuto completo: tutti i comandi con una spiegazione breve."""
     print("""Ugo — assistente vocale locale.  Uso:  ugo <comando>
@@ -482,6 +499,7 @@ Comandi:
   channel         canale di aggiornamento:  dev = main  |  stable = release
                   (solo  ugo channel  mostra quello attivo)
   version         versione installata
+  winget          info installazione/aggiornamento via winget (Windows)
   help            questo aiuto
 
 Prime volte:
@@ -547,6 +565,8 @@ def main() -> int:
             else:
                 print("aggiornamento: ultimo codice su main (repo privata OK)")
         return 0
+    if cmd == "winget":
+        return cmd_winget()
     if cmd in ("version", "--version"):
         try:
             from . import update
