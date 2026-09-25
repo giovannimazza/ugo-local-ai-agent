@@ -14,6 +14,11 @@ widget_pos.json
 .freebuff/
 server_*.log
 
+# artefatti temporanei di sviluppo (test locali, wav di prova, dump)
+_t_*
+*.wav
+!packaging/**/*.wav
+
 # ---------------------------------------------------------------------------
 # MEMORIE APPRESE e dati utente: NON devono finire nel repository (e quindi
 # non devono essere scaricabili da chi fa pip install dalla repo).

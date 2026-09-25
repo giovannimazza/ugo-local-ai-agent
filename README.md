@@ -385,7 +385,8 @@ single one remains.
 
 > The old root scripts `voice_assistant_server.py` and `assistant_widget.py` are
 > backward-compatible shims pointing at the package. On macOS/Linux: `python3
-> ugo_agent/server.py` and `python3 ugo_agent/widget.py`.
+> ugo_agent/server.py` and `python3 ugo_agent/widget.py`. The standalone Laya
+> demo lives in `examples/laya_agent.py`.
 >
 > Runtime files (index caches, wav, positions): `%LOCALAPPDATA%\ugo` on Windows,
 > `~/Library/Application Support/ugo` on macOS, `~/.local/share/ugo` on Linux.
@@ -495,9 +496,19 @@ ugo_agent/
 ├── widget.py         # Tkinter desktop widget (transparent, draggable)
 ├── ui.html           # ChatGPT-style web UI
 ├── cli.py            # ugo run/setup/doctor/stop commands
+├── launcher.py       # starts server + widget together (ugo_app.py)
+├── update.py         # GitHub update check, dev/stable channels
+├── multicommand.py   # conservative splitter for multiple voice commands
 ├── platform_utils.py # OS abstractions: folders, TTS, open, volume, subprocess
 ├── appindex.py       # app library: lnk/Store/portable, /Applications, .desktop
-└── games.py          # game libraries: Steam (win/mac/linux), Epic, GOG
+├── games.py          # game libraries: Steam (win/mac/linux), Epic, GOG
+├── piper_tts.py      # natural voice (Piper) + system TTS
+└── tools/            # standalone utilities (wake word collection & training)
+   ├── ww_collect.py
+   └── ww_train.py
+
+examples/
+└── laya_agent.py     # standalone Laya demo (intent classifier)
 ```
 
 Runtime files (index caches, wav, positions) in `%LOCALAPPDATA%\ugo` (Windows),
