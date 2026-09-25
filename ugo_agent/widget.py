@@ -1505,6 +1505,37 @@ def _mic_pref_key() -> str:
     return "mic_passive" if _passive["on"] else "mic_manual"
 
 
+def _mic_excluded() -> list:
+    return list(prefs.get("mic_excluded") or [])
+
+
+def _is_excluded(name: str, excl: list = None) -> bool:
+    excl = _mic_excluded() if excl is None else excl
+    return any(name == e or _is_trunc(name, e) for e in excl)
+
+
+def _mic_exclude(name: str) -> None:
+    """Esclude un microfono: barrato nel menu, ignorato dalla scelta auto."""
+    ex = _mic_excluded()
+    if not _is_excluded(name, ex):
+        ex.append(name)
+    _save_prefs(mic_excluded=ex)
+    cur = prefs.get(_mic_pref_key())
+    if cur and (cur == name or _is_trunc(cur, name)):
+        _mic_reset_choice()          # era quello attivo: torna all'auto
+    else:
+        bubble.show(W("mic_excl", m=name))
+    root.after(350, show_stt_popup)
+
+
+def _mic_restore(name: str) -> None:
+    """Riattiva un microfono escluso (click sulla riga barrata)."""
+    ex = [e for e in _mic_excluded() if not (e == name or _is_trunc(e, name))]
+    _save_prefs(mic_excluded=ex)
+    bubble.show(W("mic_restored", m=name))
+    root.after(350, show_stt_popup)
+
+
 def _apply_mic_choice(name: str) -> None:
     """Salva la scelta microfono nel file preferenze e applica il cambio a
     caldo: il loop passivo si riavvia sul nuovo input (quando termina)."""
@@ -1562,6 +1593,7 @@ def _show_menu_card(sections, right_x: int, top_y: int, anchor_right: bool = Tru
     cv.pack()
 
     fnt = tkfont.Font(root=root, font=FONT_UI)
+    fnt_x = tkfont.Font(root=root, font=FONT_UI + ("overstrike",))  # righe escluse
     rows, row_of, y, tw = [], {}, PADY, MIN_W
     for sec in sections:
         for it in sec:
@@ -1607,11 +1639,22 @@ def _show_menu_card(sections, right_x: int, top_y: int, anchor_right: bool = Tru
                            fill=ACCENT if it.get("mark") else MUT, font=FONT_UI,
                            tags=tag)
         cv.create_text(PADX + ICON_W, cy, text=_fit_text(fnt, it.get("text", ""), avail),
-                       anchor="w", fill=TXT if it.get("enabled") else MUT, font=FONT_UI,
-                       tags=tag)
+                       anchor="w", fill=TXT if it.get("enabled") else MUT,
+                       font=fnt_x if it.get("strike") else fnt, tags=tag)
         if it.get("mark"):
             cv.create_text(W - PADX - MARK_W // 2, cy, text="✓", fill=ACCENT,
                            font=FONT_UI, tags=tag)
+        if it.get("enabled") and it.get("excl_cmd"):
+            # ✕ in fondo alla riga: esclude il device (tag separato, il click
+            # non deve selezionare la riga sotto)
+            tx = tag + "x"
+            cv.create_text(W - PADX - 2, cy, text="✕", anchor="e", fill=MUT,
+                           font=FONT_UI, tags=tx)
+            cv.tag_bind(tx, "<Enter>", lambda e: cv.config(cursor="hand2"))
+            cv.tag_bind(tx, "<Leave>", lambda e: cv.config(cursor="arrow"))
+            cv.tag_bind(tx, "<Button-1>",
+                        lambda e, c=it["excl_cmd"]: (_menu_card_close(),
+                                                     root.after(30, c)))
         if it.get("enabled"):
             cv.tag_bind(tag, "<Enter>", lambda e, tg=tag: _hover(tg, True))
             cv.tag_bind(tag, "<Leave>", lambda e, tg=tag: _hover(tg, False))
@@ -1670,23 +1713,33 @@ def show_stt_popup():
             fn()
             root.after(350, show_stt_popup)   # la card si ridisegna col nuovo stato
 
+        excl = _mic_excluded()
+        attivi = [n for n in mics if not _is_excluded(n, excl)]
+        barrati = [n for n in mics if _is_excluded(n, excl)]
+
         def build():
             mic_items = [{"icon": "🎙️", "text": W("micro"), "enabled": False}]
-            if mics:
+            if attivi:
                 if cur:
                     mic_items.append({"text": W("mic_auto"), "enabled": True,
                                       "cmd": _mic_reset_choice})
                 else:
                     mic_items.append({"text": W("mic_auto"), "enabled": False,
                                       "mark": True})
-                for name in mics:
+                for name in attivi:
                     if name == cur:
                         mic_items.append({"text": name, "enabled": False, "mark": True})
                     else:
                         mic_items.append({"text": name, "enabled": True,
-                                          "cmd": lambda n=name: _apply_mic_choice(n)})
+                                          "cmd": lambda n=name: _apply_mic_choice(n),
+                                          "excl_cmd": lambda n=name: _mic_exclude(n)})
             else:
                 mic_items.append({"text": W("mic_none"), "enabled": False})
+            if barrati:
+                mic_items.append({"text": W("mic_excluded"), "enabled": False})
+                for name in barrati:
+                    mic_items.append({"text": name, "enabled": True, "strike": True,
+                                      "cmd": lambda n=name: _mic_restore(n)})
             model_items = [{"icon": "✨", "text": W("model") + " AI", "enabled": False}]
             for name in available:
                 label = name.replace("qwen2.5:", "Qwen ")
@@ -1788,6 +1841,8 @@ _WSTR = {
         "ai_model": "Modello AI: {m}", "ai_model_err": "Errore modello: {e}",
         "micro": "Microfono", "mic_auto": "Automatico (sceglie Ugo)",
         "mic_saved": "Microfono: {m}", "mic_none": "Nessun microfono trovato.",
+        "mic_excluded": "Esclusi (click per riattivare):",
+        "mic_excl": "Escluso: {m}", "mic_restored": "Riattivato: {m}",
         "vosk_missing": "Modello Vosk mancante: ascolto passivo non disponibile.",
         "stt": "Trascrittore", "model": "Modello", "device": "Dispositivo",
         "stt_unavail": "Trascrittore non disponibile ({e})",
@@ -1814,6 +1869,8 @@ _WSTR = {
         "ai_model": "AI model: {m}", "ai_model_err": "Model error: {e}",
         "micro": "Microphone", "mic_auto": "Automatic (Ugo picks)",
         "mic_saved": "Microphone: {m}", "mic_none": "No microphone found.",
+        "mic_excluded": "Excluded (click to re-enable):",
+        "mic_excl": "Excluded: {m}", "mic_restored": "Re-enabled: {m}",
         "vosk_missing": "Vosk model missing: passive listening unavailable.",
         "stt": "Transcriber", "model": "Model", "device": "Device",
         "stt_unavail": "Transcriber unavailable ({e})",
@@ -2042,6 +2099,10 @@ def _pick_mic(for_passive: bool = False):
     il microfono predefinito.
     """
     saved = prefs.get("mic_passive" if for_passive else "mic_manual") or prefs.get("mic")
+    excl = _mic_excluded()
+    if saved and _is_excluded(saved, excl):
+        _plog(f"la scelta salvata {saved!r} e' esclusa: torna la scelta auto")
+        saved = None
     if saved:
         for m in sc.all_microphones():
             if m.name == saved:
@@ -2059,16 +2120,19 @@ def _pick_mic(for_passive: bool = False):
     # ricorda solo sostituendo un nome morto o assente, mai uno verificato.
     try:
         default = sc.default_microphone()
-        peak = _probe_peak(default)
-        if peak is not None and peak > 0.0002:   # il default sente: rispetto
-            _save_prefs(mic=default.name)
-            return default
+        if not _is_excluded(default.name, excl):
+            peak = _probe_peak(default)
+            if peak is not None and peak > 0.0002:   # il default sente: rispetto
+                _save_prefs(mic=default.name)
+                return default
     except Exception:
         pass                           # il default non si apre: sondo tutti
     try:
         best, best_rms = None, 0.0
         sc_aperti = set()
         for m in sc.all_microphones():
+            if _is_excluded(m.name, excl):   # esclusi: nemmeno provati
+                continue
             peak = _probe_peak(m)
             if peak is None:
                 continue
@@ -2076,6 +2140,8 @@ def _pick_mic(for_passive: bool = False):
             if peak > best_rms:
                 best, best_rms = m, peak
         for m in _sd_all_mics():  # gemelli dei device gia' apribili = doppioni
+            if _is_excluded(m.name, excl):
+                continue
             if any(m.name == nm or _is_trunc(m.name, nm) for nm in sc_aperti):
                 continue
             peak = _probe_peak(m)

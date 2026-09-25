@@ -186,6 +186,10 @@
                    font-size:1.1rem; cursor:pointer; padding:4px 8px; border-radius:8px;
                    transition:background .15s,color .15s; }
   .mitem .memdel:hover { color:var(--danger); background:var(--danger-dim); }
+  .mitem.excluded b { text-decoration:line-through; opacity:.55; }
+  .mitem .micex { cursor:pointer; color:var(--mut); font-size:1.05rem; padding:2px 8px;
+                  border-radius:6px; transition:color .15s,background .15s; }
+  .mitem .micex:hover { color:var(--danger); background:var(--danger-dim); }
 </style>
 </head>
 <body>
@@ -289,6 +293,8 @@ it: {
   m_mic: 'Microfono di input', m_mic_sub: 'dispositivo per i comandi vocali nel browser',
   mic_auto: 'Automatico (predefinito)', mic_auto_short: 'Auto',
   mic_saved: '✅ Microfono: ', mic_none: 'Nessun microfono: consenti l’accesso e ricarica',
+  mic_excluded: 'Esclusi (click per riattivare)', mic_excl_done: '⛔ Escluso: ',
+  mic_restored: '✅ Riattivato: ',
   mic_denied: 'Permesso microfono negato: consentilo per questo sito (icona lucchetto o impostazioni del browser) e riprova',
   mic_gone: 'Microfono scelto non più disponibile: passo al predefinito (riapri il menu 🎙️ per sceglierne un altro)',
   mic_busy: 'Microfono occupato da un’altra app: chiudila e riprova',
@@ -369,6 +375,8 @@ en: {
   m_mic: 'Input microphone', m_mic_sub: 'device for voice commands in the browser',
   mic_auto: 'Automatic (default)', mic_auto_short: 'Auto',
   mic_saved: '✅ Microphone: ', mic_none: 'No microphone: allow access and reload',
+  mic_excluded: 'Excluded (click to re-enable)', mic_excl_done: '⛔ Excluded: ',
+  mic_restored: '✅ Re-enabled: ',
   mic_denied: 'Microphone permission denied: allow it for this site (padlock icon or browser settings) and retry',
   mic_gone: 'Selected microphone no longer available: falling back to the default (reopen the 🎙️ menu to pick another)',
   mic_busy: 'Microphone busy (used by another app): close it and retry',
@@ -792,15 +800,23 @@ async function micDeviceList() {
   if (stream && stream !== 'timeout') stream.getTracks().forEach(tr => tr.stop());
   return devs;
 }
+const MIC_EX_KEY = 'ugo_mic_excluded';
+function micExcluded() { try { return JSON.parse(localStorage.getItem(MIC_EX_KEY) || '[]'); } catch { return []; } }
+function micSetExcluded(arr) { try { localStorage.setItem(MIC_EX_KEY, JSON.stringify(arr)); } catch {} }
+
 function renderMicMenu(devs) {
   const savedId = localStorage.getItem(MIC_KEY);
+  const excl = micExcluded();
+  const isEx = d => d.label && excl.includes(d.label);
+  const attivi = devs.filter(d => !isEx(d));
+  const barrati = devs.filter(isEx);
   mlist.innerHTML = '';
-  if (!devs.length) {
+  if (!attivi.length && !barrati.length) {
     const it = {title: t('mic_none'), subtitle: '', kind: 'appx'};
     mlist.appendChild(row(it));
     return;
   }
-  const auto = {title: t('mic_auto'), subtitle: devs[0].label || '', kind: 'appx'};
+  const auto = {title: t('mic_auto'), subtitle: (attivi[0] || devs[0]).label || '', kind: 'appx'};
   const rowEl = row(auto);
   rowEl.classList.add('click');
   if (!savedId) { const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713'; rowEl.appendChild(c); }
@@ -810,7 +826,12 @@ function renderMicMenu(devs) {
     ovl.classList.remove('open');
   };
   mlist.appendChild(rowEl);
-  for (const d of devs) {
+  // se il device salvato e' stato escluso, la scelta cade: torna l'auto
+  if (savedId && barrati.some(d => d.deviceId === savedId)) {
+    localStorage.removeItem(MIC_KEY); saveMicLabel('');
+    document.getElementById('micname').textContent = micName();
+  }
+  for (const d of attivi) {
     const it = {title: d.label || '🎙️', subtitle: '', kind: 'appx', _d: d};
     const rEl = row(it);
     rEl.classList.add('click');
@@ -821,9 +842,39 @@ function renderMicMenu(devs) {
       document.getElementById('micname').textContent = micName();
       ovl.classList.remove('open');
     };
+    if (d.label && d.deviceId) {
+      const x = document.createElement('span'); x.className = 'micex'; x.textContent = '\u2715';
+      x.title = t('mic_excluded');
+      x.onclick = ev => {
+        ev.stopPropagation();
+        micSetExcluded([...excl, d.label]);
+        if (savedId === d.deviceId) { localStorage.removeItem(MIC_KEY); saveMicLabel('');
+          document.getElementById('micname').textContent = micName(); }
+        setStatus(t('mic_excl_done') + d.label);
+        renderMicMenu(micDevsCache);
+      };
+      rEl.appendChild(x);
+    }
     mlist.appendChild(rEl);
   }
+  if (barrati.length) {
+    const cat = document.createElement('div'); cat.className = 'mcat';
+    cat.textContent = t('mic_excluded');
+    mlist.appendChild(cat);
+    for (const d of barrati) {
+      const it = {title: d.label, subtitle: '', kind: 'appx'};
+      const rEl = row(it);
+      rEl.classList.add('click', 'excluded');
+      rEl.onclick = () => {
+        micSetExcluded(excl.filter(nm => nm !== d.label));
+        setStatus(t('mic_restored') + d.label);
+        renderMicMenu(micDevsCache);
+      };
+      mlist.appendChild(rEl);
+    }
+  }
 }
+let micDevsCache = [];
 async function openMicMenu() {
   mtitle.textContent = t('m_mic');
   mcount.textContent = t('m_mic_sub');
@@ -831,7 +882,8 @@ async function openMicMenu() {
   renderMicMenu([]);
   mlist.querySelector('.mitem b').textContent = '…';  // placeholder di caricamento
   ovl.classList.add('open');
-  renderMicMenu(await micDeviceList());
+  micDevsCache = await micDeviceList();
+  renderMicMenu(micDevsCache);
 }
 document.getElementById('micbtn').onclick = openMicMenu;
 // l'etichetta della voce (Paola/Amy secondo la lingua) la gestisce refreshVoiceName()
