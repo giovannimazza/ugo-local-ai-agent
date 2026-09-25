@@ -2377,7 +2377,9 @@ def _passive_loop():
                             # solo la wake word (o rumore): niente comando detto ->
                             # non inviare nulla: Whisper/Qwen inventerebbero un comando
                             _plog(f"SKIP: solo wake, {spoke_s:.1f}s di voce dopo la wake")
-                            ui(lambda: bubble.hide())
+                            # il rosso d'ascolto va SPENTO anche qui: senza reset il
+                            # cerchio restava rosso fino alla prossima wake word
+                            ui(lambda: (set_mic_color(ACCENT), bubble.hide()))
                             quiet_until = time.time() + 4.0
                             armed, chunks = False, []
                             rec = KaldiRecognizer(model, SR)
@@ -2411,7 +2413,8 @@ def _passive_loop():
                         rec = KaldiRecognizer(model, SR)
                         if oww_model is not None:
                             oww_model.reset()
-                        ui(lambda: bubble.show(W("nothing")))
+                        ui(lambda: (set_mic_color(ACCENT),
+                                    bubble.show(W("nothing"))))
                     continue
                 chunks.append(pcm)
                 if len(chunks) > 32:
