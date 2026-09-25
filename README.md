@@ -35,6 +35,7 @@ command engine stays uniform.
 | *"Apri Steam"* / *"Apri calcolatrice"* (Open Steam / Open Calculator) | any app: Start menu, Microsoft Store/AppX, portable executables, PATH |
 | *"Chiudi Spotify"* / *"chiudi il blocco note forza"* (Close Spotify / force-close Notepad) | closes the app if running (graceful → forced taskkill, with process verification); refuses system processes |
 | *"Apri youtube"* / *"Vai su gmail"* (Open YouTube / Go to Gmail) | **default** browser (ShellExecute) |
+| *"Apri youtube e discord"* (Open YouTube and Discord) | **multi-command**: both actions run in sequence with one spoken summary — also *"muto e apri spotify"*, *"metti il volume al 30 e apri steam"*, *"apri youtube, discord e steam"* (list form). Conservative splitter: file/search commands never split ("create a file called groceries and bread" stays one command) |
 | *"Cerca gatti buffi su youtube"* (Search funny cats on YouTube) | direct YouTube/Google search |
 | *"Quali giochi ho su steam?"* / *"Quali app ho installato?"* (What games do I have on Steam? / What apps are installed?) | spoken list + **on-screen modal** with the full list |
 | *"Che ore sono?"* (What time is it?) | time and date by voice |
@@ -423,6 +424,9 @@ One activation phrase runs a sequence of commands in order:
 - Before every reply the executor consults routines: the trigger may have a tail
   ("modo gaming attivato" / "gaming mode activated") and the longest trigger wins on
   overlap.
+- For **one-off** chains you don't need a routine anymore: *"apri youtube e poi
+  discord"* runs both on the fly (multi-command splitter), while routines keep
+  their reusable trigger and can chain up to 8 named steps.
 
 ### Latency dashboard 📊
 The **📊** button on top shows in real time (3 s refresh) where time goes at each

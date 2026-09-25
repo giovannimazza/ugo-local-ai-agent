@@ -44,11 +44,13 @@ from pathlib import Path
 try:  # pacchetto (pip install / -m) O script diretto (python ugo_agent/server.py)
     from . import platform_utils as pu
     from . import piper_tts
+    from . import multicommand
 except ImportError:
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from ugo_agent import platform_utils as pu
     from ugo_agent import piper_tts
+    from ugo_agent import multicommand
 
 import laya
 import pyttsx3
@@ -2340,6 +2342,26 @@ def process(text: str, source: str) -> dict:
             summary = " ".join(replies)[:220]
             reply = f"Eseguo {name}. {summary}" if replies else f"{name}: nessun passo eseguibile."
             return _emit(text, reply, "routine", "macro", source, 0)
+        # fase -1.5: comandi multipli ("apri youtube e discord", "muto e apri
+        # spotify") -> eseguiti IN SEQUENZA con un riassunto parlato unico
+        # (stessa filosofia delle routine: un solo bubbles/tts, le risposte
+        # si taglierebbero a vicenda). Lo splitter e' conservativo: in dubbio
+        # non spezza e la frase prosegue nella pipeline normale.
+        try:
+            subcmds = multicommand.split_commands(_strip_wake(text))
+        except Exception:
+            subcmds = None
+        if subcmds and len(subcmds) > 1:
+            t0 = time.time()
+            replies = []
+            for sc in subcmds[:multicommand.MAX_SUBCOMMANDS]:
+                try:
+                    replies.append(run_command(sc, detect_intent(sc)[0]))
+                except Exception as exc:
+                    replies.append(f"{sc}: errore ({type(exc).__name__})")
+            reply = " e ".join(r for r in replies if r)[:400]
+            return _emit(text, reply, "multi", "multi", source,
+                         int((time.time() - t0) * 1000))
         # fase -1: alias-app gia' confermati in passato -> apre SUBITO, senza
         # neppure chiedere a Qwen ('stimolo' -> Steam in ~40 ms, zero LLM)
         m = re.match(r"^(apri|lancia|avvia|chiudi)\s+(.{2,40})$",
