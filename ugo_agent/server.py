@@ -1300,7 +1300,7 @@ def execute_spec(spec: dict, text: str) -> str:
     chat = ollama_chat(text)
     if chat:
         return chat
-    return ("Non ho capito il comando. Posso creare o eliminare cartelle e file di testo, "
+    return ("Non ho capito. Posso creare o eliminare cartelle e file di testo, "
             "aprire app e siti, cercare su YouTube o Google, darti ora e data, "
             "regolare il volume o elencare i file.")
 
@@ -1797,7 +1797,7 @@ def run_command(text: str, intent: str) -> str:
         if target.exists():
             return f"La cartella {name} esiste gia' sul {loc.name.lower()}."
         target.mkdir(parents=True, exist_ok=False)
-        return f"Fatto. Ho creato la cartella {name} in {loc}."
+        return f"Cartella {name} creata in {loc}."
 
     if intent == "delete_folder":
         name = extract_folder_name(text)
@@ -1977,14 +1977,14 @@ def run_command(text: str, intent: str) -> str:
 
     if intent == "time":
         now = datetime.now()
-        return f"Sono le {now.strftime('%H e %M')}."
+        return f"Sono le {now.strftime('%H:%M')}."
 
     if intent == "date":
-        days = ["lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato", "domenica"]
+        days = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
         months = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
                   "agosto", "settembre", "ottobre", "novembre", "dicembre"]
         now = datetime.now()
-        return f"Oggi e' {days[now.weekday()]} {now.day} {months[now.month - 1]} {now.year}."
+        return f"Oggi è {days[now.weekday()]} {now.day} {months[now.month - 1]} {now.year}."
 
     if intent == "set_app_volume":
         t2 = _strip_wake(t)  # 'chicco volume di comet al 60' -> 'volume di comet al 60'
@@ -2082,7 +2082,7 @@ def run_command(text: str, intent: str) -> str:
     chat = ollama_chat(text)
     if chat:
         return chat
-    return ("Non ho capito il comando. Posso creare o eliminare cartelle, aprire app e "
+    return ("Non ho capito. Posso creare o eliminare cartelle, aprire app e "
             "siti, darti ora e data, regolare il volume o elencare i file.")
 
 
@@ -2318,10 +2318,10 @@ def process(text: str, source: str) -> dict:
                 reply = run_command(f"apri {app_name}", "open_app")
                 return _emit(f"apri {app_name}", reply, "open_app", "guard-scelta",
                              source, 0)
-            reply = (f"C'e' solo {'una' if len(menu) == 1 else str(len(menu))} "
-                     f"scelta: riprova.")
+            reply = (f"Ho solo {'una' if len(menu) == 1 else str(len(menu))} "
+                     f"scelta in elenco: riprova.")
             return _emit(text, reply, "confirm", "guard-scelta", source, 0)
-        reply = "Non c'e' piu' nessuna scelta in attesa."
+        reply = "Non c'e' nessuna scelta in attesa."
         return _emit(text, reply, "confirm", "guard-scelta", source, 0)
     if pick is not None and not _pending_choices["menu"]:
         # numero detto senza menu aperto: ambiguo ('due' potrebbe essere volume)
@@ -2367,7 +2367,7 @@ def process(text: str, source: str) -> dict:
                 try:
                     reply = _process_inner(text, detect_intent(text)[0], src)
                 except Exception as exc:
-                    reply = f"Ho avuto un problema tecnico ({type(exc).__name__})."
+                    reply = "Scusa, un problema tecnico. Riprova."
                     intent = "error:confirm"
                 return _emit(text, reply, intent, src, source,
                              int((time.time() - t0) * 1000))
@@ -2529,8 +2529,8 @@ def process(text: str, source: str) -> dict:
     except Exception as exc:
         # rete di sicurezza: nessun errore deve uccidere la richiesta
         print(f"[cmd] ERRORE su {text!r}: {type(exc).__name__}: {exc}")
-        reply = ("Ho avuto un problema tecnico nell'eseguire il comando "
-                 f"({type(exc).__name__}). Riprova o riformula.")
+        reply = ("Scusa, un problema tecnico mi impedisce di eseguire il "
+                 "comando. Riprova o riformula.")
         intent, src = f"error:{intent}", src
     dt = int((time.time() - t0) * 1000)
     with _log_lock:
@@ -2810,7 +2810,7 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False):
         awaiting = bool(_pending_choices["menu"] or _pending.get("app")
                         or _pending.get("text"))
         if not awaiting:
-            entry = {"user": text, "assistant": "Non ho sentito 'Ugo': riprova "
+            entry = {"user": text, "assistant": "Non ho sentito “Ugo”: riprova "
                      "dicendo prima la wake word.", "intent": "-", "detector": "wake-guard",
                      "input": "voce", "ms": 0, "silent": True,
                      "ts": datetime.now().isoformat(timespec="seconds")}
@@ -2820,7 +2820,7 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False):
             _track("command", time.time() - _tcmd)
             return entry
     if not text:
-        entry = {"user": "", "assistant": "Non ho sentito nulla, riprova.",
+        entry = {"user": "", "assistant": "Non ho sentito nulla. Riprova.",
                  "intent": "-", "detector": "-", "input": "voce", "ms": 0,
                  "ts": datetime.now().isoformat(timespec="seconds")}
         with _log_lock:
