@@ -400,7 +400,13 @@ def get_whisper():
                         dev = "cpu"
                 print(f"[whisper] caricamento {_whisper_choice['name']} "
                       f"(faster-whisper, device={dev})...")
-                kw = {"compute_type": os.environ.get("WHISPER_COMPUTE", "default")}
+                ct = os.environ.get("WHISPER_COMPUTE")
+                if not ct:
+                    # su CPU int8 e' ~2x piu' veloce del default (float32) con
+                    # qualita' sostanzialmente identica su large-v3-turbo; per il
+                    # comportamento di prima: WHISPER_COMPUTE=default
+                    ct = "int8" if dev == "cpu" else "default"
+                kw = {"compute_type": ct}
                 if dev == "cpu":
                     kw["cpu_threads"] = min(8, os.cpu_count() or 4)  # benchmark: ottimo su Zen4
                 _whisper["model"] = WhisperModel(whisper_model_dir(), device=dev, **kw)
@@ -2689,6 +2695,26 @@ def _fast_command(text: str) -> dict | None:
                         r"|che\s+data)\??", t):
             intent = "time" if ("ore" in t or "ora" in t) else "date"
             return _emit(t, run_command(t, intent), intent, "fastlane", "voce", 0)
+        # volume di sistema ed elenca-file: stesse frasi intere e strette,
+        # l'esecuzione delegata a run_command e' IDENTICA alla pipeline (stesso
+        # parsing): ci si risparmia solo Whisper+Qwen-normalize (~5 s su CPU).
+        # Se Vosk storpia il testo il fullmatch non matcha e si cade sulla
+        # pipeline completa, esattamente come prima.
+        _VOL_NUM = (r"(?:\d{1,2}|100|un|due|tre|quattro|cinque|sei|sette|otto|nove|"
+                    r"dieci|venti|trenta|quaranta|cinquanta|sessanta|settanta|"
+                    r"ottanta|novanta|cento|zero)")   # 0-100: 500 non e' un volume
+        if (re.fullmatch(rf"(?:metti\s+|porta\s+|imposta\s+|regola\s+|mettimi\s+)?"
+                         rf"(?:il\s+)?volume\s+(?:a|al|ad)\s+{_VOL_NUM}"
+                         rf"\s*(?:per\s+cento|%)?", t)
+                or re.fullmatch(r"(?:alza|aumenta|abbassa|diminuisci|riduci)"
+                                r"(?:\s+il)?\s+(?:volume|audio)(?:\s+un\s+po')?", t)
+                or re.fullmatch(r"muto|silenzia(?:\s+il\s+volume)?", t)):
+            return _emit(t, run_command(t, "volume"), "volume", "fastlane", "voce", 0)
+        if (re.fullmatch(r"(?:elenca|mostra|dammi)\s+(?:i\s+)?file"
+                         r"(?:\s+(?:sul|del)\s+desktop)?", t)
+                or re.fullmatch(r"elenca\s+i\s+documenti", t)):
+            return _emit(t, run_command(t, "list_files"), "list_files",
+                         "fastlane", "voce", 0)
         return None
     verb, target = m.group(1), m.group(2).strip(" .!")
     if not target or any(w in target for w in _FAST_UNSAFE):
