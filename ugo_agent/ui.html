@@ -289,6 +289,10 @@ it: {
   m_mic: 'Microfono di input', m_mic_sub: 'dispositivo per i comandi vocali nel browser',
   mic_auto: 'Automatico (predefinito)', mic_auto_short: 'Auto',
   mic_saved: '✅ Microfono: ', mic_none: 'Nessun microfono: consenti l’accesso e ricarica',
+  mic_denied: 'Permesso microfono negato: consentilo per questo sito (icona lucchetto o impostazioni del browser) e riprova',
+  mic_gone: 'Microfono scelto non più disponibile: passo al predefinito (riapri il menu 🎙️ per sceglierne un altro)',
+  mic_busy: 'Microfono occupato da un’altra app: chiudila e riprova',
+  mic_err: 'Errore microfono',
   tts_piper: ' — Piper', tts_sys: 'Voce di sistema',
   sub_piper: 'voce neurale naturale, locale (~63 MB)', sub_sapi: 'SAPI / voce di sistema',
   msg_tts_dl: '⬇️ Scarico la voce naturale Piper (~85 MB, in background). Finché non è pronta risponde la voce di sistema.',
@@ -365,6 +369,10 @@ en: {
   m_mic: 'Input microphone', m_mic_sub: 'device for voice commands in the browser',
   mic_auto: 'Automatic (default)', mic_auto_short: 'Auto',
   mic_saved: '✅ Microphone: ', mic_none: 'No microphone: allow access and reload',
+  mic_denied: 'Microphone permission denied: allow it for this site (padlock icon or browser settings) and retry',
+  mic_gone: 'Selected microphone no longer available: falling back to the default (reopen the 🎙️ menu to pick another)',
+  mic_busy: 'Microphone busy (used by another app): close it and retry',
+  mic_err: 'Microphone error',
   tts_piper: ' — Piper', tts_sys: 'System voice',
   sub_piper: 'natural neural voice, local (~63 MB)', sub_sapi: 'SAPI / system voice',
   msg_tts_dl: '⬇️ Downloading the Piper natural voice (~85 MB, in background). The system voice replies until ready.',
@@ -1161,12 +1169,36 @@ document.querySelectorAll('.sugg button').forEach(b => b.onclick = () => { textE
 
 // ---- microfono (come prima: webm -> /api/listen) ----
 let media, chunks = [], recording = false;
+function micErrText(err) {
+  const n = (err && err.name) || '';
+  if (n === 'NotAllowedError' || n === 'SecurityError') return t('mic_denied');
+  if (n === 'NotReadableError' || n === 'AbortError') return t('mic_busy');
+  if (n === 'NotFoundError' || n === 'OverconstrainedError') return t('mic_gone');
+  return t('mic_err') + (n ? ' (' + n + ')' : '');
+}
 micBtn.onclick = async () => {
   if (recording) { media.stop(); return; }
   const savedMic = localStorage.getItem(MIC_KEY);
-  const audioC = savedMic ? {deviceId: {exact: savedMic}} : true;
-  try { media = new MediaRecorder(await navigator.mediaDevices.getUserMedia({audio: audioC})); }
-  catch { setStatus('Permesso microfono negato'); return; }
+  let stream = null, err0 = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(
+      {audio: savedMic ? {deviceId: {exact: savedMic}} : true});
+  } catch (err) {
+    err0 = err;
+    // il device salvato è sparito (cambiato/scaricato): niente vincolo exact,
+    // si riparte dal default e la scelta stantia si dimentica
+    if (savedMic && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
+      localStorage.removeItem(MIC_KEY); saveMicLabel('');
+      document.getElementById('micname').textContent = micName();
+      try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); } catch {}
+    }
+    if (!stream) { setStatus(micErrText(err0)); return; }
+  }
+  try { media = new MediaRecorder(stream); }
+  catch (err) {
+    stream.getTracks().forEach(tr => tr.stop());
+    setStatus(micErrText(err)); return;
+  }
   chunks = []; recording = true; micBtn.classList.add('rec'); setStatus('🔴 Sto ascoltando… clicca di nuovo per inviare');
   media.ondataavailable = e => chunks.push(e.data);
   media.onstop = async () => {
