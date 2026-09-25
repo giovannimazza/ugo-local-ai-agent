@@ -2459,9 +2459,14 @@ def _passive_loop():
                     dur_post = max(0.0, dur - PRE_WAKE * 0.1)
                     # >= 2.0 s di grazia: Vosk finalizza subito 'Ugo' e senza grazia
                     # una pausetta di 0.3 s chiudeva l'ascolto prima che iniziassi
-                    # a parlare il comando vero e proprio
+                    # a parlare il comando vero e proprio. GRACE ADATTIVA: se Vosk
+                    # ha gia' finalizzato una frase con >= 0.6 s di voce vera il
+                    # comando e' COMPLETO (detto fluido dopo la wake): chiusura
+                    # subito, senza aspettare la grazia (risparmia ~1.4 s per
+                    # 'Ugo che ore sono' detto d'un fiato)
                     if dur_post >= 8 or (dur_post > 0.6 and since_voice > (0.3 if sent_done else 0.7)
-                                         and time.time() - armed_t >= 2.0):
+                                         and (time.time() - armed_t >= 2.0
+                                              or (sent_done and spoke_s >= 0.6))):
                         if spoke_s < 0.25:
                             # solo la wake word (o rumore): niente comando detto ->
                             # non inviare nulla: Whisper/Qwen inventerebbero un comando

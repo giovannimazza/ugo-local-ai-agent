@@ -2679,6 +2679,15 @@ def _fast_command(text: str) -> dict | None:
                          "set_app_volume", "fastlane", "voce", 0)
     m = re.match(r"^(apri|lancia|avvia|chiudi|chiudimi|ferma)\s+(.{2,60})$", t)
     if not m:
+        # ora/data: frasi corte e sicure trascrivibili da Vosk senza Whisper
+        # (su CPU ~4 s di attesa risparmiata); il match stretto evita i falsi
+        # positivi: se Vosk sbaglia il testo si cade sulla pipeline completa
+        if re.fullmatch(r"(?:ehi\s+|ciao[,\s]+|ugo[,\s]+|ehi\s+ugo[,\s]+)*"
+                        r"(?:che\s+ore\s+(?:sono|e|è)(?:\s+adesso)?|che\s+ora\s+(?:e|è)"
+                        r"|ora\s+esatta|che\s+giorno\s+(?:e|è)\s+oggi|che\s+data\s+(?:e|è)\s+oggi"
+                        r"|che\s+data)\??", t):
+            intent = "time" if ("ore" in t or "ora" in t) else "date"
+            return _emit(t, run_command(t, intent), intent, "fastlane", "voce", 0)
         return None
     verb, target = m.group(1), m.group(2).strip(" .!")
     if not target or any(w in target for w in _FAST_UNSAFE):
