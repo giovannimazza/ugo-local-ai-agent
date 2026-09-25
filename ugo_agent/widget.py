@@ -2293,6 +2293,7 @@ def _passive_loop():
         rec = KaldiRecognizer(model, SR)
         chunks = []          # coda d'anello: ultimi ~3 s prima della wake word
         armed = False
+        armed_t = 0.0        # istante della wake: grazia prima della chiusura
         since_voice = 0.0
         quiet_until = 0.0    # immunita' all'eco: niente wake subito dopo una risposta
         last_status = 0.0    # per lo stato periodico nel ramo non-armed
@@ -2372,7 +2373,14 @@ def _passive_loop():
                     since_voice = 0.0 if level > thr else since_voice + 0.1
                     spoke_s += 0.1 if level > thr else 0.0  # voce REALE dopo la wake
                     dur = sum(len(c) for c in chunks) / 2 / SR
-                    if dur >= 8 or (dur > 0.6 and since_voice > (0.3 if sent_done else 0.7)):
+                    # la durata conta SOLO l'audio post-wake: nei chunks c'e' anche
+                    # il pre-wake (~1.2 s) che faceva scattare subito le soglie
+                    dur_post = max(0.0, dur - PRE_WAKE * 0.1)
+                    # >= 2.0 s di grazia: Vosk finalizza subito 'Ugo' e senza grazia
+                    # una pausetta di 0.3 s chiudeva l'ascolto prima che iniziassi
+                    # a parlare il comando vero e proprio
+                    if dur_post >= 8 or (dur_post > 0.6 and since_voice > (0.3 if sent_done else 0.7)
+                                         and time.time() - armed_t >= 2.0):
                         if spoke_s < 0.25:
                             # solo la wake word (o rumore): niente comando detto ->
                             # non inviare nulla: Whisper/Qwen inventerebbero un comando
@@ -2408,7 +2416,7 @@ def _passive_loop():
                         rec = KaldiRecognizer(model, SR)
                         if oww_model is not None:
                             oww_model.reset()
-                    elif dur < 0.6 and since_voice >= 2.0:
+                    elif dur_post < 0.6 and since_voice >= 2.0:
                         armed, chunks = False, []  # nessuno ha parlato dopo la wake word
                         rec = KaldiRecognizer(model, SR)
                         if oww_model is not None:
@@ -2442,6 +2450,7 @@ def _passive_loop():
                     _plog(f"WAKE[{wake}]")
                     chunks = chunks[-PRE_WAKE:] + [pcm]  # wake + poco contesto
                     armed, since_voice, spoke_s = True, 0.0, 0.0
+                    armed_t = time.time()
                     rec = KaldiRecognizer(model, SR)
                     oww_hits = 0
                     if oww_model is not None:
