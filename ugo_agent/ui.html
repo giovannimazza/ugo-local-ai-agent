@@ -193,6 +193,7 @@
 <button class="appsbtn small" id="modelbtn" title="Modello AI per correzione e interpretazione">⚙️ <span id="modelname">…</span></button>
 <button class="appsbtn small" id="sttbtn" title="Modello di trascrizione vocale (Whisper)">🎤 <span id="sttname">…</span></button>
 <button class="appsbtn small" id="ttsbtn" title="Voce di risposta (TTS)">🔊 <span id="ttsname">…</span></button>
+<button class="appsbtn small" id="micbtn" title="Microfono di input">🎙️ <span id="micname">…</span></button>
 <button class="appsbtn small" id="membtn" title="Memoria appresa: refusi corretti e alias-app">🧠 <span id="memcount">…</span></button>
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
 <button class="appsbtn" id="routbtn" title="Routine: una frase attiva una sequenza di comandi">⚡ Routine <span id="routcount"></span></button>
@@ -285,6 +286,9 @@ it: {
   msg_stt_dl: '⬇️ Scarico il modello ', msg_stt_dl2: ' (in background). Finché non è pronto si usa Vosk.',
   msg_stt_ok: '✅ Trascrittore pronto: ', err_change: 'cambio fallito',
   m_tts: 'Voce di risposta', m_tts_sub: 'piper: naturale e locale — sistema: sempre disponibile',
+  m_mic: 'Microfono di input', m_mic_sub: 'dispositivo per i comandi vocali nel browser',
+  mic_auto: 'Automatico (predefinito)', mic_auto_short: 'Auto',
+  mic_saved: '✅ Microfono: ', mic_none: 'Nessun microfono: consenti l’accesso e ricarica',
   tts_piper: ' — Piper', tts_sys: 'Voce di sistema',
   sub_piper: 'voce neurale naturale, locale (~63 MB)', sub_sapi: 'SAPI / voce di sistema',
   msg_tts_dl: '⬇️ Scarico la voce naturale Piper (~85 MB, in background). Finché non è pronta risponde la voce di sistema.',
@@ -358,6 +362,9 @@ en: {
   msg_stt_dl: '⬇️ Downloading model ', msg_stt_dl2: ' (in background). Vosk is used until ready.',
   msg_stt_ok: '✅ Transcriber ready: ', err_change: 'switch failed',
   m_tts: 'Reply voice', m_tts_sub: 'piper: natural and local — system: always available',
+  m_mic: 'Input microphone', m_mic_sub: 'device for voice commands in the browser',
+  mic_auto: 'Automatic (default)', mic_auto_short: 'Auto',
+  mic_saved: '✅ Microphone: ', mic_none: 'No microphone: allow access and reload',
   tts_piper: ' — Piper', tts_sys: 'System voice',
   sub_piper: 'natural neural voice, local (~63 MB)', sub_sapi: 'SAPI / system voice',
   msg_tts_dl: '⬇️ Downloading the Piper natural voice (~85 MB, in background). The system voice replies until ready.',
@@ -421,6 +428,7 @@ function applyLang() {
   document.getElementById('modelbtn').title = t('tt_model');
   document.getElementById('sttbtn').title = t('tt_stt');
   document.getElementById('ttsbtn').title = t('tt_tts');
+  document.getElementById('micbtn').title = t('m_mic');
   document.getElementById('membtn').title = t('tt_mem');
   appsBtn.title = t('tt_apps');
   rb.title = t('tt_rout');
@@ -754,6 +762,70 @@ async function openTtsMenu() {
   } catch {}
 }
 document.getElementById('ttsbtn').onclick = openTtsMenu;
+// --- menu microfono di input: lista device del browser, scelta in localStorage ---
+// il primo getUserMedia sblocca le etichette dei device non ancora concessi
+const MIC_KEY = 'ugo_mic_id';
+let micLabel = '';
+function saveMicLabel(v) { try { localStorage.setItem('ugo_mic_label', v); } catch {} micLabel = v; }
+try { micLabel = localStorage.getItem('ugo_mic_label') || ''; } catch {}
+function micName() { return micLabel || t('mic_auto_short'); }
+document.getElementById('micname').textContent = micName();
+async function micDeviceList() {
+  // il primo getUserMedia sblocca le etichette dei device non ancora concessi;
+  // col timeout: se il permesso resta sospeso il menu si apre comunque
+  let stream = null;
+  try {
+    stream = await Promise.race([
+      navigator.mediaDevices.getUserMedia({audio: true}),
+      new Promise(r => setTimeout(() => r('timeout'), 3000))]);
+  } catch {}
+  let devs = [];
+  try { devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); } catch {}
+  if (stream && stream !== 'timeout') stream.getTracks().forEach(tr => tr.stop());
+  return devs;
+}
+function renderMicMenu(devs) {
+  const savedId = localStorage.getItem(MIC_KEY);
+  mlist.innerHTML = '';
+  if (!devs.length) {
+    const it = {title: t('mic_none'), subtitle: '', kind: 'appx'};
+    mlist.appendChild(row(it));
+    return;
+  }
+  const auto = {title: t('mic_auto'), subtitle: devs[0].label || '', kind: 'appx'};
+  const rowEl = row(auto);
+  rowEl.classList.add('click');
+  if (!savedId) { const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713'; rowEl.appendChild(c); }
+  rowEl.onclick = () => {
+    localStorage.removeItem(MIC_KEY); saveMicLabel('');
+    document.getElementById('micname').textContent = micName();
+    ovl.classList.remove('open');
+  };
+  mlist.appendChild(rowEl);
+  for (const d of devs) {
+    const it = {title: d.label || '🎙️', subtitle: '', kind: 'appx', _d: d};
+    const rEl = row(it);
+    rEl.classList.add('click');
+    if (savedId && d.deviceId === savedId) { const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713'; rEl.appendChild(c); }
+    rEl.onclick = () => {
+      if (!d.deviceId) return;  // senza permesso il device e' senza id: non selezionabile
+      localStorage.setItem(MIC_KEY, d.deviceId); saveMicLabel(d.label || '');
+      document.getElementById('micname').textContent = micName();
+      ovl.classList.remove('open');
+    };
+    mlist.appendChild(rEl);
+  }
+}
+async function openMicMenu() {
+  mtitle.textContent = t('m_mic');
+  mcount.textContent = t('m_mic_sub');
+  msearch.style.display = 'none';
+  renderMicMenu([]);
+  mlist.querySelector('.mitem b').textContent = '…';  // placeholder di caricamento
+  ovl.classList.add('open');
+  renderMicMenu(await micDeviceList());
+}
+document.getElementById('micbtn').onclick = openMicMenu;
 // l'etichetta della voce (Paola/Amy secondo la lingua) la gestisce refreshVoiceName()
 async function openApps() {
   try {
@@ -1091,7 +1163,9 @@ document.querySelectorAll('.sugg button').forEach(b => b.onclick = () => { textE
 let media, chunks = [], recording = false;
 micBtn.onclick = async () => {
   if (recording) { media.stop(); return; }
-  try { media = new MediaRecorder(await navigator.mediaDevices.getUserMedia({audio:true})); }
+  const savedMic = localStorage.getItem(MIC_KEY);
+  const audioC = savedMic ? {deviceId: {exact: savedMic}} : true;
+  try { media = new MediaRecorder(await navigator.mediaDevices.getUserMedia({audio: audioC})); }
   catch { setStatus('Permesso microfono negato'); return; }
   chunks = []; recording = true; micBtn.classList.add('rec'); setStatus('🔴 Sto ascoltando… clicca di nuovo per inviare');
   media.ondataavailable = e => chunks.push(e.data);

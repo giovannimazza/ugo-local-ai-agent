@@ -1499,8 +1499,26 @@ def _set_model(name):
     threading.Thread(target=run, daemon=True).start()
 
 
+def _mic_pref_key() -> str:
+    """Chiave preferenze per l'attuale strumento di acquisizione del widget:
+    'passive' (wake word) o 'manual' (registrazione dal cerchio)."""
+    return "mic_passive" if _passive["on"] else "mic_manual"
+
+
+def _apply_mic_choice(name: str) -> None:
+    """Salva la scelta microfono nel file preferenze e applica il cambio a
+    caldo: il loop passivo si riavvia sul nuovo input (quando termina)."""
+    _save_prefs(**{_mic_pref_key(): name})
+    if _passive["on"]:
+        _passive["on"] = False          # il thread esce entro ~0.1 s
+        # il ritardo evita la corsa col finally del vecchio loop, che rimette
+        # _passive["on"] = False mentre il nuovo ciclo sta gia' partendo
+        ui(lambda: root.after(500, _ensure_passive))
+    bubble.show(W("mic_saved", m=name))
+
+
 def show_stt_popup():
-    """Menu impostazioni: info trascrittore + scelta del modello AI."""
+    """Menu impostazioni: info trascrittore, microfono, voce, modello AI."""
     on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
 
     def work():
@@ -1517,6 +1535,11 @@ def show_stt_popup():
             current, available = mod.get("active", ""), mod.get("available", [])
         except Exception:
             current, available = "", []
+        try:  # micro disponibili (il menu resta usabile anche senza soundcard)
+            mics = [m.name for m in sc.all_microphones()]
+        except Exception:
+            mics = []
+        cur = prefs.get(_mic_pref_key())  # None = scelta automatica (probe)
 
         def build():
             m = tk.Menu(root, tearoff=0, font=FONT_UI, bg=CARD, fg=TXT,
@@ -1527,6 +1550,22 @@ def show_stt_popup():
                           command=toggle_mute)
             m.add_command(label=("🎙️ " + (W("listen_off") if not listen_disabled["on"] else W("listen_on"))),
                           command=toggle_listen)
+            m.add_separator()
+            if mics:
+                m.add_command(label=W("micro") + ":", state="disabled")
+                if cur:
+                    m.add_command(label="     " + W("mic_auto"),
+                                  command=_mic_reset_choice)  # torna al probe
+                else:
+                    m.add_command(label="  ✓ " + W("mic_auto"), state="disabled")
+                for name in mics:
+                    if name == cur:
+                        m.add_command(label=f"  ✓ {name}", state="disabled")
+                    else:
+                        m.add_command(label=f"     {name}",
+                                      command=lambda n=name: _apply_mic_choice(n))
+            else:
+                m.add_command(label=W("mic_none"), state="disabled")
             m.add_separator()
             m.add_command(label=W("model") + " AI:", state="disabled")
             for name in available:
@@ -1614,6 +1653,8 @@ _WSTR = {
         "listen_off": "Ascolto passivo disattivato.",
         "listen_on": "Ascolto passivo attivo: dimmi 'Ugo'.",
         "ai_model": "Modello AI: {m}", "ai_model_err": "Errore modello: {e}",
+        "micro": "Microfono", "mic_auto": "Automatico (sceglie Ugo)",
+        "mic_saved": "Microfono: {m}", "mic_none": "Nessun microfono trovato.",
         "vosk_missing": "Modello Vosk mancante: ascolto passivo non disponibile.",
         "stt": "Trascrittore", "model": "Modello", "device": "Dispositivo",
         "stt_unavail": "Trascrittore non disponibile ({e})",
@@ -1638,6 +1679,8 @@ _WSTR = {
         "listen_off": "Passive listening off.",
         "listen_on": "Passive listening on: say 'Ugo'.",
         "ai_model": "AI model: {m}", "ai_model_err": "Model error: {e}",
+        "micro": "Microphone", "mic_auto": "Automatic (Ugo picks)",
+        "mic_saved": "Microphone: {m}", "mic_none": "No microphone found.",
         "vosk_missing": "Vosk model missing: passive listening unavailable.",
         "stt": "Transcriber", "model": "Model", "device": "Device",
         "stt_unavail": "Transcriber unavailable ({e})",
@@ -1748,20 +1791,25 @@ root.bind("<FocusOut>", _on_focus_out)
 rec_flag = threading.Event()
 
 
-def _pick_mic():
-    """Sceglie un microfono che sente davvero.
+def _pick_mic(for_passive: bool = False) -> "sc.Microphone":
+    """Sceglie il microfono per lo strumento richiesto.
 
     `sc.default_microphone()` segue il dispositivo predefinito di Windows, che
     puo' essere un input di linea silenzioso (es. interfaccia audio senza
-    nulla collegato). Sonda il rumore di fondo di ogni input e vince il piu'
-    vivo; la scelta resta salvata nelle preferenze, cosi' il sondaggio avviene
-    una volta sola. Fallback: il microfono predefinito.
+    nulla collegato). Prima vale la scelta manuale dal menu impostazioni
+    (prefs['mic_passive'] per l'ascolto passivo, prefs['mic_manual'] per la
+    registrazione dal cerchio; prefs['mic'] e' il legacy pre-menu, vale per
+    entrambi); se il nome salvato non esiste piu' (es. micro scollegato) si
+    riparte dal probe. Fallback: il microfono predefinito.
     """
-    saved = prefs.get("mic")
+    saved = prefs.get("mic_passive" if for_passive else "mic_manual") or prefs.get("mic")
     if saved:
         for m in sc.all_microphones():
             if m.name == saved:
                 return m
+    # probe automatico: vince l'input piu' vivo; sotto la soglia e' un input
+    # morto (collegato ma muto). Il risultato si ricorda solo se non esiste
+    # gia' una scelta esplicita (del menu o legacy): non sovrascriverla.
     try:
         best, best_rms = None, 0.0
         for m in sc.all_microphones():
@@ -1776,7 +1824,8 @@ def _pick_mic():
             if peak > best_rms:
                 best, best_rms = m, peak
         if best is not None and best_rms > 0.002:  # sotto: input morto/silenzioso
-            _save_prefs(mic=best.name)
+            if not saved:
+                _save_prefs(mic=best.name)
             return best
     except Exception:
         pass
@@ -1951,7 +2000,7 @@ def _passive_loop():
             ui(lambda: bubble.show(W("vosk_missing")))
             return
         model = VoskModel(str(vosk_dir))
-        mic_dev = _pick_mic()
+        mic_dev = _pick_mic(for_passive=True)
         _plog(f"avvio: mic={getattr(mic_dev, 'name', '?')} modello={vosk_dir.name}")
         _ensure_mic_volume(mic_dev)
 
