@@ -286,6 +286,27 @@ def install_sync() -> bool:
             return False
 
 
+def synthesize_part(text: str, out_wav: Path, lang: str | None = None) -> bool:
+    """Sintesi SENZA silenzio di coda, per la PRIMA frase di una risposta:
+    parte ~0.2-0.4 s prima rispetto a synthesize() (che aggiunge 0.25 s di
+    pausa per staccare le frasi quando parla tutto in un blocco)."""
+    lang = lang or current_lang()
+    if get_engine() != "piper" or not piper_exe().exists():
+        return False
+    onnx, _js = _voice_paths(lang)
+    if not (onnx.exists() and _js.exists()):
+        return False
+    cmd = [str(piper_exe()), "-m", str(onnx), "-f", str(out_wav),
+           "--sentence_silence", "0"]
+    try:
+        r = subprocess.run(cmd, input=text.encode("utf-8"),
+                           capture_output=True, timeout=120, **_NOWIN)
+        return bool(r.returncode == 0 and out_wav.exists()
+                    and out_wav.stat().st_size > 1000)
+    except Exception:
+        return False
+
+
 def synthesize(text: str, out_wav: Path, lang: str | None = None) -> bool:
     """Sintetizza text su out_wav (16-bit WAV) con la voce della lingua attiva
     (o quella richiesta). False se Piper non e' utilizzabile per quella lingua:

@@ -190,6 +190,24 @@ def ensure_server() -> None:
             return
 
 
+def _server_watchdog():
+    """Il server gira in un processo separato: se muore (es. il crash nativo
+    di _ctypes/pycaw visto su Python 3.14) lo riavviamo in automatico con un
+    log dell'evento, invece di lasciare il widget muto finche' qualcuno se
+    ne accorge. Costo: un check HTTP ogni 20 s."""
+    while True:
+        time.sleep(20)
+        if server_up():
+            continue
+        _plog("WATCHDOG: server giu', riavvio in corso...")
+        try:
+            ensure_server()
+            _plog("WATCHDOG: riavvio "
+                  + ("OK" if server_up() else "eseguito ma il server non risponde"))
+        except Exception as exc:
+            _plog(f"WATCHDOG: riavvio fallito: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Rendering con Pillow
 # ---------------------------------------------------------------------------
@@ -1798,9 +1816,12 @@ def _post_json(path, payload):
         return json.loads(r.read().decode())
 
 
-def _post_wav(wav: bytes, wake: int = 0):
+def _post_wav(wav: bytes, wake: int = 0, pre_text: str = ""):
+    hd = {"Content-Type": "audio/wav"}
+    if pre_text:
+        hd["X-Ugo-Text"] = pre_text  # STT speculativo: alimenta la fastlane
     req = urllib.request.Request(ROOT_URL + f"/api/listen_wav?wake={wake}", data=wav,
-                                 headers={"Content-Type": "audio/wav"})
+                                 headers=hd)
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.loads(r.read().decode())
 
@@ -2242,7 +2263,7 @@ def _plog(msg: str) -> None:
     diversi, a ogni avvio del widget scriviamo un separatore datato+PID."""
     try:
         with _PLOG.open("a", encoding="utf-8") as f:
-            f.write(time.strftime("[%H:%M:%S] ") + msg + "\n")
+            f.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + msg + "\n")
     except Exception:
         pass
 
@@ -2284,6 +2305,26 @@ def _pcm16_of(chunk) -> bytes:
     return (np.clip(chunk[:, 0], -1, 1) * 32767).astype("<i2").tobytes()
 
 
+_spec = {"model": None}   # modello Vosk per la trascrizione speculativa (1 sola load)
+
+
+def _spec_text(pcm: bytes) -> str:
+    """Trascrizione Vosk del buffer gia' catturato (speculativa, locale):
+    mai bloccare l'invio se qualcosa va storto -> ritorna '' al peggio."""
+    try:
+        from vosk import KaldiRecognizer, Model as _VModel
+        if _spec["model"] is None:
+            vd = Path.home() / ".cache" / "vosk" / "vosk-model-small-it-0.22"
+            if not vd.is_dir():
+                return ""
+            _spec["model"] = _VModel(str(vd))
+        r = KaldiRecognizer(_spec["model"], SR)
+        r.AcceptWaveform(pcm)
+        return json.loads(r.FinalResult()).get("text", "").strip()
+    except Exception:
+        return ""
+
+
 def _passive_send_wav(pcm: bytes):
     """Invia l'audio del comando catturato al server e mostra la risposta."""
     buf = io.BytesIO()
@@ -2292,8 +2333,13 @@ def _passive_send_wav(pcm: bytes):
         w.setsampwidth(2)
         w.setframerate(SR)
         w.writeframes(pcm)
+    # STT speculativo: Vosk ha GIA' sentito il comando durante la grazia ->
+    # la sua trascrizione viaggia nell'header e alimenta la fastlane del
+    # server (volume/ora/data/file) senza aspettare nulla. Whisper sul
+    # server resta comunque la trascrizione ufficiale (wake-guard + qualita').
+    pre = _spec_text(pcm)
     try:
-        res = _post_wav(buf.getvalue(), wake=1)   # il server verifica 'Ugo' con Whisper
+        res = _post_wav(buf.getvalue(), wake=1, pre_text=pre)   # il server verifica 'Ugo' con Whisper
         if res.get("silent"):
             # wake-guard: il server non ha sentito la wake word nella frase ->
             # falso positivo del rilevatore economico: taccio tutto e svanisco
@@ -2654,7 +2700,7 @@ def _wlog(msg: str) -> None:
         if _WLOG.exists() and _WLOG.stat().st_size > 1_000_000:
             _WLOG.unlink()
         with _WLOG.open("a", encoding="utf-8") as f:
-            f.write(time.strftime("[%H:%M:%S] ") + msg + "\n")
+            f.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + msg + "\n")
     except Exception:
         pass
 
@@ -2688,4 +2734,5 @@ def _boot():
 
 root.after(30, _pump_ui)
 root.after(200, lambda: threading.Thread(target=_boot, daemon=True).start())
+threading.Thread(target=_server_watchdog, daemon=True).start()
 root.mainloop()

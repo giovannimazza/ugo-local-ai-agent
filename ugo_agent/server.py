@@ -45,12 +45,14 @@ try:  # pacchetto (pip install / -m) O script diretto (python ugo_agent/server.p
     from . import platform_utils as pu
     from . import piper_tts
     from . import multicommand
+    from . import audio_worker
 except ImportError:
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from ugo_agent import platform_utils as pu
     from ugo_agent import piper_tts
     from ugo_agent import multicommand
+    from ugo_agent import audio_worker
 
 import laya
 import pyttsx3
@@ -240,7 +242,7 @@ def _reqlog(msg: str) -> None:
             if _REQLOG.exists() and _REQLOG.stat().st_size > 1_000_000:
                 _REQLOG.replace(_REQLOG.with_suffix(".txt.1"))
             with _REQLOG.open("a", encoding="utf-8") as f:
-                f.write(time.strftime("[%H:%M:%S] ") + msg + "\n")
+                f.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + msg + "\n")
     except Exception:
         pass  # il logging non deve mai rompere la pipeline
 
@@ -350,11 +352,29 @@ def _pick_voice(engine) -> None:
                 return
 
 
-def speak(text: str) -> str:
-    """Riproduce la risposta a voce e ritorna il path del file wav generato."""
+def speak(text: str, two_part: bool = False) -> str:
+    """Riproduce la risposta a voce e ritorna il path del file wav generato.
+    two_part=True: la PRIMA frase parte subito (Piper senza silenzio di coda),
+    il resto viene sintetizzato in parallelo su _tts_reply2.wav che widget e
+    web riproducono a catena: su risposte lunghe la voce parte ~0.5-1 s prima."""
     out = BASE / "_tts_reply.wav"
+    out2 = BASE / "_tts_reply2.wav"
     t0 = time.time()
     with _tts_lock:
+        out2.unlink(missing_ok=True)   # niente audio stantio della risposta prima
+        if two_part and piper_tts.get_engine() == "piper" and ". " in text:
+            first, rest = text.split(". ", 1)
+            first += "."
+            try:
+                if piper_tts.synthesize_part(first, out):
+                    _track("tts_piper", time.time() - t0)
+                    # il resto VA in parallelo, senza il lock (file diverso):
+                    # non ritarda la prima frase della prossima risposta
+                    threading.Thread(target=piper_tts.synthesize,
+                                     args=(rest, out2), daemon=True).start()
+                    return str(out)          # la prima frase e' gia' pronta
+            except Exception as exc:
+                print(f"[piper] two-part inatteso ({exc}); sintesi unica")
         try:
             if piper_tts.synthesize(text, out):
                 _track("tts_piper", time.time() - t0)
@@ -1401,9 +1421,8 @@ def _parse_volume(t: str):
 
 
 def _endpoint_volume():
-    """Puntatore IAudioEndpointVolume, compatibile con tutte le versioni di pycaw:
-    le recenti espongono dev.EndpointVolume gia' attivato, le vecchie richiedono
-    dev.Activate(...)."""
+    """Puntatore IAudioEndpointVolume (solo se il worker subprocess NON e'
+    disponibile, es. pycaw installato ma python -m fallito)."""
     import comtypes
     from ctypes import cast, POINTER
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -1420,7 +1439,13 @@ def _endpoint_volume():
 # (l'icona "Mixer volume" di Windows), NON il volume master del sistema.
 # ---------------------------------------------------------------------------
 def _audio_sessions() -> list:
-    """Sessioni audio attive: [(processo_minuscolo, volume, sessione), ...]"""
+    """Sessioni audio attive: [(processo_minuscolo, volume, sessione), ...]
+    VIA WORKER SUBPROCESS: pycaw/COM in un processo separato, cosi' un crash
+    nativo di _ctypes (visto su Python 3.14) non uccide piu' il server.
+    Formato compatibile col vecchio in-process: [(nome, SimpleAudioVolume-proxy, None)]"""
+    s = audio_worker.worker_sessions()
+    if s is not None:
+        return [(x["name"], _VolProxy(x["name"], x["volume"]), None) for x in s]
     if not pu.IS_WINDOWS:
         return []
     try:
@@ -1512,6 +1537,30 @@ def _resolve_audio_process(name: str) -> str | None:
     # 2) fuzzy
     m = get_close_matches(n, procs, n=1, cutoff=0.6)
     return m[0] if m else None
+
+
+class _VolProxy:
+    """Sostituto di SimpleAudioVolume prodotto dal worker subprocess: espone
+    GetMasterVolume/SetMasterVolume come l'originale, ma ogni operazione va in
+    un processo separato (isola i crash COM)."""
+
+    def __init__(self, name: str, pct: int):
+        self._name = name
+        self._pct = pct  # ultimo valore noto: fallback se il worker non risponde
+
+    def GetMasterVolume(self) -> float:
+        r = audio_worker.worker_app_get(self._name)
+        if r:
+            self._pct = r["volume"]
+        return self._pct / 100.0
+
+    def SetMasterVolume(self, v: float, _ctx=None) -> None:
+        p = int(round(max(0.0, min(1.0, v)) * 100))
+        r = audio_worker.worker_app_set(self._name, p)
+        if r:
+            self._pct = r["volume"]
+        else:
+            self._pct = p  # ottimistico: il chiamante riverifica col Get
 
 
 def _set_app_volume(app_name: str, mode: str, level: int) -> str:
@@ -2011,6 +2060,12 @@ def run_command(text: str, intent: str) -> str:
     if intent == "volume":
         # muto: toggle istantaneo (prima di qualsiasi altra interpretazione)
         if "muto" in t or "mute" in t:
+            w = audio_worker.worker_master_get()
+            if w:  # VIA WORKER: COM isolato in subprocess
+                new_mute = not bool(w["mute"])
+                r = audio_worker.worker_master_mute(new_mute)
+                if r:
+                    return "Audio escluso." if r["mute"] else "Audio riattivato."
             try:
                 vol = _endpoint_volume()
                 new_mute = not bool(vol.GetMute())
@@ -2027,18 +2082,28 @@ def run_command(text: str, intent: str) -> str:
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return "Comando muto inviato."
         level, mode = _parse_volume(t)
-        try:
+        if level is None:               # 'alza/abbassa il volume' -> +-10
+            level = 10
+            mode = "up" if ("alza" in t or "aumenta" in t) else "down"
+        # VIA WORKER: pycaw/COM isolati in subprocess (crash-proof)
+        w = audio_worker.worker_master_get()
+        if w:
+            cur = w["volume"]
+            new = (level if mode == "abs"
+                   else min(100, cur + level) if mode == "up"
+                   else max(0, cur - level))
+            r = audio_worker.worker_master_set(new)
+            if r:
+                got = r["volume"]
+                if abs(got - new) <= 2:
+                    return f"Volume portato al {got} per cento."
+                return f"Non sono riuscito a portare il volume al {new} per cento."
+        try:  # fallback in-process (worker non disponibile: pycaw assente ecc.)
             vol = _endpoint_volume()
             cur = int(round(vol.GetMasterVolumeLevelScalar() * 100))
-            if level is None:               # 'alza/abbassa il volume' -> +-10
-                level = 10
-                mode = "up" if ("alza" in t or "aumenta" in t) else "down"
-            if mode == "abs":
-                new = level
-            elif mode == "up":
-                new = min(100, cur + level)
-            else:
-                new = max(0, cur - level)
+            new = (level if mode == "abs"
+                   else min(100, cur + level) if mode == "up"
+                   else max(0, cur - level))
             vol.SetMasterVolumeLevelScalar(new / 100.0, None)
             got = int(round(vol.GetMasterVolumeLevelScalar() * 100))  # verifica reale
             if abs(got - new) > 2:
@@ -2582,13 +2647,23 @@ async def api_listen(audio: UploadFile):
 @app.post("/api/listen_wav")
 async def api_listen_wav(request: Request, wake: int = 0):
     """Riceve un WAV PCM (widget desktop), lo trascrive ed esegue.
+    Alternativa: header 'X-Ugo-Text' con il testo Vosk GIA' trascritto dal
+    widget (STT speculativo durante la grazia): la fastlane (volume, ora,
+    data, file) parte senza aspettare nulla, e il server salta il Vosk.
     Con wake=1 (ascolto passivo) PRIMA verifica con Whisper che nella frase
     ci sia davvero la wake word: i falsipositivi del rilevatore economico
     (Vosk/OWW sul rumore, TV, conversazioni) non eseguono piu' comandi."""
     data = await request.body()
     _t0 = time.time()
     try:
-        res = _handle_pcm(_wav_to_pcm16k(data), require_wake=bool(wake))
+        pre = (request.headers.get("x-ugo-text") or "").strip()
+        pcm = _wav_to_pcm16k(data)
+        if pre:
+            # testo speculativo del widget: il server lo VERIFICA con Whisper
+            # (wake-guard e qualita') ma non lo ritrascribe da zero
+            res = _handle_pcm(pcm, require_wake=bool(wake), pre_text=pre)
+        else:
+            res = _handle_pcm(pcm, require_wake=bool(wake))
         _reqlog(f"HTTP  /api/listen_wav wake={wake}  {len(data)} B  "
                 f"{time.time() - _t0:.2f}s  -> {(res.get('assistant') or res.get('error') or '?')!r}")
         return res
@@ -2776,7 +2851,7 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
-def _handle_pcm(pcm: bytes, require_wake: bool = False):
+def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
     if not pcm:
         return JSONResponse({"error": "audio vuoto"}, status_code=400)
     # Normalizzazione server-side: il browser comprime in Opus e molti micro
@@ -2795,7 +2870,7 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False):
     # (con verifica attiva la corsia vale solo se la wake e' visibile nel testo)
     _tcmd = time.time()
     try:
-        vtxt = _vosk_transcribe(pcm)
+        vtxt = pre_text or _vosk_transcribe(pcm)
         _f0 = time.time()
         fast = _fast_command(vtxt) if (not require_wake or _text_has_wake(vtxt)) else None
         _track("fastlane", time.time() - _f0)
@@ -2805,7 +2880,10 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False):
             return fast
     except Exception as exc:
         print(f"[fastlane] scartata ({exc}); passo alla pipeline completa")
-        vtxt = ""
+        if not pre_text:
+            vtxt = ""
+    # Whisper resta SEMPRE la trascrizione ufficiale: serve al wake-guard e
+    # alla qualita'; il pre_text ha gia' fatto il suo lavoro in fastlane.
     text = transcribe(pcm)
     if require_wake and not _text_has_wake(text or ""):
         # se c'e' una domanda in attesa (menu scelta o conferma sì/no) la
@@ -3289,5 +3367,16 @@ if __name__ == "__main__":
 
     print(f"Assistente vocale locale su http://127.0.0.1:{PORT}")
     get_stt()  # pre-carica Vosk
+    if whisper_available():
+        # pre-carica anche Whisper: senza, il PRIMO comando vocale pagava
+        # 2-6 s di caricamento modello oltre alla trascrizione
+        def _warm():
+            try:
+                t0 = time.time()
+                _whisper_transcribe(b"\x00\x00" * 1600)  # 0.1 s di silenzio
+                print(f"[whisper] pronto in {time.time() - t0:.1f}s")
+            except Exception as exc:
+                print(f"[whisper] warm-up saltato: {exc}")
+        threading.Thread(target=_warm, daemon=True).start()
     webbrowser.open(f"http://127.0.0.1:{PORT}")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

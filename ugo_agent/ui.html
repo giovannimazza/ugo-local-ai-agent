@@ -1297,7 +1297,22 @@ micBtn.onclick = async () => {
   media.start();
 };
 
-async function playReply() { try { new Audio('/_tts_reply.wav?t=' + Date.now()).play(); } catch {} }
+async function playReply() {
+  // parte 1 della risposta, poi (se esiste) la parte 2 a catena:
+  // il server sintetizza il resto MENTRE la prima frase e' gia' in riproduzione
+  try {
+    const a = new Audio('/_tts_reply.wav?t=' + Date.now());
+    a.play();
+    a.onended = () => {
+      fetch('/_tts_reply2.wav').then(r => r.ok ? r.blob() : null).then(b => {
+        if (b && b.size > 1000) {
+          const a2 = new Audio(URL.createObjectURL(b));
+          a2.play().catch(() => {});
+        }
+      }).catch(() => {});
+    };
+  } catch {}
+}
 
 // etichetta del modello attivo sul pulsante delle impostazioni
 (async () => { try { const r = await fetch('/api/model'); const d = await r.json();

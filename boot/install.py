@@ -63,26 +63,49 @@ def is_admin() -> bool:
 
 # ---------------------------------------------------------------- Python ----
 def py_exe() -> str:
-    """Il miglior Python >= 3.10 gia' presente, altrimenti lo installa."""
-    candidates = []
-    for base in (os.environ.get("LOCALAPPDATA", ""), os.environ.get("Program Files", ""),
-                 os.environ.get("LOCALAPPDATA", "")):
-        if base:
-            candidates += [str(p) for p in Path(base).glob("Python3*/python.exe")]
-            candidates += [str(p) for p in Path(base).glob("Programs/Python/Python3*/python.exe")]
-    for c in ("python", "python3", "py"):
-        found = shutil_which(c)
-        if found:
-            candidates.insert(0, found if found.endswith(".exe") else c)
-    for exe in candidates:
+    """Il miglior Python >= 3.10 gia' presente, altrimenti lo installa.
+    SI PREFERISCE IL 3.12: su 3.14 pycaw/comtypes hanno un crash nativo noto
+    (_ctypes 0xc0000005) che puo' colpire il server; il worker audio lo isola,
+    ma il 3.12 resta la scelta stabile."""
+    def _version(exe: str) -> tuple | None:
         try:
             v = subprocess.run([exe, "-c", "import sys;print(sys.version_info[:2])"],
                                capture_output=True, text=True, timeout=20).stdout.strip()
-            if v.startswith("(") and eval(v) >= PY_MIN:
-                ok(f"Python {eval(v)} trovato: {exe}")
-                return exe
+            return eval(v) if v.startswith("(") else None
         except Exception:
+            return None
+
+    found = []
+    for base in (os.environ.get("LOCALAPPDATA", ""), os.environ.get("Program Files", "")):
+        if base:
+            found += [str(p) for p in Path(base).glob("Python3*/python.exe")]
+            found += [str(p) for p in Path(base).glob("Programs/Python/Python3*/python.exe")]
+    for c in ("python", "python3", "py"):
+        f = shutil_which(c)
+        if f:
+            found.insert(0, f if f.endswith(".exe") else c)
+
+    def _pref(v: tuple) -> int:
+        if v[:2] == (3, 12):
+            return 0                      # scelta consigliata
+        if (3, 10) <= v[:2] <= (3, 11):
+            return 1
+        return 2                          # 3.13+: crash COM noto, mitigato dal worker
+
+    seen, best = set(), None
+    for exe in found:
+        v = _version(exe)
+        if not v or v < PY_MIN:
             continue
+        key = exe.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if best is None or _pref(v) < _pref(best[1]):
+            best = (exe, v)
+    if best:
+        ok(f"Python {best[1][0]}.{best[1][1]} trovato: {best[0]}")
+        return best[0]
     return install_python()
 
 
