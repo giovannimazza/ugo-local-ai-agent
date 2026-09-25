@@ -1517,6 +1517,123 @@ def _apply_mic_choice(name: str) -> None:
     bubble.show(W("mic_saved", m=name))
 
 
+# --- popup impostazioni: card custom (il tk.Menu nativo e' piatto e spaiato col widget) ---
+_menu_card = {"win": None}
+
+
+def _menu_card_close(_e=None):
+    w = _menu_card["win"]
+    if w is not None:
+        try:
+            w.destroy()
+        except Exception:
+            pass
+        _menu_card["win"] = None
+
+
+def _fit_text(fnt, text: str, px: int) -> str:
+    """Tronca con '…' il testo che sfora la larghezza della card."""
+    if fnt.measure(text) <= px:
+        return text
+    while text and fnt.measure(text + "…") > px:
+        text = text[:-1]
+    return text + "…"
+
+
+def _show_menu_card(sections, right_x: int, top_y: int, anchor_right: bool = True):
+    """Popup impostazioni come card disegnata: fondo arrotondato (la stessa
+    pillola della bolla), righe con icona e hover, spunta a destra, separatori.
+    sections = lista di sezioni; ogni sezione = lista di item
+    {icon, text, enabled, mark, cmd} oppure {'sep': True}."""
+    _menu_card_close()
+    ROW_H, SEP_H, SEC_GAP, PADX, PADY = 28, 11, 9, 14, 12
+    ICON_W, MARK_W, MIN_W, MAX_W = 24, 26, 252, 340
+    HOVER = "#262b45"
+    win = tk.Toplevel(root)
+    _menu_card["win"] = win
+    win.overrideredirect(True)
+    win.attributes("-topmost", True)
+    if pu.IS_WINDOWS:
+        win.attributes("-transparentcolor", TRANSPARENT)
+    else:
+        win.attributes("-alpha", 0.95)
+    win.configure(bg=TRANSPARENT)
+    cv = tk.Canvas(win, bg=TRANSPARENT, highlightthickness=0, bd=0)
+    cv.pack()
+
+    fnt = tkfont.Font(root=root, font=FONT_UI)
+    rows, row_of, y, tw = [], {}, PADY, MIN_W
+    for sec in sections:
+        for it in sec:
+            if it.get("sep"):
+                continue
+            need = fnt.measure(it.get("text", "")) + ICON_W + MARK_W + 16 + PADX * 2
+            tw = max(tw, min(MAX_W, need))
+        for it in sec:
+            rows.append((it, y))
+            y += SEP_H if it.get("sep") else ROW_H
+        y += SEC_GAP
+    W, H = tw, y - SEC_GAP + PADY
+    avail = W - PADX * 2 - ICON_W - MARK_W
+
+    bg = ImageTk.PhotoImage(_key(_rounded_panel(W, H, 16, CARD, PILL_EDGE)))
+    win._bg = bg                       # riflesso GC: senza ref l'immagine sparisce
+    cv.configure(width=W, height=H)
+    cv.create_image(0, 0, image=bg, anchor="nw")
+
+    def _hover(tag, on):
+        cv.itemconfigure(tag, fill=HOVER if on else "")
+        cv.config(cursor="hand2" if on else "arrow")
+
+    def _click(tag):
+        it = row_of[tag]
+        if not it.get("enabled") or not it.get("cmd"):
+            return
+        _menu_card_close()
+        root.after(30, it["cmd"])
+
+    for it, ry in rows:
+        cy = ry + (ROW_H - 2) / 2
+        if it.get("sep"):
+            cv.create_line(PADX, cy, W - PADX, cy, fill=PILL_EDGE)
+            continue
+        tag = f"r{ry}"          # un tag per riga: hover e click su TUTTA la riga
+        row_of[tag] = it
+        cv.create_rectangle(PADX - 6, ry, W - PADX + 6, ry + ROW_H - 4,
+                            fill="", outline="", tags=tag)
+        icon = it.get("icon", "")
+        if icon:
+            cv.create_text(PADX + 2, cy, text=icon, anchor="w",
+                           fill=ACCENT if it.get("mark") else MUT, font=FONT_UI,
+                           tags=tag)
+        cv.create_text(PADX + ICON_W, cy, text=_fit_text(fnt, it.get("text", ""), avail),
+                       anchor="w", fill=TXT if it.get("enabled") else MUT, font=FONT_UI,
+                       tags=tag)
+        if it.get("mark"):
+            cv.create_text(W - PADX - MARK_W // 2, cy, text="✓", fill=ACCENT,
+                           font=FONT_UI, tags=tag)
+        if it.get("enabled"):
+            cv.tag_bind(tag, "<Enter>", lambda e, tg=tag: _hover(tg, True))
+            cv.tag_bind(tag, "<Leave>", lambda e, tg=tag: _hover(tg, False))
+            cv.tag_bind(tag, "<Button-1>", lambda e, tg=tag: _click(tg))
+
+    def _arm():
+        try:
+            win.focus_force()
+        except Exception:
+            pass
+        win.bind("<Escape>", _menu_card_close)
+        win.bind("<FocusOut>", _menu_card_close)
+
+    # il ritardo evita che il focus_force uccida il click che ha aperto il menu
+    win.after(120, _arm)
+    sx, sy = win.winfo_screenwidth(), win.winfo_screenheight()
+    px = (right_x - W) if anchor_right else right_x
+    px = min(max(8, px), sx - W - 8)
+    py = min(max(8, top_y), sy - H - 8)
+    win.wm_geometry(f"+{px}+{py}")
+
+
 def show_stt_popup():
     """Menu impostazioni: info trascrittore, microfono, voce, modello AI."""
     on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
@@ -1541,38 +1658,46 @@ def show_stt_popup():
             mics = []
         cur = prefs.get(_mic_pref_key())  # None = scelta automatica (probe)
 
+        def _toggle_and_refresh(fn):
+            fn()
+            root.after(350, show_stt_popup)   # la card si ridisegna col nuovo stato
+
         def build():
-            m = tk.Menu(root, tearoff=0, font=FONT_UI, bg=CARD, fg=TXT,
-                        activebackground=ACCENT, activeforeground="#ffffff")
-            m.add_command(label="🎙️ " + stt_text, state="disabled")
-            m.add_separator()
-            m.add_command(label=("🔊 " + (W("voice_on") if tts_muted["on"] else W("voice_off"))),
-                          command=toggle_mute)
-            m.add_command(label=("🎙️ " + (W("listen_off") if not listen_disabled["on"] else W("listen_on"))),
-                          command=toggle_listen)
-            m.add_separator()
+            mic_items = [{"icon": "🎙️", "text": W("micro"), "enabled": False}]
             if mics:
-                m.add_command(label=W("micro") + ":", state="disabled")
                 if cur:
-                    m.add_command(label="     " + W("mic_auto"),
-                                  command=_mic_reset_choice)  # torna al probe
+                    mic_items.append({"text": W("mic_auto"), "enabled": True,
+                                      "cmd": _mic_reset_choice})
                 else:
-                    m.add_command(label="  ✓ " + W("mic_auto"), state="disabled")
+                    mic_items.append({"text": W("mic_auto"), "enabled": False,
+                                      "mark": True})
                 for name in mics:
                     if name == cur:
-                        m.add_command(label=f"  ✓ {name}", state="disabled")
+                        mic_items.append({"text": name, "enabled": False, "mark": True})
                     else:
-                        m.add_command(label=f"     {name}",
-                                      command=lambda n=name: _apply_mic_choice(n))
+                        mic_items.append({"text": name, "enabled": True,
+                                          "cmd": lambda n=name: _apply_mic_choice(n)})
             else:
-                m.add_command(label=W("mic_none"), state="disabled")
-            m.add_separator()
-            m.add_command(label=W("model") + " AI:", state="disabled")
+                mic_items.append({"text": W("mic_none"), "enabled": False})
+            model_items = [{"icon": "✨", "text": W("model") + " AI", "enabled": False}]
             for name in available:
-                mark = "  ✓ " if name == current else "     "
-                m.add_command(label=f"{mark}{name.replace('qwen2.5:', 'Qwen ')}",
-                              command=lambda n=name: _set_model(n))
-            m.tk_popup(root.winfo_x() + PANEL_W - 160, root.winfo_y() + 38)
+                label = name.replace("qwen2.5:", "Qwen ")
+                if name == current:
+                    model_items.append({"text": label, "enabled": False, "mark": True})
+                else:
+                    model_items.append({"text": label, "enabled": True,
+                                        "cmd": lambda n=name: _set_model(n)})
+            _show_menu_card(
+                [[{"icon": "🎤", "text": stt_text, "enabled": False}],
+                 [{"icon": "🔇" if tts_muted["on"] else "🔊",
+                   "text": W("voice_on") if tts_muted["on"] else W("voice_off"),
+                   "enabled": True, "cmd": lambda: _toggle_and_refresh(toggle_mute)},
+                  {"icon": "🚫" if listen_disabled["on"] else "🎙️",
+                   "text": W("listen_off") if not listen_disabled["on"] else W("listen_on"),
+                   "enabled": True, "cmd": lambda: _toggle_and_refresh(toggle_listen)}],
+                 mic_items,
+                 model_items],
+                root.winfo_x() + PANEL_W - 8, root.winfo_y() + 34)
         ui(build)
     threading.Thread(target=work, daemon=True).start()
 
