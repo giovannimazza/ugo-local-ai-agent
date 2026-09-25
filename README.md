@@ -200,25 +200,30 @@ and the Vosk fallback, then starts the server and the widget.
 
 ### Windows
 
-**With winget** (Windows Package Manager, included in Windows 10/11):
+**With winget** (Windows Package Manager, included in Windows 10/11). The
+`Ugo.Agent` package is not yet in the winget community catalog, so today you
+install it from the **manifest bundle attached to every release** (no admin
+needed, one settings toggle the first time):
 
 ```bat
-winget install Ugo.Agent
+:: 1. download ugo-<version>-winget-manifests.zip from
+::    https://github.com/giovannimazza/ugo-local-ai-agent/releases/latest
+::    and extract the three .yaml files into a folder (winget downloads
+::    the installer itself from the release assets and verifies its SHA256)
+:: 2. allow local manifests (once) and install:
+winget settings --enable LocalManifestFiles
+winget install --manifest <folder-with-the-yaml-files> -e Ugo.Agent
 ```
 
-Puts the `ugo` launcher on the PATH (portable package, no admin required; it also
+This puts the `ugo` launcher on the PATH (portable package, no admin; it also
 shows up in "Installed apps", uninstall with `winget uninstall Ugo.Agent`).
 On the first `ugo run` the launcher provisions everything by itself: Python 3.10+
 (installed via winget if missing), the ugo-agent package from GitHub and then,
 as usual, the local models (Whisper, Qwen, Piper). Updates stay automatic
-(`ugo update`); when a new release comes out, `winget upgrade Ugo.Agent` works too.
-
-> Until the package is accepted into the winget community catalog, you can
-> install it from the **manifest bundle attached to every release**: download
-> `ugo-<version>-winget-manifests.zip` from
-> [Releases](https://github.com/giovannimazza/ugo-local-ai-agent/releases/latest),
-> extract it to a folder and run `winget install --manifest <folder> -e Ugo.Agent`
-> (needs a one-time `winget settings --enable LocalManifestFiles`).
+(`ugo update`); `winget upgrade` will work once the manifests of a newer release
+are installed the same way (or after the package is accepted into the
+[winget-pkgs](https://github.com/microsoft/winget-pkgs) community catalog, when
+a plain `winget install Ugo.Agent` will be enough).
 
 **With pip**:
 

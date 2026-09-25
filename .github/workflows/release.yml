@@ -35,6 +35,16 @@ jobs:
       - name: Build installer winget (ugo.exe + zip + manifest)
         run: python packaging/make_winget_zip.py --tag ${{ github.ref_name }}
 
+      # i manifest del repo restano allineati all'ultima release (il workflow
+      # gira con il token default: puo' pushare su main)
+      - name: Allinea i manifest winget nel repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/winget
+          git diff --cached --quiet || git commit -m "winget: manifest allineati alla release ${{ github.ref_name }} [skip ci]"
+          git push origin HEAD:main
+
       - name: Crea la GitHub Release con note automatiche e installer winget
         uses: softprops/action-gh-release@v2
         with:
