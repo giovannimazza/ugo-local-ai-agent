@@ -1993,6 +1993,28 @@ def _sd_all_mics() -> list:
         return []
 
 
+def _probe_peak(m, seconds: float = 3.0):
+    """Picco RMS di fondo di un microfono, con TIMEOUT DURO: alcuni driver
+    (pseudo-device WDM-KS, pin sospesi) restano appesi all'apertura e
+    bloccavano l'intero probe per minuti. Ritorna None se lento o fallito."""
+    out = {}
+
+    def work():
+        try:
+            peak = 0.0
+            with m.recorder(samplerate=SR) as r:
+                for _ in range(6):  # ~0.6 s di rumore di fondo
+                    a = r.record(numframes=SR // 10).copy()
+                    peak = max(peak, float(np.sqrt(np.mean(a ** 2))))
+            out["peak"] = peak
+        except Exception:
+            pass
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    th.join(seconds)
+    return out.get("peak")
+
+
 def _sd_mic_by_name(name: str):
     """Cerca un input per nome tra i device sounddevice; i nomi MME sono
     troncati a 32 caratteri, quindi la seconda passata matcha 'contiene'."""
@@ -2023,55 +2045,65 @@ def _pick_mic(for_passive: bool = False):
     if saved:
         for m in sc.all_microphones():
             if m.name == saved:
-                try:  # verifica d'apertura: alcuni driver passano l'elenco ma
-                    with m.recorder(samplerate=SR) as r:   # non il recorder
-                        r.record(numframes=SR // 100)
-                    return m
-                except Exception:
-                    break
+                if _probe_peak(m, 2.0) is not None:
+                    return m               # apribile e lento a morire: tenuto
+                break                      # elencato ma non apribile: si va avanti
         m2 = _sd_mic_by_name(saved)
         if m2 is not None:
             _plog(f"soundcard non apre {saved!r}: uso sounddevice (PortAudio)")
             return m2
-    # probe automatico: vince l'input piu' vivo; sotto la soglia e' un input
-    # morto (collegato ma muto). Il risultato si ricorda solo se non esiste
-    # gia' una scelta esplicita (del menu o legacy): non sovrascriverla.
+    # probe automatico: prima il DEFAULT di Windows (e' il microfono che
+    # l'utente ha scelto nel sistema): se sente qualcosa e' quello giusto.
+    # Solo se e' muto/non apribile si sondano tutti e vince l'input piu' vivo;
+    # sotto la soglia e' un input morto (collegato ma muto). La scelta si
+    # ricorda solo sostituendo un nome morto o assente, mai uno verificato.
+    try:
+        default = sc.default_microphone()
+        peak = _probe_peak(default)
+        if peak is not None and peak > 0.0002:   # il default sente: rispetto
+            _save_prefs(mic=default.name)
+            return default
+    except Exception:
+        pass                           # il default non si apre: sondo tutti
     try:
         best, best_rms = None, 0.0
-        sc_names = {m.name for m in sc.all_microphones()}
-        sd_skip = lambda nm: nm in sc_names or any(_is_trunc(nm, s) for s in sc_names)
+        sc_aperti = set()
         for m in sc.all_microphones():
-            try:
-                peak = 0.0
-                with m.recorder(samplerate=SR) as r:
-                    for _ in range(6):  # ~0.6 s di rumore di fondo
-                        a = r.record(numframes=SR // 10).copy()
-                        peak = max(peak, float(np.sqrt(np.mean(a ** 2))))
-            except Exception:
+            peak = _probe_peak(m)
+            if peak is None:
+                continue
+            sc_aperti.add(m.name)
+            if peak > best_rms:
+                best, best_rms = m, peak
+        for m in _sd_all_mics():  # gemelli dei device gia' apribili = doppioni
+            if any(m.name == nm or _is_trunc(m.name, nm) for nm in sc_aperti):
+                continue
+            peak = _probe_peak(m)
+            if peak is None:
                 continue
             if peak > best_rms:
                 best, best_rms = m, peak
-        for m in _sd_all_mics():  # driver che soundcard rifiuta (es. MV6)
-            if sd_skip(m.name):
-                continue
-            try:
-                peak = 0.0
-                with m.recorder(samplerate=SR) as r:
-                    for _ in range(6):
-                        a = r.record(numframes=SR // 10).copy()
-                        peak = max(peak, float(np.sqrt(np.mean(a ** 2))))
-            except Exception:
-                continue
-            if peak > best_rms:
-                best, best_rms = m, peak
-        if best is not None and best_rms > 0.002:  # sotto: input morto/silenzioso
-            if not saved:
-                _save_prefs(mic=best.name)
+        if best is not None and best_rms > 0.0008:  # sotto: input morto/silenzioso
+            # qui la scelta salvata e' per costruzione assente o non apribile
+            # (una viva sarebbe gia' stata restituita): la sostituiamo
+            _save_prefs(mic=best.name)
+            _plog(f"probe: scelgo {best.name!r} "
+                  f"({type(best).__name__}, fondo {best_rms:.4f})")
             return best
     except Exception:
         pass
     try:
-        return sc.default_microphone()
+        default = sc.default_microphone()   # ATTENZIONE: qui l'oggetto NON e'
+        try:                                # ancora stato provato: alcuni driver
+            with default.recorder(samplerate=SR) as r:   # passano l'elenco ma
+                r.record(numframes=SR // 100)            # non aprono (MV6)
+            return default
+        except Exception:
+            m2 = _sd_mic_by_name(default.name)
+            if m2 is not None:
+                _plog(f"soundcard non apre {default.name!r}: uso sounddevice")
+                return m2
+            raise
     except Exception:            # nemmeno il default si apre: riserva PortAudio
         sd_mics = _sd_all_mics()
         return sd_mics[0] if sd_mics else None
@@ -2311,12 +2343,19 @@ def _passive_loop():
                 thr = max(VOICE_LEVEL, noise * 3.0)  # soglia voce adattiva
                 if level > thr and level > 80:       # stima del parlato
                     speech = 0.95 * speech + 0.05 * level
-                elif level < max(20.0, noise * 1.5): # stima del fondo
-                    noise = 0.95 * noise + 0.05 * max(level, 1.0)
+                elif level < thr * 0.55:             # stima del fondo: banda larga,
+                    noise = 0.95 * noise + 0.05 * max(level, 1.0)  # col fondo AGC-
+                # amplificato che altrimenti restava nella banda morta e non
+                # veniva piu' tracciato (soglia freeze -> endpointing cieco)
                 agc_n += 1
                 if agc_n >= 10:  # ~1 s: ricalcolo il guadagno target
                     agc_n = 0
                     g = min(max(SPEECH_TARGET / max(speech, 80.0), 1.0), MAX_GAIN)
+                    # il fondo amplificato resta ben sotto la soglia voce: senza
+                    # questo tetto l'AGC saliva finche' il suo fruscio CAVALCAVA
+                    # la soglia -> since_voice si azzera sempre -> SEND solo al
+                    # tetto degli 8 s anche con frasi brevissime
+                    g = min(g, max(1.0, (VOICE_LEVEL * 0.4) / max(noise, 1.0)))
                     if noise * g > NOISE_CEIL:  # il fondo non deve esplodere
                         g = min(g, NOISE_CEIL / max(noise, 1.0))
                     agc_gain = 0.85 * agc_gain + 0.15 * g
