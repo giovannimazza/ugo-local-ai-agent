@@ -404,10 +404,12 @@ single one remains.
   interface with no input plugged in), the widget probes the inputs and uses the live
   one; the choice is remembered. You can also pick the input **manually** from the
   settings menu (•••), separately for passive listening and manual recording —
-  the switch is hot, no widget restart needed. Drivers that SoundCard cannot open
-  (e.g. Shure MV6, non-extensible WASAPI mix format) fall back to the
-  **sounddevice/PortAudio** backend automatically, with a clearer error message
-  instead of a silent empty one
+  the switch is hot, no widget restart needed. Devices you don't want can be
+  **excluded** with the ✕ next to each row: they show struck-through in an
+  "Excluded (click to re-enable)" subsection and the automatic choice ignores
+  them completely. Drivers that SoundCard cannot open (e.g. Shure MV6,
+  non-extensible WASAPI mix format) fall back to the **sounddevice/PortAudio**
+  backend automatically, with a clearer error message instead of a silent empty one
 - **Mouse over** → the card expands from behind the circle: **T** = write to Ugo
   (Enter = send, Esc = close; an unsent draft is kept even if the mouse leaves),
   **•••** = settings menu (transcriber info, input microphone, TTS mute 🔊/🔇,
@@ -422,7 +424,9 @@ single one remains.
 A ChatGPT-style chat interface on `http://127.0.0.1:8123`: messages with avatars,
 hero with suggested commands, microphone in the composer. The **🎙️ button in the
 top bar** picks the input device (browser device list, remembered per browser via
-localStorage; the browser may also ask for permission). Replies containing lists
+localStorage; the browser may also ask for permission); unwanted devices can be
+**excluded** with the ✕ (struck-through in the "Excluded" section, click to
+re-enable — the default fallback ignores them). Replies containing lists
 (games, apps) open a **modal** with the full list; the **🗂️ Apps & games** button
 (pinned top-right) opens the complete library with **collapsible** categories
 (Games / Applications / System tools) and **name search**. The **🌐 flag** switches
