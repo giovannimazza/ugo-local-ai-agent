@@ -2749,7 +2749,9 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False):
         rms = float(np.sqrt(np.mean(a ** 2)))
         _reqlog(f"livello  {len(pcm) / 2 / 16000:.1f}s  rms {rms:.4f}")
         if 1e-5 < rms < 0.05:
-            g = min(0.2 / rms, 20.0)
+            # max x60: con i segnali stracciati (rms ~0.002, tipici di Chrome
+            # senza AGC su micro a bassa sensibilita') x20 non bastava
+            g = min(0.2 / rms, 60.0)
             pcm = (np.clip(a * g, -1, 1) * 32767).astype("<i2").tobytes()
             _reqlog(f"livello  audio debole: gain {g:.1f}x applicato")
     # corsia veloce: Vosk e' gia' pronto, per i comandi banali non aspetta Whisper

@@ -1168,7 +1168,7 @@ textEl.addEventListener('input', () => { textEl.style.height = 'auto'; textEl.st
 document.querySelectorAll('.sugg button').forEach(b => b.onclick = () => { textEl.value = b.dataset.q; sendText(); });
 
 // ---- microfono (come prima: webm -> /api/listen) ----
-let media, chunks = [], recording = false;
+let media, chunks = [], recording = false, audioCtx = null, analyser = null, levelRaf = 0;
 function micErrText(err) {
   const n = (err && err.name) || '';
   if (n === 'NotAllowedError' || n === 'SecurityError') return t('mic_denied');
@@ -1179,10 +1179,14 @@ function micErrText(err) {
 micBtn.onclick = async () => {
   if (recording) { media.stop(); return; }
   const savedMic = localStorage.getItem(MIC_KEY);
+  // niente AGC/noise-suppression di Chrome: con i micro a bassa sensibilita'
+  // (es. Shure MV6) la soppressione AMMAZZA la voce gia' debole e arriva
+  // al server solo silenzio
+  const base = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
   let stream = null, err0 = null;
   try {
     stream = await navigator.mediaDevices.getUserMedia(
-      {audio: savedMic ? {deviceId: {exact: savedMic}} : true});
+      {audio: savedMic ? Object.assign({deviceId: {exact: savedMic}}, base) : base});
   } catch (err) {
     err0 = err;
     // il device salvato è sparito (cambiato/scaricato): niente vincolo exact,
@@ -1190,7 +1194,7 @@ micBtn.onclick = async () => {
     if (savedMic && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
       localStorage.removeItem(MIC_KEY); saveMicLabel('');
       document.getElementById('micname').textContent = micName();
-      try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); } catch {}
+      try { stream = await navigator.mediaDevices.getUserMedia({audio: base}); } catch {}
     }
     if (!stream) { setStatus(micErrText(err0)); return; }
   }
@@ -1199,10 +1203,33 @@ micBtn.onclick = async () => {
     stream.getTracks().forEach(tr => tr.stop());
     setStatus(micErrText(err)); return;
   }
-  chunks = []; recording = true; micBtn.classList.add('rec'); setStatus('🔴 Sto ascoltando… clicca di nuovo per inviare');
+  chunks = []; recording = true; micBtn.classList.add('rec');
+  // misuratore LIVE: mentre parli la status bar mostra il livello; se resta
+  // a 0% il device e' muto/sbagliato -> apri il menu 🎙️ e cambialo
+  try {
+    audioCtx = new AudioContext();
+    const srcN = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    srcN.connect(analyser);
+    const lvlBuf = new Float32Array(analyser.fftSize);
+    const tick = () => {
+      if (!recording) return;
+      analyser.getFloatTimeDomainData(lvlBuf);
+      let s = 0; for (const v of lvlBuf) s += v * v;
+      const rms = Math.sqrt(s / lvlBuf.length);
+      const pct = Math.min(100, Math.round(rms * 400));
+      setStatus(`🔴 Sto ascoltando… ${'▮'.repeat(Math.max(1, Math.round(pct / 10)))} ${pct}%`);
+      levelRaf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch { setStatus('🔴 Sto ascoltando… clicca di nuovo per inviare'); }
   media.ondataavailable = e => chunks.push(e.data);
   media.onstop = async () => {
-    recording = false; micBtn.classList.remove('rec'); setStatus('Trascrivo…');
+    recording = false; micBtn.classList.remove('rec');
+    try { if (levelRaf) cancelAnimationFrame(levelRaf); if (audioCtx) await audioCtx.close(); } catch {}
+    audioCtx = analyser = null;
+    setStatus('Trascrivo…');
     try {
       const fd = new FormData();
       fd.append('audio', new Blob(chunks, {type:'audio/webm'}), 'cmd.webm');
