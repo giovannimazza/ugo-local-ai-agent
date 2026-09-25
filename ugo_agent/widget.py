@@ -2126,6 +2126,16 @@ def _rec_thread():
     if audio.size == 0:
         ui(lambda: bubble.show(W("nothing_rec")))
         return
+    # normalizzazione: i micro a bassa sensibilita' (es. Shure MV6 senza AGC
+    # hardware) registrano a ~-40 dBFS e il VAD di Whisper scarta la voce come
+    # silenzio -> il server rispondeva 'Non ho sentito nulla' benché Vosk
+    # capisse. Solo i segnali DEBOLI vengono portati verso un RMS salubre
+    # (~0.2 = -14 dBFS, max x20): i segnali gia' forti restano com'ericano.
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    if rms > 1e-5:
+        g = min(0.2 / rms, 20.0)
+        if g > 1.5:
+            audio = np.clip(audio * g, -1, 1)
     pcm = (np.clip(audio[:, 0], -1, 1) * 32767).astype("<i2").tobytes()
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -2352,13 +2362,18 @@ def _passive_loop():
                 if agc_n >= 10:  # ~1 s: ricalcolo il guadagno target
                     agc_n = 0
                     g = min(max(SPEECH_TARGET / max(speech, 80.0), 1.0), MAX_GAIN)
-                    # il fondo amplificato resta ben sotto la soglia voce: senza
-                    # questo tetto l'AGC saliva finche' il suo fruscio CAVALCAVA
-                    # la soglia -> since_voice si azzera sempre -> SEND solo al
-                    # tetto degli 8 s anche con frasi brevissime
-                    g = min(g, max(1.0, (VOICE_LEVEL * 0.4) / max(noise, 1.0)))
-                    if noise * g > NOISE_CEIL:  # il fondo non deve esplodere
-                        g = min(g, NOISE_CEIL / max(noise, 1.0))
+                    # Il fondo amplificato col NUOVO guadagno resta sotto la soglia
+                    # voce (previsione: fondo * nuovo_g/attuale_g, non fondo * g:
+                    # la prima versione confondeva guadagno e livello e schiacciava
+                    # l'audio a ~-40 dBFS -> il VAD di Whisper non sentiva piu'
+                    # nulla e il server rispondeva 'Non ho sentito nulla'). Senza
+                    # tetto l'AGC saliva invece finche' il fruscio CAVALCAVA la
+                    # soglia -> SEND solo al tetto degli 8 s.
+                    g = min(g, max(1.0, (VOICE_LEVEL * 0.4)
+                                   * max(agc_gain, 1.0) / max(noise, 1.0)))
+                    # stessa cosa per il tetto assoluto del fondo
+                    if noise * g > NOISE_CEIL * max(agc_gain, 1.0):
+                        g = min(g, NOISE_CEIL * max(agc_gain, 1.0) / max(noise, 1.0))
                     agc_gain = 0.85 * agc_gain + 0.15 * g
                 oww_s = 0.0
                 if oww_model is not None:
