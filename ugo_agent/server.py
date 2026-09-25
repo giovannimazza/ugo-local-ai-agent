@@ -997,6 +997,61 @@ def ollama_parse(text: str) -> dict | None:
         print(f"[ollama] errore: {exc}")
         return None
 
+# ---------------------------------------------------------------------------
+# Pipe CHAT (fallback agentic): le frasi che non sono comandi (domande,
+# calcoli, curiosita') finivano in un secco "non ho capito"; ora Laya le
+# indirizza ad 'unknown' e Qwen risponde davvero, in modalita' conversazionale
+# con contesto della conversazione recente. I comandi veri non passano mai
+# da qui: keyword/Laya li classificano prima e vanno alla pipe esecutiva.
+# ---------------------------------------------------------------------------
+CHAT_SCHEMA = (
+    "Sei Ugo, l'assistente vocale offline del PC dell'utente. Rispondi in "
+    "italiano, breve e parlato: 1-3 frasi, massimo 60 parole, niente elenchi "
+    "puntati, niente markdown, niente emoji. Se ti chiedi un calcolo dai il "
+    "risultato con una spiegazione essenziale. Se ti chiedi una definizione o "
+    "una curiosita' rispondi in modo asciutto. Se la richiesta e' un'AZIONE da "
+    "fare sul PC (aprire, chiudere, creare, volume, file) NON eseguirla e non "
+    "inventare: di' che non e' tra le tue funzioni e ricorda brevemente che "
+    "sai aprire app e siti, gestire file e volume. Non dire di essere un "
+    "modello di linguaggio: sei Ugo."
+)
+
+
+def ollama_chat(text: str) -> str | None:
+    """Risposta conversazionale del piccolo modello locale (domande generiche,
+    calcoli, curiosita'): fallback agentic quando nessun comando combacia.
+    Ritorna None se Ollama non risponde o la risposta non e' utilisabile."""
+    try:
+        import urllib.request
+        with _log_lock:                       # ultime battute come contesto
+            hist = [h for h in _history[-6:] if h.get("assistant")]
+        ctx = "\n".join(f"Utente: {h.get('user', '')}\nUgo: {h['assistant']}"
+                        for h in hist)
+        payload = json.dumps({
+            "model": _llm_model(),
+            "system": CHAT_SCHEMA + (f"\nConversazione recente:\n{ctx}" if ctx else ""),
+            "prompt": text,
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": 0.6, "num_predict": 160},
+        }).encode()
+        req = urllib.request.Request(OLLAMA_URL, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        _q0 = time.time()
+        with urllib.request.urlopen(req, timeout=40) as r:
+            data = json.loads(r.read().decode())
+        _track("qwen_chat", time.time() - _q0)
+        _track_tps("qwen_chat", data.get("eval_count", 0),
+                   data.get("eval_duration", 0))
+        out = " ".join((data.get("response") or "").split())
+        # difese: vuoto o delirio lunghissimo -> meglio la risposta preimpostata
+        if not out or len(out) > 600:
+            return None
+        return out
+    except Exception as exc:
+        print(f"[chat] errore: {exc}")
+        return None
+
 # parole chiave per il fallback testuale (sempre attivo, vince se trova un match)
 KEYWORDS = [
     ("delete_folder", ("elimina la cartella", "elimina cartella", "cancella la cartella",
@@ -1995,6 +2050,13 @@ def run_command(text: str, intent: str) -> str:
         more = f" e altri {len(items) - 12}" if len(items) > 12 else ""
         return f"In {loc.name} trovo: {preview}{more}."
 
+    # niente comando riconosciuto: fallback AGENTICO — il piccolo modello
+    # locale risponde alla domanda ("quanto fa 1+1", "chi ha inventato il
+    # telefono") invece del secco "non ho capito". Se Ollama non risponde
+    # resta il messaggio preimpostato con la lista delle funzioni.
+    chat = ollama_chat(text)
+    if chat:
+        return chat
     return ("Non ho capito il comando. Posso creare o eliminare cartelle, aprire app e "
             "siti, darti ora e data, regolare il volume o elencare i file.")
 
@@ -3109,7 +3171,7 @@ def api_stats():
     # ordinamento di pipeline: prima la voce in ingresso, poi l'interpretazione,
     # poi la voce in uscita e il totale
     order = ["vosk", "fastlane", "whisper", "qwen_normalize", "qwen_intent",
-             "qwen_suggest", "tts_piper", "tts_sapi", "command"]
+             "qwen_chat", "qwen_suggest", "tts_piper", "tts_sapi", "command"]
     stages = [{"stage": k, **out[k]} for k in order if k in out]
     stages += [{"stage": k, **v} for k, v in out.items() if k not in order]
     with _stats_lock:

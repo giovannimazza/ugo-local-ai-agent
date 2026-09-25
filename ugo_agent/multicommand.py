@@ -43,10 +43,12 @@ _RIPETI_VERBI = ("apri", "lancia", "avvia", "chiudi", "termina",
                  "metti", "alza", "abbassa", "vai")
 
 # frasi il cui primo verbo VIETA lo split: la congiunzione e' contenuto
+# (include le domande/chat: 'qual è la capitale della Francia e della Germania'
+# non va spezzato in due 'apri/comandi')
 _NO_SPLIT_RE = re.compile(
     r"^(?:crea|creami|nuova?|elimina|cancella|rimuovi|aggiungi|scrivi|leggi|"
     r"appunta|annota|segna|prendi\s+nota|elenca|mostra|lista|cerca|ricerca|"
-    r"dimmi|che|cosa|quali|quando)\b", re.IGNORECASE)
+    r"dimmi|che|cosa|quali|quando|quanto|qual|come|perche|chi)\b", re.IGNORECASE)
 
 # code di cortesia / rumore: un frammento composto solo da questi si scarta
 _NOISE_RE = re.compile(
@@ -97,6 +99,8 @@ def split_commands(text: str) -> list[str]:
     # gia' una lista ';' separata (routine), domanda o frase tecnica: no split
     if ";" in t or "?" in t or "ollama" in low or "qwen" in low:
         return [t]
+    # domande/chat ("qual è...", "quanto fa...") e verbi di contenuto: la
+    # congiunzione e' quasi sempre parte della frase, non un separatore
     if _NO_SPLIT_RE.match(t):
         return [t]
     parts = [p for p in _SPLIT_RE.split(t) if p and p.strip()]

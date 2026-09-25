@@ -56,6 +56,13 @@ CASES = [
     ("quando dico modo gaming esegui apri steam; apri discord",
      ["quando dico modo gaming esegui apri steam; apri discord"]),
     ("cosa c'e scritto nel file spesa", ["cosa c'e scritto nel file spesa"]),
+    # --- domande/chat: mai spezzate (finiscono nella pipe conversazionale) ---
+    ("qual e' la capitale della Francia e della Germania",
+     ["qual e' la capitale della Francia e della Germania"]),
+    ("quanto fa 1+1", ["quanto fa 1+1"]),
+    ("chi ha inventato il telefono", ["chi ha inventato il telefono"]),
+    ("come si dice ciao in spagnolo e in francese",
+     ["come si dice ciao in spagnolo e in francese"]),
     ("", []),
     ("   ", []),
 ]
