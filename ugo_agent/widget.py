@@ -1614,7 +1614,10 @@ def _show_menu_card(sections, right_x: int, top_y: int, anchor_right: bool = Tru
     cv.create_image(0, 0, image=bg, anchor="nw")
 
     def _hover(tag, on):
-        cv.itemconfigure(tag, fill=HOVER if on else "")
+        # SOLO il rettangolo di sfondo cambia fill: itemconfigure sul tag di
+        # riga colorava ANCHE icone e testi (sul Leave fill="" = trasparente:
+        # le voci sparivano al passaggio del mouse)
+        cv.itemconfigure(tag + "bg", fill=HOVER if on else "")
         cv.config(cursor="hand2" if on else "arrow")
 
     def _click(tag):
@@ -1632,7 +1635,7 @@ def _show_menu_card(sections, right_x: int, top_y: int, anchor_right: bool = Tru
         tag = f"r{ry}"          # un tag per riga: hover e click su TUTTA la riga
         row_of[tag] = it
         cv.create_rectangle(PADX - 6, ry, W - PADX + 6, ry + ROW_H - 4,
-                            fill="", outline="", tags=tag)
+                            fill="", outline="", tags=(tag, tag + "bg"))
         icon = it.get("icon", "")
         if icon:
             cv.create_text(PADX + 2, cy, text=icon, anchor="w",
