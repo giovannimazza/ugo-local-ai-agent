@@ -404,7 +404,10 @@ single one remains.
   interface with no input plugged in), the widget probes the inputs and uses the live
   one; the choice is remembered. You can also pick the input **manually** from the
   settings menu (•••), separately for passive listening and manual recording —
-  the switch is hot, no widget restart needed
+  the switch is hot, no widget restart needed. Drivers that SoundCard cannot open
+  (e.g. Shure MV6, non-extensible WASAPI mix format) fall back to the
+  **sounddevice/PortAudio** backend automatically, with a clearer error message
+  instead of a silent empty one
 - **Mouse over** → the card expands from behind the circle: **T** = write to Ugo
   (Enter = send, Esc = close; an unsent draft is kept even if the mouse leaves),
   **•••** = settings menu (transcriber info, input microphone, TTS mute 🔊/🔇,

@@ -133,7 +133,7 @@ def install_pip_deps() -> None:
     _step("Dipendenze Python")
     common = [("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
               ("laya", "laya"), ("pyttsx3", "pyttsx3"),
-              ("vosk", "vosk"), ("soundcard", "soundcard"),
+              ("vosk", "vosk"), ("soundcard", "soundcard"), ("sounddevice", "sounddevice"),
               ("numpy", "numpy"), ("PIL", "pillow"),
               ("send2trash", "send2trash"),
               ("faster_whisper", "faster-whisper")]

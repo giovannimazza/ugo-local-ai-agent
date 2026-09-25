@@ -20,6 +20,7 @@ dependencies = [
     "pyttsx3>=2.90",
     "vosk>=0.3.42",  # 0.3.45 non ha wheel per macOS arm64/py3.12: l'API usata e' invariata
     "soundcard>=0.4.2",
+    "sounddevice>=0.5",  # backend di riserva: driver che soundcard non apre (es. Shure MV6)
     "numpy>=1.26",
     "pillow>=10.0",
     "send2trash>=1.8",

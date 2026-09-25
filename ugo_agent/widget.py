@@ -1652,10 +1652,18 @@ def show_stt_popup():
             current, available = mod.get("active", ""), mod.get("available", [])
         except Exception:
             current, available = "", []
-        try:  # micro disponibili (il menu resta usabile anche senza soundcard)
-            mics = [m.name for m in sc.all_microphones()]
-        except Exception:
-            mics = []
+        # micro disponibili: soundcard + riserva PortAudio (driver che soundcard
+        # non apre, es. Shure MV6); i nomi doppi compaiono una volta sola
+        seen, mics = set(), []
+        for src in (lambda: [m.name for m in sc.all_microphones()],
+                    lambda: [m.name for m in _sd_all_mics()]):
+            try:
+                for nm in src():
+                    if nm and nm not in seen:
+                        seen.add(nm)
+                        mics.append(nm)
+            except Exception:
+                continue
         cur = prefs.get(_mic_pref_key())  # None = scelta automatica (probe)
 
         def _toggle_and_refresh(fn):
@@ -1916,7 +1924,88 @@ root.bind("<FocusOut>", _on_focus_out)
 rec_flag = threading.Event()
 
 
-def _pick_mic(for_passive: bool = False) -> "sc.Microphone":
+def _err_text(exc: Exception) -> str:
+    """Messaggio d'errore leggibile: alcuni errori della libreria audio
+    (assert interni, errori COM) arrivano come str() VUOTA e nei log
+    compariva solo 'ERRORE:' senza la minima diagnosi."""
+    s = str(exc).strip()
+    return s or exc.__class__.__name__
+
+
+class _SDMic:
+    """Microfono di riserva via sounddevice (PortAudio): stesso minuscolo
+    protocollo degli oggetti soundcard (.name, .id, .recorder()). Serve per i
+    driver che soundcard non apre, es. lo Shure MV6 il cui mix format non e'
+    estensibile e fa fallire un assert interno della libreria."""
+
+    def __init__(self, name: str, index: int):
+        self.name, self.id = name, f"sd:{index}"
+        self._index = index
+
+    def recorder(self, samplerate=SR, channels=None, blocksize=None):
+        import sounddevice as sd
+        outer = self
+
+        class _Rec:
+            def __enter__(self):
+                self.stream = sd.InputStream(samplerate=samplerate, channels=1,
+                                             dtype="float32", device=outer._index)
+                self.stream.start()
+                return self
+
+            def __exit__(self, *exc):
+                try:
+                    self.stream.stop()
+                    self.stream.close()
+                except Exception:
+                    pass
+                return False
+
+            def record(self, numframes):
+                data, _ov = self.stream.read(numframes)
+                return data.copy()
+
+        return _Rec()
+
+
+def _is_trunc(a: str, b: str) -> bool:
+    """Vero se un nome e' la versione troncata dell'altro (PortAudio/MME
+    taglia a 32 caratteri: 'Analogue 1 + 2 (Focusrite USB A')."""
+    m = min(len(a), len(b))
+    return m >= 16 and a[:m] == b[:m]
+
+
+def _sd_all_mics() -> list:
+    """Input di sounddevice deduplicati (PortAudio espone lo stesso device su
+    piu' host API: MME, DirectSound, WASAPI, WDM-KS; i nomi MME sono troncati).
+    Vince sempre la variante col nome piu' lungo."""
+    try:
+        import sounddevice as sd
+        raw = [_SDMic(d.get("name") or "", d["index"])
+               for d in sd.query_devices() if d.get("max_input_channels", 0) > 0
+               and d.get("name")]
+        out = []
+        for m in sorted(raw, key=lambda x: -len(x.name)):
+            if not any(_is_trunc(m.name, k.name) for k in out):
+                out.append(m)
+        return out
+    except Exception:
+        return []
+
+
+def _sd_mic_by_name(name: str):
+    """Cerca un input per nome tra i device sounddevice; i nomi MME sono
+    troncati a 32 caratteri, quindi la seconda passata matcha 'contiene'."""
+    for d in _sd_all_mics():
+        if d.name == name:
+            return d
+    for d in _sd_all_mics():
+        if name in d.name or d.name in name:
+            return d
+    return None
+
+
+def _pick_mic(for_passive: bool = False):
     """Sceglie il microfono per lo strumento richiesto.
 
     `sc.default_microphone()` segue il dispositivo predefinito di Windows, che
@@ -1925,23 +2014,50 @@ def _pick_mic(for_passive: bool = False) -> "sc.Microphone":
     (prefs['mic_passive'] per l'ascolto passivo, prefs['mic_manual'] per la
     registrazione dal cerchio; prefs['mic'] e' il legacy pre-menu, vale per
     entrambi); se il nome salvato non esiste piu' (es. micro scollegato) si
-    riparte dal probe. Fallback: il microfono predefinito.
+    riparte dal probe. Se soundcard non riesce ad aprire il device (driver con
+    mix format non gestito, es. Shure MV6) si passa al backend di riserva
+    sounddevice/PortAudio, che espone la stessa interfaccia minima. Fallback:
+    il microfono predefinito.
     """
     saved = prefs.get("mic_passive" if for_passive else "mic_manual") or prefs.get("mic")
     if saved:
         for m in sc.all_microphones():
             if m.name == saved:
-                return m
+                try:  # verifica d'apertura: alcuni driver passano l'elenco ma
+                    with m.recorder(samplerate=SR) as r:   # non il recorder
+                        r.record(numframes=SR // 100)
+                    return m
+                except Exception:
+                    break
+        m2 = _sd_mic_by_name(saved)
+        if m2 is not None:
+            _plog(f"soundcard non apre {saved!r}: uso sounddevice (PortAudio)")
+            return m2
     # probe automatico: vince l'input piu' vivo; sotto la soglia e' un input
     # morto (collegato ma muto). Il risultato si ricorda solo se non esiste
     # gia' una scelta esplicita (del menu o legacy): non sovrascriverla.
     try:
         best, best_rms = None, 0.0
+        sc_names = {m.name for m in sc.all_microphones()}
+        sd_skip = lambda nm: nm in sc_names or any(_is_trunc(nm, s) for s in sc_names)
         for m in sc.all_microphones():
             try:
                 peak = 0.0
                 with m.recorder(samplerate=SR) as r:
                     for _ in range(6):  # ~0.6 s di rumore di fondo
+                        a = r.record(numframes=SR // 10).copy()
+                        peak = max(peak, float(np.sqrt(np.mean(a ** 2))))
+            except Exception:
+                continue
+            if peak > best_rms:
+                best, best_rms = m, peak
+        for m in _sd_all_mics():  # driver che soundcard rifiuta (es. MV6)
+            if sd_skip(m.name):
+                continue
+            try:
+                peak = 0.0
+                with m.recorder(samplerate=SR) as r:
+                    for _ in range(6):
                         a = r.record(numframes=SR // 10).copy()
                         peak = max(peak, float(np.sqrt(np.mean(a ** 2))))
             except Exception:
@@ -1954,7 +2070,11 @@ def _pick_mic(for_passive: bool = False) -> "sc.Microphone":
             return best
     except Exception:
         pass
-    return sc.default_microphone()
+    try:
+        return sc.default_microphone()
+    except Exception:            # nemmeno il default si apre: riserva PortAudio
+        sd_mics = _sd_all_mics()
+        return sd_mics[0] if sd_mics else None
 
 
 def _rec_thread():
@@ -1966,7 +2086,7 @@ def _rec_thread():
                 chunks.append(rec.record(numframes=SR // 10).copy())
     except Exception as exc:
         rec_flag.clear()
-        msg = W("mic_error", e=exc)
+        msg = W("mic_error", e=_err_text(exc))
         ui(lambda: (set_mic_color(ACCENT), bubble.show(msg)))
         return
     audio = np.concatenate(chunks) if chunks else np.zeros((0, 1), np.float32)
@@ -2078,6 +2198,8 @@ def _ensure_mic_volume(mic_dev) -> None:
     matcha il dispositivo per ID endpoint (soundcard e MMDevice condividono
     lo stesso ID) per non regolarmi un input diverso da quello in uso."""
     if not pu.IS_WINDOWS:
+        return
+    if isinstance(mic_dev, _SDMic):   # device PortAudio: nessun endpoint Windows
         return
     try:
         import comtypes
@@ -2285,9 +2407,9 @@ def _passive_loop():
                     ui(lambda: (set_mic_color(RED),
                                 bubble.show(W("i_listen"), sticky=True)))
     except Exception as exc:
-        _plog(f"ERRORE: {exc}")
+        _plog(f"ERRORE: {_err_text(exc)}")
         if _passive["on"]:
-            ui(lambda: bubble.show(f"Ascolto passivo fermo ({exc})"))
+            ui(lambda: bubble.show(f"Ascolto passivo fermo ({_err_text(exc)})"))
     finally:
         _passive["on"] = False
         ui(lambda: set_mic_color(ACCENT))
