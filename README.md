@@ -210,9 +210,11 @@ needed, one settings toggle the first time):
 ::    https://github.com/giovannimazza/ugo-local-ai-agent/releases/latest
 ::    and extract the three .yaml files into a folder (winget downloads
 ::    the installer itself from the release assets and verifies its SHA256)
-:: 2. allow local manifests (once) and install:
+:: 2. allow local manifests (once, from an ADMIN terminal):
 winget settings --enable LocalManifestFiles
-winget install --manifest <folder-with-the-yaml-files> -e Ugo.Agent
+:: 3. install from a NORMAL (non-admin) terminal — portable packages refuse
+::    to install elevated, and --manifest takes NO package id next to it:
+winget install --manifest <folder-with-the-yaml-files>
 ```
 
 This puts the `ugo` launcher on the PATH (portable package, no admin; it also

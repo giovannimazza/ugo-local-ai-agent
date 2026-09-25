@@ -1121,11 +1121,23 @@ def keyword_intent(text: str):
     return None
 
 
+# Domande/conversazione: se la frase SEMBRA una domanda (interrogativo o '?')
+# e non contiene keyword di comando, deve andare alla pipe conversazionale
+# anche quando Laya la scambia per un comando ('quanto fa 1+1' -> volume, 0.86:
+# il classificatore e' affidabile sui comandi, poco sulle frasi fuori dominio).
+_QUESTION_RE = re.compile(
+    r"^(?:quanto|quant'?|quale|qual|qual'?|come|perch[e']|chi|dove|quando|dimmi|"
+    r"racconta|spiega|conosci|sai(?:\s+dirmi)?)\b|\?\s*$", re.IGNORECASE)
+
+
 def detect_intent(text: str):
     """Laya propone, le parole chiave confermano. Ritorna (label, source)."""
     kw = keyword_intent(text)
     if kw:
         return kw, "keyword"
+    if _QUESTION_RE.search((text or "").strip()):
+        # domanda senza verbi-comando: pipe conversazionale (chat LLM)
+        return "unknown", "question"
     label, conf = laya_intent(text)
     if label and label != "unknown" and conf >= CONF_THRESHOLD:
         return label, f"laya({conf:.2f})"
@@ -1275,6 +1287,13 @@ def execute_spec(spec: dict, text: str) -> str:
             return _set_app_volume(str(spec["app"]), mode, 10)
         return _set_app_volume(str(spec["app"]), "abs", level)
 
+    # la spec non contiene nulla di eseguibile (o l'azione era solo un nome):
+    # NON rimandare la frase al fallback preimpostato di run_command — e'
+    # qui che 'quanto fa 1+1' (spec = {action: set_app_volume} senza campi)
+    # moriva nel 'non ho capito' senza mai raggiungere la pipe conversazionale
+    chat = ollama_chat(text)
+    if chat:
+        return chat
     return ("Non ho capito il comando. Posso creare o eliminare cartelle e file di testo, "
             "aprire app e siti, cercare su YouTube o Google, darti ora e data, "
             "regolare il volume o elencare i file.")
