@@ -2410,19 +2410,32 @@ def _passive_loop():
                                 oww_model.reset()
                             continue
                         # taglio il silenzio di coda: Whisper non lo serve e la
-                        # sua latenza scala con la durata dell'audio
+                        # sua latenza scala con la durata dell'audio. Soglia
+                        # RELATIVA al picco del comando (0.25x): quella assoluta
+                        # dipendeva dal guadagno e qui tagliava tutto o niente
+                        peak = max(float(np.sqrt(np.mean(
+                            np.frombuffer(c, "<i2").astype(np.float32) ** 2)))
+                            for c in chunks)
+                        cut_thr = max(peak * 0.25, 40.0)
                         cut = 0
                         for i in range(len(chunks) - 1, -1, -1):
                             lv = float(np.sqrt(np.mean(
                                 np.frombuffer(chunks[i], "<i2").astype(np.float32) ** 2)))
-                            if lv > thr:
+                            if lv > cut_thr:
                                 cut = min(len(chunks), i + 4)  # 0.3 s di coda
                                 break
                         if cut == 0:
                             cut = len(chunks)
                         trimmed = b"".join(chunks[:cut])
+                        rms_all = float(np.sqrt(np.mean([
+                            float(np.sqrt(np.mean(np.frombuffer(c, "<i2")
+                             .astype(np.float32) ** 2))) for c in chunks]) ** 2))
+                        rms_send = float(np.sqrt(np.mean([
+                            float(np.sqrt(np.mean(np.frombuffer(c, "<i2")
+                             .astype(np.float32) ** 2))) for c in trimmed]) ** 2))
                         _plog(f"SEND: {dur:.1f}s -> "
-                              f"{len(trimmed) / 2 / SR:.1f}s dopo il taglio")
+                              f"{len(trimmed) / 2 / SR:.1f}s dopo il taglio "
+                              f"(rms {rms_all:.0f} -> {rms_send:.0f}, picco {peak:.0f})")
                         ui(lambda: (set_mic_color(ACCENT),
                                     bubble.show(W("understand"), sticky=True)))
                         quiet_until = time.time() + 4.0  # la risposta parlata non deve riarmarmi
