@@ -198,28 +198,27 @@ and the Vosk fallback, then starts the server and the widget.
 
 ### Windows
 
-**Con winget** (Windows Package Manager, incluso in Windows 10/11):
+**With winget** (Windows Package Manager, included in Windows 10/11):
 
 ```bat
 winget install Ugo.Agent
 ```
 
-Installa il launcher `ugo` nel PATH (pacchetto portable, niente admin; appare
-anche in "App installate", disinstallazione con `winget uninstall Ugo.Agent`).
-Al primo avvio `ugo run` il launcher si procura tutto da solo: Python 3.10+
-(se manca, lo installa via winget), il pacchetto ugo-agent da GitHub e poi,
-come al solito, i modelli locali (Whisper, Qwen, Piper). Gli aggiornamenti
-restano automatici (`ugo update`); quando esce una release nuova anche
-`winget upgrade Ugo.Agent` funziona.
+Puts the `ugo` launcher on the PATH (portable package, no admin required; it also
+shows up in "Installed apps", uninstall with `winget uninstall Ugo.Agent`).
+On the first `ugo run` the launcher provisions everything by itself: Python 3.10+
+(installed via winget if missing), the ugo-agent package from GitHub and then,
+as usual, the local models (Whisper, Qwen, Piper). Updates stay automatic
+(`ugo update`); when a new release comes out, `winget upgrade Ugo.Agent` works too.
 
-> Finché il pacchetto non è nel catalogo community di winget, puoi installarlo
-> con il **bundle di manifest allegato a ogni release**: scarica
-> `ugo-<versione>-winget-manifests.zip` da
+> Until the package is accepted into the winget community catalog, you can
+> install it from the **manifest bundle attached to every release**: download
+> `ugo-<version>-winget-manifests.zip` from
 > [Releases](https://github.com/giovannimazza/ugo-local-ai-agent/releases/latest),
-> estrailo in una cartella e lancia `winget install --manifest <cartella> -e Ugo.Agent`
-> (richiede una tantum `winget settings --enable LocalManifestFiles`).
+> extract it to a folder and run `winget install --manifest <folder> -e Ugo.Agent`
+> (needs a one-time `winget settings --enable LocalManifestFiles`).
 
-**Con pip**:
+**With pip**:
 
 ```bat
 pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
@@ -261,6 +260,7 @@ Available commands:
 | `ugo update` | checks GitHub and updates to the latest version of the channel |
 | `ugo channel` | shows/switches the update channel (`dev` or `stable`) |
 | `ugo version` | shows the installed version |
+| `ugo winget` | info about the winget installation/update (Windows) |
 | `ugo help` | full command list with explanations and examples |
 
 On first `setup`/`run` the CLI automatically adds the `ugo` command to the PATH (pip
