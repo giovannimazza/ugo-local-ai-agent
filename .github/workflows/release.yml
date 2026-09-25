@@ -22,6 +22,7 @@ jobs:
       # winget: ugo.exe (bootstrap, compilato con il csc del .NET Framework)
       # + zip deterministico + manifest allineati (versione, URL, SHA256)
       - name: Verifica coerenza versione/pyproject
+        shell: bash   # il default su windows-latest e' PowerShell: niente heredoc
         run: |
           python - <<'EOF'
           import re, sys
