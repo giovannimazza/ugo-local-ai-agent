@@ -112,7 +112,8 @@ check("multi 'apri youtube e poi github'", r.get("intent") == "multi"
 # --- E2E file system: crea -> verifica -> elimina (cestino) ---
 r = post("/api/text", {"text": "crea una cartella chiamata ProvaTestUgo sul desktop"})
 check("cmd 'crea cartella ProvaTestUgo'", r.get("intent") == "create_folder"
-      and "creato" in r.get("assistant", "").lower(), r)
+      and "creat" in r.get("assistant", "").lower()  # creato/creata
+      and "ProvaTestUgo" in r.get("assistant", ""), r)  # il case del nome va preservato
 desk = Path.home() / "Desktop" / "ProvaTestUgo"
 check("cartella realmente creata su disco", desk.is_dir(), desk)
 r = post("/api/text", {"text": "elimina la cartella ProvaTestUgo"})

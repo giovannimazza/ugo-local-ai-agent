@@ -1155,14 +1155,17 @@ def detect_intent(text: str):
 # ---------------------------------------------------------------------------
 def extract_folder_name(text: str) -> str:
     """Cerca il nome della cartella: 'chiamata X', 'nome X', altrimenti ultima parola utile."""
-    t = text.lower()
-    m = re.search(r"(?:chiamat[oa]|di nome|nome)\s+(?:la\s+|la\s+nuova\s+|una\s+)?([a-z0-9 _\-]+)", t)
+    # Match sul testo ORIGINALE (non lowered): il case del nome va preservato
+    # ("ProvaTestUgo" non deve diventare "Provatestugo").
+    m = re.search(r"(?:chiamat[oa]|di nome|nome)\s+(?:la\s+|la\s+nuova\s+|una\s+)?([\w \-]+)",
+                  text, re.IGNORECASE)
     if m:
         name = m.group(1).strip()
     else:
-        words = [w for w in re.findall(r"[a-z0-9_\-]+", t) if w not in PLACE_WORDS]
+        words = [w for w in re.findall(r"[\w\-]+", text) if w.lower() not in PLACE_WORDS]
         name = words[-1] if words else ""
-    name = re.sub(r"\b(sul|sulla|nel|nella|in|su|desktop|scrivania|documenti|download)\b.*$", "", name).strip()
+    name = re.sub(r"\b(sul|sulla|nel|nella|in|su|desktop|scrivania|documenti|download)\b.*$", "",
+                  name, flags=re.IGNORECASE).strip()
     name = name.strip(" .,!?")
     if name:
         name = name[0].upper() + name[1:]  # "prova" -> "Prova"
