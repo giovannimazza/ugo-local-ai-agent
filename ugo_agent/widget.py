@@ -1849,11 +1849,11 @@ def _dict_send(pcm: bytes):
         eng = res.get("engine", "-")
         if text:
             ok = pu.paste_text(text)
-            _plog(f"DICT [{eng}] {len(pcm) / 2 / SR:.1f}s incollato={ok}: {text!r}")
+            _plog(f"DITTATURA: incollato={ok}: {text!r}")
         else:
-            _plog(f"DICT [{eng}] blocco vuoto (silenzio?)")
+            _plog("DITTATURA: blocco vuoto (silenzio?)")
     except Exception as exc:
-        _plog(f"DICT ERRORE server: {exc}")
+        _plog(f"DITTATURA: ERRORE server: {exc}")
 
 
 def _dictate_stop():
@@ -2252,6 +2252,7 @@ def _pick_mic(for_passive: bool = False):
 
 def _rec_thread():
     chunks = []
+    _plog("ATTIVO: registrazione manuale avviata (click sul microfono)")
     try:
         mic = _pick_mic()
         with mic.recorder(samplerate=SR) as rec:
@@ -2288,9 +2289,13 @@ def _rec_thread():
     try:
         res = _post_wav(buf.getvalue())
         ui(lambda: _show_entry(res))
+        # log di ASCOLTO ATTIVO: cosa ho sentito e cosa ho risposto
+        _plog(f"ATTIVO: detto={(res.get('user') or '?')!r} -> "
+              f"{(res.get('assistant') or res.get('error') or '?')!r}")
     except Exception as exc:
         msg = W("server_error", e=exc)
         ui(lambda: bubble.show(msg))
+        _plog(f"ATTIVO: ERRORE server: {exc}")
 
 
 # --- ascolto passivo (wake word "chicco") con Vosk in streaming ---------------
@@ -2396,13 +2401,14 @@ def _passive_send_wav(pcm: bytes):
         if res.get("silent"):
             # wake-guard: il server non ha sentito la wake word nella frase ->
             # falso positivo del rilevatore economico: taccio tutto e svanisco
-            _plog(f"guard: falso positivo scartato ({(res.get('user') or '')!r})")
+            _plog(f"PASSIVO: scartato (falso positivo): {(res.get('user') or '')!r}")
             ui(lambda: bubble.hide())
             return
         ui(lambda: _show_entry(res))
-        _plog(f"risposta: {(res.get('assistant') or res.get('error') or '?')!r} "
-              f"[{res.get('intent', '-')} / {res.get('detector', '-')} / "
-              f"{res.get('ms', 0)} ms]")
+        # log di ASCOLTO PASSIVO: cosa ho sentito e cosa ho risposto
+        _plog(f"PASSIVO: detto={(res.get('user') or '')!r} -> "
+              f"{(res.get('assistant') or res.get('error') or '?')!r} "
+              f"[{res.get('intent', '-')} / {res.get('ms', 0)} ms]")
         if res.get("intent") == "dictate_toggle":
             if "fermata" in (res.get("assistant") or "").lower() or \
                "stopped" in (res.get("assistant") or "").lower():
@@ -2412,7 +2418,7 @@ def _passive_send_wav(pcm: bytes):
     except Exception as exc:
         msg = W("server_error", e=exc)
         ui(lambda: bubble.show(msg))
-        _plog(f"ERRORE server: {exc}")
+        _plog(f"PASSIVO: ERRORE server: {exc}")
 
 
 def _ensure_mic_volume(mic_dev) -> None:
@@ -2659,7 +2665,7 @@ def _passive_loop():
                             return float(np.sqrt(np.mean(v ** 2))) if v.size else 0.0
                         rms_all = _rms_pcm(b"".join(chunks))
                         rms_send = _rms_pcm(trimmed)
-                        _plog(f"SEND: {dur:.1f}s -> "
+                        _plog(f"PASSIVO: invio {dur:.1f}s -> "
                               f"{len(trimmed) / 2 / SR:.1f}s dopo il taglio "
                               f"(rms {rms_all:.0f} -> {rms_send:.0f}, picco {peak:.0f})")
                         ui(lambda: (set_mic_color(ACCENT),
@@ -2701,7 +2707,7 @@ def _passive_loop():
                 else:
                     oww_hits = 0
                 if wake:
-                    _plog(f"WAKE[{wake}]")
+                    _plog(f"PASSIVO: wake rilevata [{wake}]")
                     chunks = chunks[-PRE_WAKE:] + [pcm]  # wake + poco contesto
                     armed, since_voice, spoke_s = True, 0.0, 0.0
                     armed_t = time.time()

@@ -395,7 +395,7 @@ def cmd_log() -> int:
         print("Nessun log: il widget non ha ancora ascoltato (prova: ugo run).")
         return 1
     return _tail_in_terminal(
-        log, "Ugo - ascolto passivo",
+        log, "Ugo - ascolto (passivo, attivo e dettatura)",
         "Terminale aperto: vedi in diretta cosa sente Ugo (Ctrl+C o X per chiudere).")
 
 
