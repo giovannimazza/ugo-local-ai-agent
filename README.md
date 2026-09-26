@@ -204,8 +204,13 @@ and the Vosk fallback, then starts the server and the widget.
 missing, then the source, a dedicated venv, all the components and starts Ugo):
 
 ```bat
-powershell -c "irm https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; iex ((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.ps1'))"
 ```
+
+> Do **not** use the short form `irm ... | iex` here: Windows PowerShell 5.1
+> evaluates the downloaded file line by line (blank-line and
+> `MissingEndCurlyBrace` errors) and, without TLS 1.2, the download can come
+> back empty.
 
 The same installer doubles as **repair/update**: running it again refreshes the
 source and re-runs setup. Everyday updates stay with `ugo update`.

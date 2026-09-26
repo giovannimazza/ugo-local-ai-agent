@@ -3,7 +3,10 @@
 
 Un solo comando, nessun prerequisito oltre a Windows 10/11:
 
-    powershell -c "irm https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.py | iex"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; iex ((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.ps1'))"
+
+(Con `irm ... | iex` PowerShell 5.1 esegue il file RIGA PER RIGA e senza
+TLS 1.2 il download puo' tornare vuoto: usare la forma WebClient sopra.)
 
 Cosa fa:
   1. Python: usa quello presente se >= 3.10, altrimenti installa via winget

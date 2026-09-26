@@ -1,11 +1,19 @@
 # Ugo - bootstrap Windows one-liner (nessun prerequisito):
-#   powershell -c "irm https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.ps1 | iex"
-# Trova (o installa via winget) Python 3.10+, poi passa la mano a boot/install.py
-# che scarica il sorgente, crea il venv e lancia `ugo setup` + `ugo run`.
+#   powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; iex ((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.ps1'))"
+#
+# PERCHE' QUESTA FORMA: con `irm ... | iex` su PowerShell 5.1 GitHub raw viene
+# valutato RIGA PER RIGA (errori 'stringa vuota' e 'MissingEndCurlyBrace') e
+# senza TLS 1.2 il download puo' tornare vuoto. WebClient.DownloadString
+# ritorna UNA stringa intera e il TLS 1.2 esplicito evita i 403/vuoto.
+#
+# Trova (o installa via winget) Python 3.10+, poi passa la mano a
+# boot/install.py che scarica il sorgente, crea il venv e lancia
+# `ugo setup` + `ugo run`. NON richiede amministratore.
 
 $ErrorActionPreference = "Stop"
-$Repo = "https://github.com/giovannimazza/ugo-local-ai-agent"
-$Raw  = "https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main"
+$ProgressPreference = "SilentlyContinue"   # in PS 5.1 la barra rallenta i download 10x
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+$Raw = "https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main"
 
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host " Ugo - installazione automatica (Windows)"      -ForegroundColor Cyan
@@ -25,10 +33,17 @@ function Find-Python {
         $p = Get-Command $cmd -ErrorAction SilentlyContinue
         if ($p) { $cands = @($p.Source) + $cands }
     }
+    # preferenza al 3.12 (stabile): i primi della lista vincono
     foreach ($exe in $cands) {
         try {
             $v = & $exe -c "import sys;print('%d.%d' % sys.version_info[:2])" 2>$null
-            if ($v -match '^3\.1[0-9]') { return $exe }
+            if ($v -match '^3\.12') { return $exe }
+        } catch {}
+    }
+    foreach ($exe in $cands) {
+        try {
+            $v = & $exe -c "import sys;print('%d.%d' % sys.version_info[:2])" 2>$null
+            if ($v -match '^3\.(10|11|13|14)') { return $exe }
         } catch {}
     }
     return $null
