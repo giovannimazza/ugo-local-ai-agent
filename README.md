@@ -214,10 +214,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager
 
 **If `powershell.exe` is blocked** (corporate policy / antivirus: "Accesso
 negato" when launching it), or if the one-liner is refused inside an existing
-session, use the PowerShell-free path from **cmd.exe** — curl is built into
-Windows 10 1803+. Note: this is **cmd syntax**, do not paste it into a
-PowerShell window (`&&` is not a statement separator in Windows PowerShell 5.1;
-there, run the two lines separately or use the one-liner above):
+session, run the installer **in the session you already have open** — the
+one-liner above is already all in-process. Alternatively, from PowerShell:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol='Tls12'
+(New-Object Net.WebClient).DownloadFile('https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.bat', "$env:TEMP\ugo-install.bat")
+& "$env:TEMP\ugo-install.bat"
+```
+
+Or from **cmd.exe** (curl is built into Windows 10 1803+; this is cmd syntax,
+run the two lines separately — `&&` is not a statement separator in Windows
+PowerShell 5.1, and bare `curl` there is an alias of `Invoke-WebRequest`):
 
 ```bat
 curl -fsSL https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.bat -o "%TEMP%\ugo-install.bat"
