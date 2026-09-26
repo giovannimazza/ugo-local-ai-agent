@@ -491,6 +491,18 @@ def _vosk_transcribe(pcm: bytes) -> str:
     return txt
 
 
+def _wake_transcribe(pcm: bytes) -> str:
+    """Trascrizione del comando POST-WAKE. Vosk resta SEMPRE attivo per la
+    wake word (streaming continuo, quasi zero CPU); qui, dopo la wake, la
+    trascrizione va a Nemotron 3.5 Streaming se disponibile (qualita'
+    superiore, stesso spirito offline), altrimenti Whisper come prima."""
+    nt = nemotron_stt.transcribe_pcm(pcm)
+    if nt:
+        _track("nemotron", 0.0)
+        return nt
+    return transcribe(pcm)
+
+
 def transcribe(pcm: bytes) -> str:
     """Whisper prima (qualita' alta, GPU), Vosk come fallback."""
     if whisper_available():
@@ -2949,9 +2961,10 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
             return fast
     except Exception as exc:
         print(f"[fastlane] scartata ({exc}); passo alla pipeline completa")
-    # Whisper resta SEMPRE la trascrizione ufficiale: serve al wake-guard e
-    # alla qualita'; il pre_text ha gia' fatto il suo lavoro in fastlane.
-    text = transcribe(pcm)
+    # Vosk sente la wake word SEMPRE (streaming nel widget); dopo la wake la
+    # trascrizione va a Nemotron se disponibile, altrimenti Whisper. Il
+    # wake-guard fuzzy accetta le storie di Nemotron ('Hugo', 'Ugo'...).
+    text = _wake_transcribe(pcm)
     if require_wake and not _text_has_wake(text or ""):
         # se c'e' una domanda in attesa (menu scelta o conferma sì/no) la
         # risposta breve ('primo', 'si') non deve contenere la wake word
@@ -3436,6 +3449,10 @@ if __name__ == "__main__":
 
     print(f"Assistente vocale locale su http://127.0.0.1:{PORT}")
     get_stt()  # pre-carica Vosk
+    if nemotron_stt.available() and not nemotron_stt.ready():
+        # NeMo installato (extra [nemotron]) ma modello non ancora scaricato:
+        # lo scarichiamo all'avvio, cosi' e' pronto al primo comando.
+        nemotron_stt.download_async()
     if whisper_available():
         # pre-carica anche Whisper: senza, il PRIMO comando vocale pagava
         # 2-6 s di caricamento modello oltre alla trascrizione
@@ -3447,5 +3464,16 @@ if __name__ == "__main__":
             except Exception as exc:
                 print(f"[whisper] warm-up saltato: {exc}")
         threading.Thread(target=_warm, daemon=True).start()
+    if nemotron_stt.ready():
+        # modello gia' scaricato: pre-caricarlo costa secondi alla prima
+        # trascrizione -> meglio pagarseli ora, a server freddo
+        def _warm_nemo():
+            try:
+                t0 = time.time()
+                nemotron_stt.transcribe_pcm(b"\x00\x00" * 1600)
+                print(f"[nemotron] pronto in {time.time() - t0:.1f}s")
+            except Exception as exc:
+                print(f"[nemotron] warm-up saltato: {exc}")
+        threading.Thread(target=_warm_nemo, daemon=True).start()
     webbrowser.open(f"http://127.0.0.1:{PORT}")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

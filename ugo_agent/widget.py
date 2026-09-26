@@ -2388,8 +2388,8 @@ def _passive_send_wav(pcm: bytes):
         w.writeframes(pcm)
     # STT speculativo: Vosk ha GIA' sentito il comando durante la grazia ->
     # la sua trascrizione viaggia nell'header e alimenta la fastlane del
-    # server (volume/ora/data/file) senza aspettare nulla. Whisper sul
-    # server resta comunque la trascrizione ufficiale (wake-guard + qualita').
+    # server (volume/ora/data/file) senza aspettare nulla. Nemotron (o
+    # Whisper) sul server resta la trascrizione ufficiale (wake-guard + qualita').
     pre = _spec_text(pcm)
     try:
         res = _post_wav(buf.getvalue(), wake=1, pre_text=pre)   # il server verifica 'Ugo' con Whisper
@@ -2570,6 +2570,15 @@ def _passive_loop():
                     dchunks.append(pcm)
                     dtxt = rtxt(rec, "FinalResult") if rec.AcceptWaveform(pcm) else ""
                     if dtxt.strip() == "stop" or dtxt.lower().endswith(" stop"):
+                        # lo stop vocale NON deve finire incollato: sentito da
+                        # solo (o in coda) chiude la dettatura subito
+                        _dictate_stop()
+                        dchunks = []
+                        rec = KaldiRecognizer(model, SR)
+                        continue
+                    if dtxt.lower().startswith("stop ") and len(dtxt.split()) <= 4:
+                        # 'stop dettatura' / 'stop dictation' detto in frasi
+                        # divise: se Vosk lo vede aprire un blocco breve, ferma
                         _dictate_stop()
                         dchunks = []
                         rec = KaldiRecognizer(model, SR)

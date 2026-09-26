@@ -125,3 +125,30 @@ def transcribe_wav(wav_path) -> str:
     except Exception as exc:
         print(f"[nemotron] trascrizione non riuscita ({exc}); fallback Whisper")
         return ""
+
+
+def transcribe_pcm(pcm16: bytes) -> str:
+    """PCM s16le 16 kHz mono -> testo (per la trascrizione dei comandi):
+    scrive un WAV temporaneo e usa lo stesso motore della dettatura.
+    '' se Nemotron non e' utilizzabile -> il server usa Whisper."""
+    if not _env_enabled() or not pcm16:
+        return ""
+    try:
+        import numpy as _np
+        import soundfile as _sf
+        m = _get_model()
+        if m is None:
+            return ""
+        a = _np.frombuffer(pcm16, dtype=_np.int16).astype(_np.float32) / 32768.0
+        tmp = BASE / "_nemo_tmp.wav"
+        _sf.write(str(tmp), a, 16000)
+        try:
+            return transcribe_wav(tmp)
+        finally:
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+    except Exception as exc:
+        print(f"[nemotron] transcribe_pcm non riuscito ({exc})")
+        return ""
