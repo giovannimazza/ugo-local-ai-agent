@@ -1,3 +1,3 @@
-# i .bat NON vanno normalizzati: il blob deve conservare i CRLF perche' il
-caricamento raw + cmd sia affidabile (etichette/parse di cmd con LF sono fragili)
+# i .bat NON vanno normalizzati: il blob deve conservare i CRLF, perche'
+# cmd scaricato via raw con LF e' inaffidabile (parse di label e variabili)
 boot/*.bat -text
