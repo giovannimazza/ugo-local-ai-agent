@@ -212,6 +212,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager
 > `MissingEndCurlyBrace` errors) and, without TLS 1.2, the download can come
 > back empty.
 
+**If `powershell.exe` is blocked** (corporate policy / antivirus: "Accesso
+negato" when launching it), or if the one-liner is refused inside an existing
+session, use the PowerShell-free path from `cmd.exe` (curl is built into
+Windows 10 1803+):
+
+```bat
+curl -fsSL https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.bat -o "%TEMP%\ugo-install.bat" && "%TEMP%\ugo-install.bat"
+```
+
 The same installer doubles as **repair/update**: running it again refreshes the
 source and re-runs setup. Everyday updates stay with `ugo update`.
 
