@@ -9,7 +9,15 @@ no per-token cost.
 The project started as a demo of [Laya](https://pypi.org/project/laya/), a
 non-autoregressive decision engine used here for intent classification.
 
-![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-faster--whisper%20%7C%20CTranslate2-purple)
+![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-Nemotron%203.5%20%7C%20faster--whisper-purple)
+
+> **v0.4.0 highlights** — native voice **dictation** ("Ugo, comincia a dettare" →
+> text pasted where you type, no wake word) powered by **NVIDIA Nemotron 3.5
+> Streaming** (optional engine, faster-whisper fallback), post-wake transcription
+> migrates to Nemotron when installed, audio COM/pycaw moved to a crash-isolated
+> subprocess worker, server auto-restart watchdog, wake-residue stripping fixed
+> everywhere, "apri browser" opens the real system default browser, unified
+> PASSIVE/ACTIVE/DICTATION listening log.
 
 ---
 
@@ -191,49 +199,54 @@ community reference CT2 conversion (`deepdml/faster-whisper-large-v3-turbo-ct2`)
 With an NVIDIA GPU add the CUDA cuDNN packages (see below) for acceleration;
 otherwise int8 CPU.
 
-## 📦 Installation — one command
+## 📦 Installation — step by step
 
-`ugo run` does **everything automatically**: installs missing dependencies, Ollama
-(via winget on Windows, brew on macOS, official script on Linux), the Qwen models
-(1.5b default + 0.5b reserve), Whisper large-v3-turbo CTranslate2 (~1.6 GB, every OS)
-and the Vosk fallback, then starts the server and the widget.
+Ugo is fully self-provisioning: once you have the `ugo` command, `ugo run` installs
+**everything else by itself** (Ollama, the Qwen models, Whisper large-v3-turbo CT2,
+Vosk, Piper voice) and starts the server + widget. The steps below get you to the
+`ugo` command on each platform.
 
 ### Windows
 
-**Zero-touch install** (Windows 10/11, no prerequisites — installs Python too if
-missing, then the source, a dedicated venv, all the components and starts Ugo):
+1. **Python 3.12** (recommended; 3.10+ works): installer from
+   [python.org/downloads](https://www.python.org/downloads/) with **"Add python.exe
+   to PATH" checked**, or via winget:
 
-```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; iex ((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.ps1'))"
-```
+   ```bat
+   winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+   ```
 
-> Do **not** use the short form `irm ... | iex` here: Windows PowerShell 5.1
-> evaluates the downloaded file line by line (blank-line and
-> `MissingEndCurlyBrace` errors) and, without TLS 1.2, the download can come
-> back empty.
+2. **Install the package** (normal, non-admin terminal):
 
-**If `powershell.exe` is blocked** (corporate policy / antivirus: "Accesso
-negato" when launching it), or if the one-liner is refused inside an existing
-session, run the installer **in the session you already have open** — the
-one-liner above is already all in-process. Alternatively, from PowerShell:
+   ```bat
+   pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+   ```
 
-```powershell
-[Net.ServicePointManager]::SecurityProtocol='Tls12'
-(New-Object Net.WebClient).DownloadFile('https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.bat', "$env:TEMP\ugo-install.bat")
-& "$env:TEMP\ugo-install.bat"
-```
+3. **First start** — installs Ollama, the Qwen models, Whisper CT2 (~1.6 GB), the
+   Vosk fallback and the Piper voice, then starts server + widget:
 
-Or from **cmd.exe** (curl is built into Windows 10 1803+; this is cmd syntax,
-run the two lines separately — `&&` is not a statement separator in Windows
-PowerShell 5.1, and bare `curl` there is an alias of `Invoke-WebRequest`):
+   ```bat
+   ugo run
+   ```
 
-```bat
-curl -fsSL https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.bat -o "%TEMP%\ugo-install.bat"
-"%TEMP%\ugo-install.bat"
-```
+> **Restricted/corporate PCs**: the old one-line installers (`boot/install.ps1`,
+> `boot/install.bat`) remain in the repo for reference but are no longer the
+> supported path — on locked-down machines they hit policy blocks (spawn of
+> `powershell.exe` denied, TLS 1.2 issues, `curl` alias confusion in PowerShell).
+> The three steps above are the supported install.
 
-The same installer doubles as **repair/update**: running it again refreshes the
-source and re-runs setup. Everyday updates stay with `ugo update`.
+> **Optional: Nemotron STT engine** — dictation and post-wake transcription run on
+> NVIDIA **Nemotron 3.5 Streaming** (40 languages, Italian included) when the extra
+> is installed on a Python where NeMo is available (3.10–3.12):
+>
+> ```bat
+> pip install "ugo-agent[nemotron]"
+> ```
+>
+> The ~1.2 GB model downloads automatically at first use; without it Ugo uses
+> faster-whisper everywhere (identical behaviour).
+
+### Optional: winget (Windows)
 
 **With winget** (Windows Package Manager, included in Windows 10/11). The
 `Ugo.Agent` package is not yet in the winget community catalog, so today you
@@ -262,33 +275,35 @@ are installed the same way (or after the package is accepted into the
 [winget-pkgs](https://github.com/microsoft/winget-pkgs) community catalog, when
 a plain `winget install Ugo.Agent` will be enough).
 
-**With pip**:
-
-```bat
-pip install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
-ugo run
-```
-
 ### macOS
 
-```bash
-pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
-ugo run
-```
+1. **Python 3.12+** from [python.org](https://www.python.org/downloads/) or
+   `brew install python@3.12` (install [brew](https://brew.sh) first if missing)
+2. Install and start:
 
-First time on macOS: if `brew` is missing install it from [brew.sh](https://brew.sh),
-then grant microphone permission when macOS asks on first launch.
+   ```bash
+   pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+   ugo run
+   ```
+
+3. Grant **microphone permission** when macOS asks on first launch.
 
 ### Linux
 
-```bash
-sudo apt install python3-pip espeak-ng libportaudio2
-pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
-ugo run
-```
+1. **System packages** (Debian/Ubuntu; use your distro's equivalents elsewhere):
 
-`espeak-ng` provides the TTS voice, `libportaudio2` the microphone; on non-Debian
-distros use your package manager's equivalent.
+   ```bash
+   sudo apt install python3-pip python3-venv espeak-ng libportaudio2
+   ```
+
+   `espeak-ng` provides the TTS voice, `libportaudio2` the microphone.
+
+2. **Install and start**:
+
+   ```bash
+   pip3 install git+https://github.com/giovannimazza/ugo-local-ai-agent.git
+   ugo run
+   ```
 
 Available commands:
 
@@ -300,7 +315,7 @@ Available commands:
 | `ugo setup` | installation only, without starting |
 | `ugo doctor` | diagnostics: what's installed and what's missing |
 | `ugo stop` | stops the widget and the server |
-| `ugo log` | opens a terminal showing the passive listening live feed |
+| `ugo log` | opens a terminal with the live listening feed (PASSIVE with wake word, ACTIVE manual mic, DICTATION — what was heard → what was answered) |
 | `ugo update` | checks GitHub and updates to the latest version of the channel |
 | `ugo channel` | shows/switches the update channel (`dev` or `stable`) |
 | `ugo version` | shows the installed version |
@@ -418,6 +433,12 @@ single one remains.
 
 ### Using the widget
 - **Click** on the circle → record; **second click** → send
+- **Dictation** 📝: say **"Ugo, comincia a dettare"** and from then on everything you
+  say is transcribed and **pasted where you are typing** (no wake word needed, per-
+  sentence endpointing, blocks up to 14 s). Say **"Ugo, stop dettatura"** (or just
+  "stop" while dictating) to go back to normal listening. Transcription runs on
+  **Nemotron 3.5 Streaming** when the `[nemotron]` extra is installed, otherwise on
+  faster-whisper; the mode survives widget restarts (prefs `dictation`)
 - **Passive listening** 🎙️: say **"Ugo"** (or *ehi/oh/a Ugo*) and immediately the
   command — *"Ugo apri Spotify"* — without touching anything. Streaming Vosk, near
   zero CPU; it pauses during manual recording and for a few seconds after every
