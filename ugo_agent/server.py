@@ -1838,6 +1838,54 @@ def _close_app(t: str) -> str:
     return f"Non trovo nessuna applicazione chiamata {rest}."
 
 
+# ProgId -> nome del browser (prefissi: i ProgId reali hanno suffissi tipo
+# ChromeHTML.3HSDO5..., FirefoxURL-30804...)
+_BROWSER_PROGIDS = (
+    ("chromehtml", "Chrome"), ("chromiumhtml", "Chromium"),
+    ("firefoxurl", "Firefox"), ("firefoxhtml", "Firefox"),
+    ("msedgehtm", "Edge"), ("edgehtm", "Edge"),
+    ("bravehtm", "Brave"), ("braveurl", "Brave"),
+    ("comethtm", "Comet"),
+    ("operahtm", "Opera"), ("operastable", "Opera"), ("operaxml", "Opera"),
+    ("vivaldihtm", "Vivaldi"), ("vivaldihml", "Vivaldi"),
+    ("diahtm", "Dia"), ("diabrowser", "Dia"),
+    ("arc", "Arc"),
+)
+
+
+def _open_default_browser() -> str:
+    """'Apri browser' -> il browser PREDEFINITO di sistema, non un'app che si
+    chiama 'browser'. Legge l'associazione http di Windows (UserChoice ->
+    ProgId -> chiave shell\\open\\command) e lancia l'exe senza argomenti;
+    fallback: os.startfile su un URL, che apre comunque il predefinito."""
+    if pu.IS_WINDOWS:
+        try:
+            import winreg
+            with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\Shell\Associations"
+                    r"\UrlAssociations\http\UserChoice") as k:
+                progid = str(winreg.QueryValueEx(k, "ProgId")[0])
+            name = next((n for pre, n in _BROWSER_PROGIDS
+                         if progid.lower().startswith(pre)), None)
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,
+                                progid + r"\shell\open\command") as k:
+                cmd = str(winreg.QueryValueEx(k)[0])
+            exe = cmd.split("%1")[0].strip().strip('"')
+            if exe:
+                _popen([exe])
+                return (f"Sto aprendo {name}, il tuo browser predefinito."
+                        if name else "Sto aprendo il tuo browser predefinito.")
+        except Exception as exc:
+            print(f"[browser] predefinito non risolvibile dal registro: {exc}")
+        try:
+            os.startfile("http://www.google.com")  # noqa: S606
+            return "Sto aprendo il tuo browser predefinito."
+        except Exception:
+            pass
+    return "Non sono riuscito a capire qual e' il tuo browser predefinito."
+
+
 def run_command(text: str, intent: str) -> str:
     """Esegue il comando e ritorna la frase da dire alla voce."""
     t = _strip_wake(text.lower())  # wake-residue FUORI dai parametri: senza
@@ -1894,6 +1942,9 @@ def run_command(text: str, intent: str) -> str:
 
     if intent == "open_app":
         rest = re.sub(r"^(apri|lancia|avvia)\s+(il\s+|la\s+|lo\s+|l'|un\s+|una\s+)?", "", t).strip(" .!?")
+        # 'apri (il) browser (predefinito)' -> il browser di sistema
+        if re.fullmatch(r"(?:browser|navigatore)(?:\s+predefinito)?", rest):
+            return _open_default_browser()
         for alias, cmd in APP_ALIAS.items():
             if alias in rest or rest.startswith(alias):
                 try:
@@ -2823,6 +2874,10 @@ def _fast_command(text: str) -> dict | None:
     """
     t = (text or "").lower().strip()
     t = _strip_wake(t)  # 'chicco apri spotify' -> 'apri spotify' (residuo di wake)
+    # 'apri (il) browser' -> browser predefinito: subito, senza Whisper
+    if re.fullmatch(r"(?:apri|lancia|avvia)\s+(?:il\s+|la\s+|il\s+mio\s+)?"
+                    r"(?:browser|navigatore)(?:\s+predefinito)?", t):
+        return _emit(t, _open_default_browser(), "open_app", "fastlane", "voce", 0)
     # volume per-app: 'abbassa il volume di discord al 30' -> subito, senza Whisper
     m = re.match(r"^(abbassa|alza|aumenta|diminuisci|riduci|imposta|metti|tira|"
                  r"azzer\w*|silenz\w*)\b.{0,30}?(?:volume|audio|suono)\s*"
