@@ -214,11 +214,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager
 
 **If `powershell.exe` is blocked** (corporate policy / antivirus: "Accesso
 negato" when launching it), or if the one-liner is refused inside an existing
-session, use the PowerShell-free path from `cmd.exe` (curl is built into
-Windows 10 1803+):
+session, use the PowerShell-free path from **cmd.exe** — curl is built into
+Windows 10 1803+. Note: this is **cmd syntax**, do not paste it into a
+PowerShell window (`&&` is not a statement separator in Windows PowerShell 5.1;
+there, run the two lines separately or use the one-liner above):
 
 ```bat
-curl -fsSL https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.bat -o "%TEMP%\ugo-install.bat" && "%TEMP%\ugo-install.bat"
+curl -fsSL https://raw.githubusercontent.com/giovannimazza/ugo-local-ai-agent/main/boot/install.bat -o "%TEMP%\ugo-install.bat"
+"%TEMP%\ugo-install.bat"
 ```
 
 The same installer doubles as **repair/update**: running it again refreshes the
