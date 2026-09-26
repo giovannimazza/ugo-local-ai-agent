@@ -220,6 +220,106 @@ def open_path(target: str) -> None:
         subprocess.Popen(["xdg-open", target])
 
 
+def paste_text(text: str) -> bool:
+    """Incolla 'text' nel campo attivo (per la dettatura): copia negli
+    appunti, simula Ctrl+V e RIPRISTINA gli appunti precedenti. Ritorna
+    True se l'incolla e' stato eseguito."""
+    if not text:
+        return False
+    try:
+        if IS_WINDOWS:
+            import ctypes
+            import time as _t
+            u32 = ctypes.windll.user32
+            kernel = ctypes.windll.kernel32
+            OpenClipboard = u32.OpenClipboard
+            OpenClipboard.argtypes = [ctypes.c_void_p]
+            CF_UNICODETEXT = 13
+            GMEM_MOVEABLE = 0x0002
+
+            def _get_clip() -> str:
+                if not OpenClipboard(None):
+                    return ""
+                try:
+                    if not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                        return ""
+                    h = u32.GetClipboardData(CF_UNICODETEXT)
+                    if not h:
+                        return ""
+                    p = kernel.GlobalLock(h)
+                    if not p:
+                        return ""
+                    try:
+                        return ctypes.wstring_at(p)
+                    finally:
+                        kernel.GlobalUnlock(h)
+                finally:
+                    u32.CloseClipboard()
+
+            def _set_clip(s: str) -> bool:
+                for _ in range(5):   # la clipboard puo' essere occupata da altri
+                    if OpenClipboard(None):
+                        break
+                    _t.sleep(0.05)
+                else:
+                    return False
+                try:
+                    u32.EmptyClipboard()
+                    buf = ctypes.create_unicode_buffer(s)
+                    h = kernel.GlobalAlloc(GMEM_MOVEABLE,
+                                           ctypes.sizeof(buf))
+                    p = kernel.GlobalLock(h)
+                    if not p:
+                        return False
+                    ctypes.memmove(p, buf, ctypes.sizeof(buf))
+                    kernel.GlobalUnlock(h)
+                    u32.SetClipboardData(CF_UNICODETEXT, h)
+                    return True
+                finally:
+                    u32.CloseClipboard()
+
+            prev = _get_clip()
+            if not _set_clip(text):
+                return False
+            _t.sleep(0.08)
+            # Ctrl+V nel campo attivo: l'attacco non e' passato da un clic,
+            # il focus resta dove l'utente ha lasciato il cursore
+            VK_CONTROL, VK_V, KEYEVENTF_KEYUP = 0x11, 0x56, 0x0002
+            u32.keybd_event(VK_CONTROL, 0, 0, 0)
+            u32.keybd_event(VK_V, 0, 0, 0)
+            u32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+            u32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            _t.sleep(0.08)
+            if prev:
+                _set_clip(prev)      # ripristino: la clipboard dell'utente resta sua
+            return True
+        if IS_MAC:
+            script = ("set the clipboard to " +
+                      text.replace("\\", "\\\\").replace('"', '\\"')
+                      .replace("\n", "\\n") +
+                      "\ntell application \"System Events\" to keystroke \"v\" "
+                      "using command down")
+            subprocess.run(["osascript", "-e", script], check=True,
+                           capture_output=True, timeout=5)
+            return True
+        # Linux: xdotool (X11); su Wayland la dettatura incolla solo se
+        # xdotool e' installato e funzionante
+        subprocess.run(["sh", "-c",
+                        f"printf %s {shlex_quote(text)} | xclip -selection clipboard"],
+                       check=True, capture_output=True, timeout=5)
+        subprocess.run(["xdotool", "key", "ctrl+v"], check=True,
+                       capture_output=True, timeout=5)
+        return True
+    except Exception as exc:
+        print(f"[paste] incolla non riuscito: {exc}")
+        return False
+
+
+def shlex_quote(s: str) -> str:
+    import shlex
+    return shlex.quote(s)
+
+
 def open_app_bundle(name_or_path: str) -> bool:
     """Su macOS avvia un'app /Applications/<nome>.app; ritorna True se riuscito."""
     if not IS_MAC:

@@ -46,6 +46,7 @@ try:  # pacchetto (pip install / -m) O script diretto (python ugo_agent/server.p
     from . import piper_tts
     from . import multicommand
     from . import audio_worker
+    from . import nemotron_stt
 except ImportError:
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -53,6 +54,7 @@ except ImportError:
     from ugo_agent import piper_tts
     from ugo_agent import multicommand
     from ugo_agent import audio_worker
+    from ugo_agent import nemotron_stt
 
 import laya
 import pyttsx3
@@ -2361,6 +2363,11 @@ def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
 
 
 def process(text: str, source: str) -> dict:
+    # Toggle dettatura PRIMA di tutto (guardie, ordinali, laya): da testo vale
+    # come da voce, e 'stop dettatura' non deve finire in una conferma pending.
+    d = _dictation_toggle(text)
+    if d is not None:
+        return _emit(text, d, "dictate_toggle", "keyword", source, 0)
     raw_stt, corrected = text, None
     # --- scelta numerata in attesa ('primo', 'la seconda', 'numero 3') ---
     # prima del si/no: 'sì' non è un numero e viceversa, ma l'ordine conta
@@ -2644,6 +2651,45 @@ async def api_listen(audio: UploadFile):
     return _handle_pcm(proc.stdout)
 
 
+@app.post("/api/dictate")
+async def api_dictate(request: Request):
+    """Dettatura: il widget invia WAV di frasi da trascrivere e incollare.
+    Motore: Nemotron 3.5 Streaming se installato+scaricato, altrimenti
+    faster-whisper (sempre disponibile). Al primo toggle 'comincia a
+    dettare' il download del modello Nemotron parte in background."""
+    data = await request.body()
+    try:
+        wav = _wav_to_pcm16k(data)
+        out = BASE / "_dict_chunk.wav"
+        with wave.open(str(out), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(wav)
+        _t0 = time.time()
+        text = nemotron_stt.transcribe_wav(out)
+        engine = "nemotron"
+        if not text and not nemotron_stt.ready():
+            text = _whisper_transcribe(wav)   # fallback (o Nemotron assente)
+            engine = "whisper"
+        elif not text:
+            # Nemotron pronto ma ha detto '': riprova col fallback prima di
+            # arrendersi (frasi brevi/corrotte capitano nella dettatura)
+            alt = _whisper_transcribe(wav)
+            if alt:
+                text, engine = alt, "whisper"
+            else:
+                text = _vosk_transcribe(wav)
+                engine = "vosk" if text else engine
+        ms = int((time.time() - _t0) * 1000)
+        _reqlog(f"HTTP  /api/dictate  {len(data)} B  engine={engine}  "
+                f"{ms} ms  -> {text!r}")
+        return {"text": text, "engine": engine, "ms": ms}
+    except Exception as exc:
+        _reqlog(f"HTTP  /api/dictate  ERRORE: {exc}")
+        return JSONResponse({"error": f"audio non valido: {exc}"}, status_code=400)
+
+
 @app.post("/api/listen_wav")
 async def api_listen_wav(request: Request, wake: int = 0):
     """Riceve un WAV PCM (widget desktop), lo trascrive ed esegue.
@@ -2851,6 +2897,29 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
+_DICT_ON = ("comincia a dettare", "inizia a dettare", "inizia la dettatura",
+            "comincia la dettatura", "avvia la dettatura", "start dictation",
+            "start dictating")
+_DICT_OFF = ("stop dettatura", "ferma la dettatura", "termina la dettatura",
+             "basta dettare", "stop dictation", "stop dictating")
+
+
+def _dictation_toggle(text: str) -> str | None:
+    """Gestisce i comandi di dettatura dentro _handle_pcm (PRIMA di tutto):
+    ritorna la frase di risposta se il testo era un toggle, None altrimenti.
+    Il VERO ciclo di dettatura vive nel widget (microfono locale, senza wake
+    word); il server fa da registro di stato e dice al widget cosa fare."""
+    t = (text or "").lower().strip(" .!?")
+    if any(k in t for k in _DICT_ON):
+        if nemotron_stt.available() and not nemotron_stt.ready():
+            nemotron_stt.download_async()   # primo uso: scarica in background
+        return "Detatura attiva: parla e il testo appare dove stai scrivendo. " \
+               "Dimmi Ugo stop dettatura per finire."
+    if any(k in t for k in _DICT_OFF):
+        return "Detatura fermata."
+    return None
+
+
 def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
     if not pcm:
         return JSONResponse({"error": "audio vuoto"}, status_code=400)
@@ -2880,8 +2949,6 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
             return fast
     except Exception as exc:
         print(f"[fastlane] scartata ({exc}); passo alla pipeline completa")
-        if not pre_text:
-            vtxt = ""
     # Whisper resta SEMPRE la trascrizione ufficiale: serve al wake-guard e
     # alla qualita'; il pre_text ha gia' fatto il suo lavoro in fastlane.
     text = transcribe(pcm)
@@ -2909,6 +2976,8 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
         speak(entry["assistant"])
         _track("command", time.time() - _tcmd)
         return entry
+    # il toggle dettatura e' gestito dentro process() (dopo il wake-guard:
+    # un falso positivo del rilevatore passivo non puo' attivarla)
     res = process(text, "voce")
     _track("command", time.time() - _tcmd)
     return res

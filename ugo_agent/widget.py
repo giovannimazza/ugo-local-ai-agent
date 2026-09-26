@@ -162,6 +162,7 @@ def _save_prefs(**changes) -> None:
     except Exception:
         pass
     prefs["v"] = 3
+    prefs["dictation"] = bool(dict_flag.is_set())  # la dettatura sopravvive al riavvio
     try:
         POS_FILE.write_text(json.dumps(prefs))
     except Exception:
@@ -1826,6 +1827,47 @@ def _post_wav(wav: bytes, wake: int = 0, pre_text: str = ""):
         return json.loads(r.read().decode())
 
 
+def _post_dictate(wav: bytes) -> dict:
+    """Invia un blocco di dettatura al server (Nemotron o Whisper lato server)."""
+    req = urllib.request.Request(ROOT_URL + "/api/dictate", data=wav,
+                                 headers={"Content-Type": "audio/wav"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read().decode())
+
+
+def _dict_send(pcm: bytes):
+    """Trascrive un blocco di dettatura e lo incolla nel campo attivo."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(pcm)
+    try:
+        res = _post_dictate(buf.getvalue())
+        text = (res.get("text") or "").strip()
+        eng = res.get("engine", "-")
+        if text:
+            ok = pu.paste_text(text)
+            _plog(f"DICT [{eng}] {len(pcm) / 2 / SR:.1f}s incollato={ok}: {text!r}")
+        else:
+            _plog(f"DICT [{eng}] blocco vuoto (silenzio?)")
+    except Exception as exc:
+        _plog(f"DICT ERRORE server: {exc}")
+
+
+def _dictate_stop():
+    """Termina la dettatura e riporta l'ascolto passivo normale."""
+    dict_flag.clear()
+    try:
+        _post_json("/api/text", {"text": "stop dettatura"})
+    except Exception:
+        pass
+    _plog("DICT: stop")
+    ui(lambda: (set_mic_color(ACCENT), bubble.show(W("dict_off"))))
+    threading.Thread(target=_ensure_passive, daemon=True).start()
+
+
 def _meta_of(e):
     if e.get("intent") and e["intent"] != "-":
         return f"{e['intent']} · {e.get('detector', '')} · {e.get('ms', 0)} ms"
@@ -1872,6 +1914,9 @@ _WSTR = {
         "stt_unavail": "Trascrittore non disponibile ({e})",
         "tip_type": "Scrivi a Ugo", "tip_settings": "Impostazioni",
         "tip_close": "Chiudi Ugo", "tip_listen": "Attiva o spegni l'ascolto passivo",
+        "dict_on": "\U0001F4DD Detatura attiva: parla, il testo appare dove stai scrivendo.\nDimmi “Ugo, stop dettatura” per finire.",
+        "dict_off": "Detatura fermata.",
+        "dict_chunk": "\U0001F4DD Sto scrivendo…",
     },
     "en": {
         "placeholder": "Type to Ugo…",
@@ -1900,6 +1945,9 @@ _WSTR = {
         "stt_unavail": "Transcriber unavailable ({e})",
         "tip_type": "Type to Ugo", "tip_settings": "Settings",
         "tip_close": "Close Ugo", "tip_listen": "Turn passive listening on or off",
+        "dict_on": "\U0001F4DD Dictation on: speak, text appears where you type.\nSay “Ugo, stop dictation” to finish.",
+        "dict_off": "Dictation stopped.",
+        "dict_chunk": "\U0001F4DD Writing…",
     },
 }
 
@@ -1911,6 +1959,7 @@ def W(key: str, **kw) -> str:
 
 
 _lang_state = {"lang": "it"}
+dict_started = {"on": False}   # la bolla d'istruzioni dettatura si mostra una volta per sessione
 
 
 def _lang_poller():
@@ -2003,6 +2052,8 @@ root.bind("<FocusOut>", _on_focus_out)
 
 # --- registrazione microfono ---------------------------------------------------
 rec_flag = threading.Event()
+dict_flag = threading.Event()   # modalita' DITTATURA: trascrive e incolla,
+                                # niente wake word, finche' non si dice 'stop'
 
 
 def _err_text(exc: Exception) -> str:
@@ -2326,7 +2377,9 @@ def _spec_text(pcm: bytes) -> str:
 
 
 def _passive_send_wav(pcm: bytes):
-    """Invia l'audio del comando catturato al server e mostra la risposta."""
+    """Invia l'audio del comando catturato al server e mostra la risposta.
+    Se la risposta server e' l'attivazione della dettatura, entra in modalita'
+    dettatura (dict_flag): il loop passivo trascrive e incolla senza wake."""
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
@@ -2350,6 +2403,12 @@ def _passive_send_wav(pcm: bytes):
         _plog(f"risposta: {(res.get('assistant') or res.get('error') or '?')!r} "
               f"[{res.get('intent', '-')} / {res.get('detector', '-')} / "
               f"{res.get('ms', 0)} ms]")
+        if res.get("intent") == "dictate_toggle":
+            if "fermata" in (res.get("assistant") or "").lower() or \
+               "stopped" in (res.get("assistant") or "").lower():
+                dict_flag.clear()   # stop: il loop riparte come passivo normale
+            else:
+                dict_flag.set()     # attiva: il loop passivo diventa dettatura
     except Exception as exc:
         msg = W("server_error", e=exc)
         ui(lambda: bubble.show(msg))
@@ -2423,6 +2482,7 @@ def _passive_loop():
 
         rec = KaldiRecognizer(model, SR)
         chunks = []          # coda d'anello: ultimi ~3 s prima della wake word
+        dchunks = []         # buffer della modalita' dettatura (frase in corso)
         armed = False
         armed_t = 0.0        # istante della wake: grazia prima della chiusura
         since_voice = 0.0
@@ -2467,6 +2527,11 @@ def _passive_loop():
                 if rec_flag.is_set():
                     time.sleep(0.3)  # registrazione manuale attiva: riparto dopo
                     continue
+                if dict_flag.is_set() and not dict_started["on"]:
+                    dict_started["on"] = True   # primo giro in dettatura:
+                    dchunks = []                # buffer pulito + bolla d'istruzioni
+                    rec = KaldiRecognizer(model, SR)
+                    ui(lambda: bubble.show(W("dict_on"), sticky=True))
                 audio = mic.record(numframes=SR // 10).copy()
                 audio = np.clip(audio * agc_gain, -1, 1)   # guadagno AGC
                 pcm = _pcm16_of(audio)
@@ -2496,6 +2561,30 @@ def _passive_loop():
                     if noise * g > NOISE_CEIL * max(agc_gain, 1.0):
                         g = min(g, NOISE_CEIL * max(agc_gain, 1.0) / max(noise, 1.0))
                     agc_gain = 0.85 * agc_gain + 0.15 * g
+                # --- modalita' DITTATURA: niente wake word, niente grazia ---
+                # Accumula fino alla pausa (Vosk endpointing): a fine frase
+                # trascrive via /api/dictate (Nemotron se installato, altrimenti
+                # Whisper) e incolla nel campo attivo. 'stop' detto singolarmente
+                # chiude la dettatura.
+                if dict_flag.is_set():
+                    dchunks.append(pcm)
+                    dtxt = rtxt(rec, "FinalResult") if rec.AcceptWaveform(pcm) else ""
+                    if dtxt.strip() == "stop" or dtxt.lower().endswith(" stop"):
+                        _dictate_stop()
+                        dchunks = []
+                        rec = KaldiRecognizer(model, SR)
+                        continue
+                    if dtxt.strip():
+                        ui(lambda: bubble.show(W("dict_chunk"), sticky=True))
+                    if dtxt.strip() or (dchunks and
+                                        sum(len(c) for c in dchunks) / 2 / SR >= 14.0):
+                        buf = b"".join(dchunks)
+                        dchunks = []
+                        rec = KaldiRecognizer(model, SR)
+                        threading.Thread(target=_dict_send, args=(buf,),
+                                         daemon=True).start()
+                    continue
+
                 oww_s = 0.0
                 if oww_model is not None:
                     try:
@@ -2732,7 +2821,18 @@ def _boot():
     ui(lambda: bubble.show(W("ready") if ok else W("srv_down")))
 
 
+def _dict_autostart():
+    """Riapre la dettatura all'avvio del widget se era attiva quando si e'
+    chiuso (persistita in widget_pos.json): evita di ri-dire il toggle ogni volta."""
+    try:
+        if json.loads(POS_FILE.read_text()).get("dictation"):
+            dict_flag.set()
+    except Exception:
+        pass
+
+
 root.after(30, _pump_ui)
 root.after(200, lambda: threading.Thread(target=_boot, daemon=True).start())
+root.after(400, _dict_autostart)
 threading.Thread(target=_server_watchdog, daemon=True).start()
 root.mainloop()
