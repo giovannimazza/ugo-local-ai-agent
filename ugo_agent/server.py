@@ -622,6 +622,8 @@ NORMALIZE_SCHEMA = (
     'Fix ONLY clearly misheard or misspelled words (e.g. made-up app names). '
     'Never change words you are not sure about. Never translate, never execute, '
     'never answer, never add or remove punctuation. Keep Italian. '
+    'NEVER add courtesy prefixes like "Ciao", "Ecco", "Certo", "Ecco la '
+    'correzione:" — output the bare command only, nothing else. '
     'Never replace location words: desktop, documenti, downloads must stay exactly. '
     'Use the real names of apps and sites when the user garbles them. '
     'If the transcript is already correct or you are unsure, repeat it unchanged. '
@@ -697,6 +699,17 @@ def normalize_stt(text: str) -> str | None:
         _track_tps("qwen_normalize", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
         out = (data.get("response") or "").strip().strip('"').strip()
+        # Qwen a volte usa virgolette TIPOGRAFICHE: '“Ugo apri discord' —
+        # strip('"') non le tocca e il carattere spawn rompe poi le ancore ^
+        # di tutte le regex a valle (wake-residue compresa)
+        out = out.strip("\u201c\u201d\u2018\u2019'\"").strip()
+        # difesa attiva: se il modello aggiunge un preambolo chattioso ('Ciao,
+        # ecco la correzione: ...'), lo taglia al primo ':' (max 60 char prima)
+        if ":" in out[:70]:
+            head, tail = out.split(":", 1)
+            if tail.strip() and len(head) <= 60:
+                print(f"[normalize] tagliato preambolo chattioso: {head!r}")
+                out = tail.strip()
         # difese: vuoto, delirio troppo lungo o multilinea -> meglio l'originale
         if not out or "\n" in out or len(out) > len(text) * 3 + 80:
             return None
@@ -1827,7 +1840,10 @@ def _close_app(t: str) -> str:
 
 def run_command(text: str, intent: str) -> str:
     """Esegue il comando e ritorna la frase da dire alla voce."""
-    t = text.lower()
+    t = _strip_wake(text.lower())  # wake-residue FUORI dai parametri: senza
+    # questa strip 'apri discord' detto 'Ugo apri discord' cercava un'app
+    # chiamata 'ugo apri discord' (via keyword la pipeline completa non
+    # passava dal fastlane e non faceva la strip)
 
     # 'quali app/giochi ho' -> lista indicizzata, mostrata in modale dalla UI
     if intent == "list_apps":
@@ -1920,8 +1936,10 @@ def run_command(text: str, intent: str) -> str:
                     _pending["ts"] = time.time()
                     _pending_choices["menu"] = menu
                 opts = " o ".join(f"{i + 1}) {n}" for i, n in enumerate(menu))
+                _num = ("primo, secondo o terzo" if len(menu) > 2
+                        else "primo o secondo")
                 return (f'Non ho nessuna app chiamata {rest}. Vuoi {opts}? '
-                        'Dimmi primo, secondo o terzo.')
+                        f'Dimmi {_num}.')
         if not hits:
             # fallback fuzzy: il nome era storpiato ('spotrifyt' -> 'Spotify')
             close = difflib.get_close_matches(
@@ -2568,8 +2586,10 @@ def process(text: str, source: str) -> dict:
                             _pending["ts"] = time.time()
                             _pending_choices["menu"] = menu
                         opts = " o ".join(f"{i + 1}) {n}" for i, n in enumerate(menu))
+                        _num = ("primo, secondo o terzo" if len(menu) > 2
+                                else "primo o secondo")
                         return _emit(text, f'Quale intendevi: {opts}? '
-                                           'Dimmi primo, secondo o terzo.',
+                                           f'Dimmi {_num}.',
                                      "open_app", "scelta", source, 0)
             # i refusi appresi si applicano gia' qui, pre-intent: il comando
             # girato viene riscritto e tutto il resto lo vede corretto
@@ -2773,10 +2793,13 @@ _FAST_TAIL_NOISE = re.compile(
 # residui di wake word: "chicco apri spotify" Vosk lo scrive così, e la fase
 # pre-intent lo vedrebbe come app "chicco apri spotify" -> nessuna app
 _WAKE_RESIDUE = re.compile(
-    r"^\s*(?:(?:ehi|oh|hey|e|a|he)\s+)?"
-    r"(?:ugo|hugo|sugo|wugo|yugo|jugo|ugoo|uugo|uhgo|riugo|truogo|fuoco)\b[,\s.:;!?]*",
-    re.IGNORECASE)   # coda con punteggiatura: Vosk scrive 'ugo.' e senza il punto
-                     # il fastlane non matchava -> Whisper CPU (14 s invece di 1)
+    r"^[\s\"'\u201c\u201d\u2018\u2019]*(?:(?:ehi|oh|hey|e|a|he)\s+)?"
+    r"(?:ugo|hugo|sugo|wugo|yugo|jugo|ugoo|uugo|uhgo|riugo|truogo|fuoco)\b[,\s.:;!?\"'\u201c\u201d]*",
+    re.IGNORECASE)   # virgolette/spazi ammessi PRIMA della wake: Qwen a volte
+                     # restituisce '“Ugo apri discord' e senza questo l'ancora
+                     # ^ non matchava piu' (la strip saltava). Coda con
+                     # punteggiatura: Vosk scrive 'ugo.' e senza il punto il
+                     # fastlane non matchava -> Whisper CPU (14 s invece di 1)
 
 
 def _strip_wake(text: str) -> str:
