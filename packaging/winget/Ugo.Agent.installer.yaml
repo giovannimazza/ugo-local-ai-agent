@@ -17,7 +17,7 @@ UpgradeBehavior: install
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/giovannimazza/ugo-local-ai-agent/releases/download/v0.4.0/ugo-0.4.0-winget.zip
-    InstallerSha256: f27c34ba797491fa8e99b5e27502b77faaa79171a4d9cf94722315a4f4fb661a
-    ReleaseDate: "2026-09-25"
+    InstallerSha256: e7e7ddc573377ff43c3a5a7d89f505ca1bed5c06b6083bda2ac3229d80ebc4fa
+    ReleaseDate: "2026-09-26"
 ManifestType: installer
 ManifestVersion: 1.6.0
