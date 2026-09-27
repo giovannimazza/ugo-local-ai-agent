@@ -32,6 +32,9 @@ jobs:
       - name: Compila tutti i moduli (errori di sintassi)
         run: python -m compileall -q ugo_agent
 
+      - name: Test della pipeline audio E2E (TTS -> STT -> intent)
+        run: python tests/test_e2e_audio.py
+
       - name: Import dei moduli cross-platform (senza avviare server/GUI)
         run: python -c "import ugo_agent.platform_utils as pu; import ugo_agent.appindex; import ugo_agent.games; import ugo_agent.cli; print('OS:', pu.OS_NAME, '| dati:', pu.data_dir())"
 
