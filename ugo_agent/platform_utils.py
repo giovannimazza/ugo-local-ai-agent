@@ -139,6 +139,8 @@ def tts_say(text: str, wav_out: Path) -> None:
 
 def tts_stop() -> None:
     """Interrompe la riproduzione vocale in corso."""
+    global _tts_playing
+    _tts_playing = False
     if IS_WINDOWS:
         try:
             import winsound
@@ -146,7 +148,6 @@ def tts_stop() -> None:
             return
         except Exception:
             pass
-    global _tts_engine
     try:
         if _tts_engine is not None:
             _tts_engine.stop()
@@ -155,8 +156,16 @@ def tts_stop() -> None:
     # su mac/Linux pyttsx3 parla via espeak/nsss in-process: stop() basta
 
 
+# True finche' l'ultima riproduzione non e' stata interrotta da tts_stop():
+# la catena TTS del widget la usa per accorgersi di uno stop avvenuto mentre
+# una parte era in corso
+_tts_playing = False
+
+
 def tts_play_file(wav_path: Path) -> None:
     """Riproduce un WAV in modo asincrono (il widget non ha bisogno del server)."""
+    global _tts_playing
+    _tts_playing = True
     if IS_WINDOWS:
         import winsound
         winsound.PlaySound(str(wav_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
@@ -169,6 +178,34 @@ def tts_play_file(wav_path: Path) -> None:
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
+
+
+def tts_play_file_blocking(wav_path: Path) -> bool:
+    """Riproduce un WAV e ritorna SOLO a fine riproduzione (per le catene di
+    parti TTS: la parte successiva parte quando questa e' finita). False se
+    il motore non e' disponibile: il chiamante chiude la catena."""
+    global _tts_playing
+    _tts_playing = True
+    try:
+        if IS_WINDOWS:
+            import winsound
+            winsound.PlaySound(str(wav_path), winsound.SND_FILENAME)  # sync
+            _tts_playing = False
+            return True
+        if IS_MAC:
+            ok = subprocess.call(["afplay", str(wav_path)],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL) == 0
+            _tts_playing = False
+            return ok
+        ok = subprocess.call(["aplay", str(wav_path)],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL) == 0
+        _tts_playing = False
+        return ok
+    except Exception:
+        _tts_playing = False
+        return False
 
 
 def press_media_keys(up_steps: int, down_steps: int) -> bool:

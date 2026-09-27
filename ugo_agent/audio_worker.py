@@ -8,23 +8,33 @@ nativo di _ctypes.pyd (0xc0000005, heap COM) che uccide l'INTERO server.
 Con il worker il crash al peggio degrada una singola richiesta di volume
 (risposta di errore) invece di buttare giu' STT, LLM e TTS.
 
-Protocollo: richiesta JSON su stdin, risposta JSON su stdout, una per
-processo (spawn per richiesta: le chiamate sono brevi e rare).
+Protocollo: UNA riga JSON su stdin -> UNA riga JSON su stdout, in loop.
+Il worker e' RESIDENTE: il server lo avvia alla prima richiesta di volume e
+lo riutilizza per tutte le successive (prima: spawn per richiesta, ~300 ms
+di overhead a ogni comando). Se il worker crasha (proprio il crash COM che
+deve isolare) il server lo rileva e lo riavvia, ripetendo UNA volta la
+richiesta fallita: da fuori la richiesta al peggio perde ~1 s, non il server.
 
-Richieste:
+Richieste (una per riga):
+  {"op": "ping"}                               -> {"ok": true, "pid": 1234}
   {"op": "master_get"}                        -> {"ok": true, "volume": 50, "mute": false}
   {"op": "master_set", "volume": 40}          -> {"ok": true, "volume": 40}
   {"op": "master_mute", "mute": true}         -> {"ok": true, "mute": true}
   {"op": "sessions"}                          -> {"ok": true, "sessions": [{"name": "discord", "volume": 70}]}
   {"op": "app_get", "app": "discord"}         -> {"ok": true, "volume": 70}
   {"op": "app_set", "app": "discord", "volume": 30} -> {"ok": true, "volume": 30}
+  {"op": "quit"}                              -> {"ok": true}  (poi il worker esce)
 
 Il server lo usa tramite le funzioni comode in fondo (worker_call,
 worker_master_get, ...): fuori da Windows o senza pycaw ritornano None e il
 chiamante ricade sul comportamento preesistente.
 """
+import atexit
 import json
+import os
 import sys
+import threading
+import time
 
 
 def _endpoint_volume():
@@ -113,6 +123,8 @@ def op_app_set(app: str, volume: int):
 
 def _handle(req: dict) -> dict:
     op = req.get("op")
+    if op == "ping":
+        return {"pid": os.getpid()}  # compilato in main() col PID vero del worker
     if op == "master_get":
         return op_master_get()
     if op == "master_set":
@@ -129,46 +141,118 @@ def _handle(req: dict) -> dict:
 
 
 def main() -> int:
-    """Una richiesta per processo: legge JSON da stdin, scrive JSON su stdout."""
-    try:
-        req = json.loads(sys.stdin.read() or "{}")
-        out = _handle(req)
-        out.setdefault("ok", True)
-    except Exception as exc:
-        out = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    sys.stdout.write(json.dumps(out))
-    sys.stdout.flush()
-    return 0 if out.get("ok") else 1
+    """Worker RESIDENTE: legge una richiesta per riga da stdin, scrive una
+    risposta per riga su stdout, finche' lo stdin non si chiude o arriva
+    {"op": "quit"}. Il PID va nella risposta a ping (per i test)."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = {}
+        try:
+            req = json.loads(line)
+            out = _handle(req)
+            out.setdefault("ok", True)
+        except Exception as exc:
+            out = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        try:
+            sys.stdout.write(json.dumps(out) + "\n")
+            sys.stdout.flush()
+        except Exception:
+            break  # il server e' morto: niente a cui rispondere
+        if isinstance(req, dict) and req.get("op") == "quit":
+            break
+    return 0
 
 
 # ---------------------------------------------------------------------------
-# Lato server: helper per chiamare il worker (questo modulo e' importabile
-# anche dal server, la parte subprocess sta qui per condividere la logica).
+# Lato server: helper per chiamare il worker RESIDENTE (questo modulo e'
+# importabile anche dal server, la parte subprocess sta qui per condividere
+# la logica). Primo uso: spawn; usi successivi: riga su stdin/risposta.
 # ---------------------------------------------------------------------------
 _WORKER_TIMEOUT = 10.0
+_proc = None                    # handle del worker residente
+_proc_lock = threading.Lock()   # le richieste si serializzano: un solo pipe
+
+
+def _stop_worker() -> None:
+    """Chiude il worker (crash sospetto, hang o uscita dal server)."""
+    global _proc
+    p, _proc = _proc, None
+    if p is None:
+        return
+    try:
+        p.kill()
+    except Exception:
+        pass
+
+
+def _call_locked(req: dict, retries: int = 1) -> dict | None:
+    """Chiamata con lock GIA' preso: spawn se necessario, write/read, e in
+    caso di crash/hang kill+respawn con retry (max 'retries' volte)."""
+    global _proc
+    import subprocess
+    from pathlib import Path
+
+    if _proc is not None and _proc.poll() is not None:
+        _proc = None              # e' crashato: era il suo compito
+    if _proc is None:
+        try:
+            _proc = subprocess.Popen(
+                [sys.executable, "-u", str(Path(__file__).resolve())],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            atexit.register(_stop_worker)
+        except Exception:
+            _proc = None
+            return None
+    try:
+        _proc.stdin.write(json.dumps(req).encode() + b"\n")
+        _proc.stdin.flush()
+    except Exception:
+        _stop_worker()
+        return _call_locked(req, retries - 1) if retries > 0 else None
+    # lettura CON timeout: un worker appeso viene killato, non blocca
+    # la pipeline vocale (prima: subprocess.run con timeout, stesso patto)
+    box: dict = {}
+
+    def _read():
+        try:
+            box["line"] = _proc.stdout.readline()
+        except Exception:
+            box["line"] = b""
+
+    th = threading.Thread(target=_read, daemon=True)
+    th.start()
+    th.join(_WORKER_TIMEOUT)
+    if th.is_alive():
+        _stop_worker()            # readline sbloccata dalla kill
+        return _call_locked(req, retries - 1) if retries > 0 else None
+    line = box.get("line") or b""
+    if not line.strip():
+        _stop_worker()            # stdout chiuso: il worker e' morto
+        return _call_locked(req, retries - 1) if retries > 0 else None
+    try:
+        return json.loads(line.decode(errors="replace"))
+    except Exception:
+        _stop_worker()
+        return _call_locked(req, retries - 1) if retries > 0 else None
 
 
 def worker_call(req: dict) -> dict | None:
-    """Esegue una richiesta nel worker subprocess. Ritorna la risposta con
-    'ok', o None se fuori da Windows / pycaw assente / worker non disponibile.
-    Il chiamante deve gestire None ricadendo sul percorso preesistente."""
+    """Esegue una richiesta nel worker subprocess RESIDENTE. Ritorna la
+    risposta con 'ok', o None se fuori da Windows / pycaw assente / worker
+    non riavviabile. Il chiamante deve gestire None ricadendo sul percorso
+    preesistente. Su crash o hang del worker: kill, respawn e UNO retry."""
     if not sys.platform.startswith("win"):
         return None
     try:
         import pycaw  # noqa: F401  disponibilita': senza, tutto il ramo e' OFF
     except Exception:
         return None
-    import subprocess
-    from pathlib import Path
-    creation = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
-    try:
-        r = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve())],
-            input=json.dumps(req).encode(), capture_output=True,
-            timeout=_WORKER_TIMEOUT, creationflags=creation)
-        return json.loads(r.stdout.decode(errors="replace"))
-    except Exception:
-        return None
+    with _proc_lock:
+        return _call_locked(req)
 
 
 def worker_master_get() -> dict | None:
