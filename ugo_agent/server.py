@@ -47,6 +47,7 @@ try:  # pacchetto (pip install / -m) O script diretto (python ugo_agent/server.p
     from . import multicommand
     from . import audio_worker
     from . import nemotron_stt
+    from . import quick_stt
 except ImportError:
     if __package__ is None and str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -55,6 +56,7 @@ except ImportError:
     from ugo_agent import multicommand
     from ugo_agent import audio_worker
     from ugo_agent import nemotron_stt
+    from ugo_agent import quick_stt
 
 import laya
 import pyttsx3
@@ -354,29 +356,76 @@ def _pick_voice(engine) -> None:
                 return
 
 
+# parti TTS della risposta corrente: _tts_reply.wav, _tts_reply2.wav...
+
+
+def _tts_part_path(i: int) -> Path:
+    """Path della parte i della risposta: la 0 e' _tts_reply.wav (nome
+    storico, compatibile con widget/web vecchi), le successive sono
+    _tts_reply2.wav, _tts_reply3.wav, ... (una in piu' dell'indice)."""
+    return BASE / ("_tts_reply.wav" if i == 0 else f"_tts_reply{i + 1}.wav")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Spezza la risposta in frasi per la catena TTS: punto, ! e ? chiudono
+    la frase (i due-punti no: spezzano a meta'); i frammenti minuscoli si
+    saldano al precedente e se resta solo polvere di frasi, meglio una
+    sintesi unica che una voce strozzata."""
+    import re as _re
+    parts = [p.strip() for p in _re.split(r"(?<=[.!?])\s+", text) if p.strip()]
+    merged: list[str] = []
+    for p in parts:
+        if merged and len(p) < 12:
+            merged[-1] += " " + p
+        else:
+            merged.append(p)
+    if len(merged) >= 2 and sum(len(p) for p in merged) / len(merged) < 18:
+        return [text]
+    return merged or [text]
+
+
+_tts_gen = {"n": 0}   # generazione catena: una nuova speak() invalida quella precedente
+
+
 def speak(text: str, two_part: bool = False) -> str:
     """Riproduce la risposta a voce e ritorna il path del file wav generato.
-    two_part=True: la PRIMA frase parte subito (Piper senza silenzio di coda),
-    il resto viene sintetizzato in parallelo su _tts_reply2.wav che widget e
-    web riproducono a catena: su risposte lunghe la voce parte ~0.5-1 s prima."""
+
+    Catena N frasi: la PRIMA frase e' sintetizzata subito (Piper senza
+    silenzio di coda) e le successive vengono generate in parallelo su un
+    file per parte (_tts_reply.wav, _tts_reply2.wav, _tts_reply3.wav...);
+    widget e web riproducono le parti a catena. Su risposte lunghe la voce
+    parte come prima (~0.5-1 s prima di una sintesi unica) ma senza il tetto
+    delle 2 parti: una risposta da 6 frasi non torna al blocco unico."""
     out = BASE / "_tts_reply.wav"
-    out2 = BASE / "_tts_reply2.wav"
     t0 = time.time()
     with _tts_lock:
-        out2.unlink(missing_ok=True)   # niente audio stantio della risposta prima
-        if two_part and piper_tts.get_engine() == "piper" and ". " in text:
-            first, rest = text.split(". ", 1)
-            first += "."
-            try:
-                if piper_tts.synthesize_part(first, out):
-                    _track("tts_piper", time.time() - t0)
-                    # il resto VA in parallelo, senza il lock (file diverso):
-                    # non ritarda la prima frase della prossima risposta
-                    threading.Thread(target=piper_tts.synthesize,
-                                     args=(rest, out2), daemon=True).start()
-                    return str(out)          # la prima frase e' gia' pronta
-            except Exception as exc:
-                print(f"[piper] two-part inatteso ({exc}); sintesi unica")
+        # pulizia delle parti della risposta PRECEDENTE (niente audio stantio)
+        for i in range(12):
+            _tts_part_path(i).unlink(missing_ok=True)
+        parts = (_split_sentences(text)
+                 if two_part and piper_tts.get_engine() == "piper" else [text])
+        if len(parts) > 8:                # oltre 8 frasi: raggruppo le code
+            head, tail = parts[:4], parts[4:]
+            parts = head + [" ".join(tail)]
+        try:
+            if len(parts) > 1 and piper_tts.synthesize_part(parts[0], out):
+                _track("tts_piper", time.time() - t0)
+                _tts_gen["n"] += 1
+                gen = _tts_gen["n"]
+                def _chain():
+                    for i, ptxt in enumerate(parts[1:], start=1):
+                        if gen != _tts_gen["n"]:
+                            return   # una nuova risposta ha preso il posto
+                        try:
+                            piper_tts.synthesize(
+                                ptxt if ptxt.endswith((".", "!", "?", ":"))
+                                else ptxt + ".", _tts_part_path(i))
+                        except Exception:
+                            break
+                threading.Thread(target=_chain, daemon=True).start()
+                return str(out)          # la prima frase e' gia' pronta
+        except Exception as exc:
+            print(f"[piper] catena inattesa ({exc}); sintesi unica")
         try:
             if piper_tts.synthesize(text, out):
                 _track("tts_piper", time.time() - t0)
@@ -491,15 +540,29 @@ def _vosk_transcribe(pcm: bytes) -> str:
     return txt
 
 
-def _wake_transcribe(pcm: bytes) -> str:
-    """Trascrizione del comando POST-WAKE. Vosk resta SEMPRE attivo per la
-    wake word (streaming continuo, quasi zero CPU); qui, dopo la wake, la
-    trascrizione va a Nemotron 3.5 Streaming se disponibile (qualita'
-    superiore, stesso spirito offline), altrimenti Whisper come prima."""
+def _premium_transcribe(pcm: bytes) -> str:
+    """Motori STT 'leggeri' della cascata: Nemotron 3.5 (NeMo) se disponibile,
+    altrimenti quick-stt ONNX (sherpa-onnx, gira anche su Python 3.13+),
+    altrimenti ''. Il chiamante ricade su Whisper/Vosk."""
     nt = nemotron_stt.transcribe_pcm(pcm)
     if nt:
         _track("nemotron", 0.0)
         return nt
+    qt = quick_stt.transcribe_pcm(pcm)
+    if qt:
+        _track("quick", 0.0)
+        return qt
+    return ""
+
+
+def _wake_transcribe(pcm: bytes) -> str:
+    """Trascrizione del comando POST-WAKE. Vosk resta SEMPRE attivo per la
+    wake word (streaming continuo, quasi zero CPU); qui, dopo la wake, la
+    trascrizione va a Nemotron/quick-stt se disponibili (qualita'
+    superiore, stesso spirito offline), altrimenti Whisper come prima."""
+    t = _premium_transcribe(pcm)
+    if t:
+        return t
     return transcribe(pcm)
 
 
@@ -530,6 +593,7 @@ LAYA_QUESTIONS = {
             "time": "ask what time it is",
             "date": "ask what day or date it is today",
             "volume": "turn volume up, down or mute the computer",
+            "timer": "set a timer, an alarm clock or a reminder (for example: a timer for 10 minutes, wake me up at 7, remind me to call Maria tomorrow)",
             "set_app_volume": "set, raise or lower the volume of ONE specific application (e.g. lower Discord's volume to 30 percent)",
             "close_app": "close or quit a running application the user names",
             "list_files": "list or show the files in a directory",
@@ -545,10 +609,28 @@ LAYA_LABELS = set(LAYA_QUESTIONS["intent"]["criteria"]) - {"unknown"}
 # traduce il linguaggio naturale in una "specifica comando" JSON per l'executer.
 # ---------------------------------------------------------------------------
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:0.5b"   # fallback: il piu' piccolo, sempre disponibile
-DEFAULT_MODEL = "qwen2.5:1.5b"  # benchmark: corretto sulle frasi giuste e sugli errori
+OLLAMA_MODEL = os.environ.get("UGO_LLM_FALLBACK", "qwen2.5:0.5b")  # il piu' piccolo, sempre disponibile
+DEFAULT_MODEL = os.environ.get("UGO_LLM", "qwen2.5:1.5b")  # benchmark: corretto sulle frasi giuste e sugli errori
 MODEL_FILE = pu.data_dir() / "model.json"
 _active_model = {"name": DEFAULT_MODEL}
+
+
+def _llm_clean(out: str) -> str:
+    """Pulisce la risposta dei modelli reasoning (Qwen3, DeepSeek-R1...):
+    toglie il blocco <think>...</think> e un eventuale <think> aperto senza
+    chiusura (num_predict ha tagliato a meta' il ragionamento). Per i modelli
+    2.5 la funzione e' un no-op: non c'e' nessun tag."""
+    if not out:
+        return out
+    low = out.lower()
+    if "<think>" in low:
+        import re as _re
+        out = _re.sub(r"<think>.*?</think>", "", out, flags=_re.S | _re.I)
+        # <think> aperto senza chiusura: scarta TUTTO dal tag in poi
+        idx = out.lower().find("<think>")
+        if idx != -1:
+            out = out[:idx]
+    return out.strip()
 
 try:  # scelta persistita dall'utente (menu widget/UI web)
     _saved = json.loads(MODEL_FILE.read_text()) if MODEL_FILE.exists() else {}
@@ -698,7 +780,7 @@ def normalize_stt(text: str) -> str | None:
         _track("qwen_normalize", time.time() - _q0)
         _track_tps("qwen_normalize", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
-        out = (data.get("response") or "").strip().strip('"').strip()
+        out = _llm_clean((data.get("response") or "").strip()).strip('"').strip()
         # Qwen a volte usa virgolette TIPOGRAFICHE: '“Ugo apri discord' —
         # strip('"') non le tocca e il carattere spawn rompe poi le ancore ^
         # di tutte le regex a valle (wake-residue compresa)
@@ -1035,7 +1117,7 @@ def ollama_parse(text: str) -> dict | None:
         _track("qwen_intent", time.time() - _q0)
         _track_tps("qwen_intent", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
-        spec = json.loads(data.get("response") or "{}")
+        spec = json.loads(_llm_clean(data.get("response") or "") or "{}")
         if not isinstance(spec, dict):
             return None
         # il modello 0.5B a volte usa {"command", "data"{...}} invece del formato piatto
@@ -1096,7 +1178,7 @@ def ollama_chat(text: str) -> str | None:
         _track("qwen_chat", time.time() - _q0)
         _track_tps("qwen_chat", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
-        out = " ".join((data.get("response") or "").split())
+        out = " ".join(_llm_clean((data.get("response") or "")).split())
         # difese: vuoto o delirio lunghissimo -> meglio la risposta preimpostata
         if not out or len(out) > 600:
             return None
@@ -1127,6 +1209,8 @@ KEYWORDS = [
     ("volume", ("volume", "muto", "mute")),
     ("time", ("che ore sono", "che ora e", "ora esatta", "orario")),
     ("date", ("che giorno", "data di oggi", "che data")),
+    ("timer", ("timer", "sveglia", "svegliami", "ricordami", "promemoria",
+               "imposta una sveglia")),
     ("list_files", ("elenca i file", "mostra i file", "elenca i documenti",
                     "cosa c'e in", "lista file")),
     ("list_apps", ("quali app ho", "che app ho", "quali giochi ho", "che giochi ho",
@@ -1886,12 +1970,254 @@ def _open_default_browser() -> str:
     return "Non sono riuscito a capire qual e' il tuo browser predefinito."
 
 
+# ---------------------------------------------------------------------------
+# Timer, sveglie e promemoria vocali: 'timer 10 minuti', 'sveglia alle 7 e
+# mezza', 'ricordami di chiamare maria tra 10 minuti'. Registro su disco
+# (timers.json): sopravvivono al riavvio del server, che riarma i timer
+# pendenti all'avvio. L'annuncio parla dal server (pu.tts_play_file) perche'
+# non passa da una risposta API al widget.
+# ---------------------------------------------------------------------------
+TIMERS_FILE = BASE / "timers.json"
+_timers_lock = threading.Lock()
+_TIMERS: dict = {}
+_timer_seq = {"n": 0}
+
+
+def _timers_save() -> None:
+    try:
+        with _timers_lock:
+            data = [{"id": i, "kind": v["kind"], "fire_at": v["fire_at"],
+                     "label": v["label"], "dur_s": v["dur_s"]}
+                    for i, v in _TIMERS.items()]
+        TIMERS_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        print(f"[timers] salvataggio fallito: {exc}")
+
+
+def _timers_reload() -> None:
+    """All'avvio: riarma i timer pendenti; quelli saltati da meno di 5 minuti
+    vengono annunciati in ritardo, i piu' vecchi scartati."""
+    try:
+        data = json.loads(TIMERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    now = time.time()
+    for v in data or []:
+        fire_at = float(v.get("fire_at") or 0)
+        if fire_at <= now - 300:
+            continue                      # troppo vecchio: persa la occasione
+        _timer_seq["n"] += 1
+        tid = _timer_seq["n"]
+        late = fire_at <= now
+        _TIMERS[tid] = {**v, "id": tid, "late": late}
+        _t = threading.Timer(max(0.0, fire_at - now), _timer_fire, args=(tid,))
+        _t.daemon = True  # i timer NON devono tenere vivo il processo
+        _t.start()
+    if _TIMERS:
+        print(f"[timers] riarmati {_TIMERS and len(_TIMERS)} timer pendenti")
+        _timers_save()
+
+
+def _fmt_when(fire_at: float) -> str:
+    return datetime.fromtimestamp(fire_at).strftime("%H:%M") \
+        if fire_at - time.time() < 86400 else \
+        datetime.fromtimestamp(fire_at).strftime("domani alle %H:%M")
+
+
+def _timer_fire(tid: int) -> None:
+    with _timers_lock:
+        v = _TIMERS.pop(tid, None)
+    _timers_save()
+    if not v:
+        return
+    dur = v.get("dur_s") or 0
+    label = (v.get("label") or "").strip()
+    kind = v.get("kind")
+    if kind == "alarm":
+        msg = "Sveglia! Sono le " + datetime.fromtimestamp(v["fire_at"]).strftime("%H:%M") + "."
+    elif kind == "reminder":
+        msg = "Promemoria" + (f" ({_fmt_when(v['fire_at'])})" if v.get("late") else "") + ": " \
+              + (label or "e' l'ora che avevi segnato.")
+    else:
+        h, rem = divmod(int(dur), 3600)
+        m_ = rem // 60
+        dur_txt = (f"{h} ora{'e' if h != 1 else ''} e {m_} minuti" if h and m_
+                   else f"{h} ora{'e' if h != 1 else ''}" if h
+                   else f"{m_} minuti" if m_ else "meno di un minuto")
+        msg = f"Il timer{' ' + label if label else ''} di {dur_txt} e' scaduto."
+    if v.get("late"):
+        msg += " (scattato mentre ero spento, con un po' di ritardo)"
+    print(f"[timers] scaduto #{tid}: {msg}")
+    try:
+        wav = speak(msg)
+        pu.tts_play_file(Path(wav))   # annuncio dal server: nessun widget richiesto
+    except Exception as exc:
+        print(f"[timers] annuncio vocale fallito: {exc}")
+
+
+def _parse_duration_s(t: str):
+    """Secondi da '10 minuti', '90 secondi', "un'ora", "mezz'ora",
+    "un quarto d'ora", 'dieci minuti', '2 ore'. None se non riconosciuto."""
+    t = t.lower().replace("'", " ").replace("\u2019", " ")  # un'ora -> un ora
+    mh = re.search(r"(\d+|un|due|tre|quattro)\s*or[ae]\b", t)
+    if mh and re.search(r"mezz\w*", t):     # '1 ora e mezza' = 90 minuti
+        n = {"un": 1, "due": 2, "tre": 3, "quattro": 4}.get(mh.group(1)) or int(mh.group(1))
+        return n * 3600 + 1800
+    if re.search(r"mezz\w*\s*ora", t):
+        return 1800
+    if re.search(r"quarto\w*\s*d?\s*ora", t):
+        return 900
+    m = re.search(r"(\d+)\s*(secondi?|sec\b|minuti?|min\b|ore|ora|h\b)", t)
+    if not m:
+        m = re.search(r"\b(dieci|venti|trenta|quaranta|cinquanta|quindici)\s*"
+                      r"(secondi?|minuti?|ore|ora)", t)
+        if m:
+            words = {"quindici": 15, "dieci": 10, "venti": 20, "trenta": 30,
+                     "quaranta": 40, "cinquanta": 50}
+            n = words[m.group(1)]
+            u = m.group(2)
+            return n if u.startswith("s") else n * 60 if u.startswith("m") else n * 3600
+        m = re.search(r"\bun[ao]?\s*(minuto|ora|quarto)", t)
+        if m:
+            u = m.group(1)
+            return 60 if u == "minuto" else 900 if u == "quarto" else 3600
+        return None
+    n = int(m.group(1))
+    u = m.group(2)
+    return n if u.startswith("s") else n * 60 if u.startswith("m") else n * 3600
+
+
+def _parse_alarm_dt(t: str):
+    """Datetime da 'alle 7', 'alle 7 e mezza', 'alle 7:30', 'delle 7 di sera',
+    'domani alle 6'. None se nessun orario riconoscibile."""
+    t = t.lower()
+    m = re.search(r"(?:alle?|delle?|all')\s*(\d{1,2})"
+                  r"(?:\s*(?::|e)\s*(mezza|un\s+quarto|(\d{1,2})))?", t)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = 0
+    tail = m.group(2) or ""
+    if "mezza" in tail:
+        minute = 30
+    elif "quarto" in tail:
+        minute = 15
+    elif m.group(3):
+        minute = int(m.group(3))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    if re.search(r"(sera|pomeriggio|notte)", t) and hour < 12:
+        hour += 12
+    base = datetime.now().replace(minute=minute, second=0, microsecond=0)
+    if "domani" in t or "dopodomani" in t:
+        from datetime import timedelta
+        base += timedelta(days=2 if "dopodomani" in t else 1)
+    base = base.replace(hour=hour)
+    if base <= datetime.now():
+        from datetime import timedelta
+        base += timedelta(days=1)   # orario gia' passato: domani
+    return base
+
+
+def _timer_command(t: str) -> str:
+    """Ramo 'timer' di run_command: crea/annulla/elenca timer, sveglie e
+    promemoria. t e' il comando gia' in minuscolo e senza wake residue."""
+    tl = t.lower()
+    if "annulla" in tl or "cancella" in tl or "ferma la sveglia" in tl:
+        with _timers_lock:
+            kind = ("alarm" if "svegl" in tl else
+                    "reminder" if "promemor" in tl or "ricord" in tl else None)
+            cands = [v for v in _TIMERS.values() if kind is None or v["kind"] == kind]
+        if not cands:
+            return "Non c'e' nessun timer attivo da annullare."
+        with _timers_lock:
+            for v in cands:
+                _TIMERS.pop(v["id"], None)
+        _timers_save()
+        kind_name = {("alarm",): "sveglia", ("reminder",): "promemoria",
+                     ("timer",): "timer", ("alarm", "timer"): "sveglia"}.get(
+            tuple(sorted({v["kind"] for v in cands})), "timer")
+        return (f"Annullat{'a' if kind_name == 'sveglia' or kind_name == 'promemoria' else 'o'} "
+                f"{kind_name}.") if len(cands) == 1 else f"Annullati {len(cands)} elementi."
+    if re.search(r"quanti|quali|che (timer|svegl)|elenco", tl):
+        with _timers_lock:
+            items = sorted(_TIMERS.values(), key=lambda v: v["fire_at"])
+        if not items:
+            return "Non hai timer attivi."
+        names = {"alarm": "sveglia", "reminder": "promemoria", "timer": "timer"}
+        return "Attivi: " + ", ".join(
+            f"{names.get(v['kind'], 'timer')} per {_fmt_when(v['fire_at'])}"
+            + (f" ({v['label']})" if v.get("label") else "") for v in items) + "."
+    # --- creazione ---------------------------------------------------------
+    kind = "timer"
+    label, dur_s, when = "", None, None
+    if "svegl" in tl:
+        kind = "alarm"
+        when = _parse_alarm_dt(tl)
+    elif "ricord" in tl or "promemor" in tl:
+        m = re.search(r"ricordami(?:\s+di)?\s+(.+)$", tl)
+        label = (m.group(1) if m else "").strip()
+        when = _parse_alarm_dt(label)
+        if when is None:
+            dur_s = _parse_duration_s(label)
+        # il tempo non fa parte del testo del promemoria
+        label = re.sub(r"(alle?|delle?|all')\s*\d{1,2}.*$|tra?\s+.*$", "", label).strip(" ,.")
+        kind = "reminder"
+    else:
+        dur_s = _parse_duration_s(tl)
+    if when is None and dur_s is not None:
+        from datetime import timedelta
+        when = datetime.now() + timedelta(seconds=dur_s)
+    if when is None:
+        if kind == "alarm":
+            return "A che ora ti sveglio? Dimmi 'sveglia alle 7 e mezza' per esempio."
+        if kind == "reminder" and label:
+            # promemoria senza tempo: si salva come nota in Note.txt
+            target = DEFAULT_LOCATION / "Note.txt"
+            body = ""
+            if target.exists():
+                body = target.read_text(encoding="utf-8", errors="ignore")
+                if body and not body.endswith("\n"):
+                    body += "\n"
+            target.write_text(body + f"[promemoria] {label}\n", encoding="utf-8")
+            return f"Appuntato in Note.txt: {label[:80]}. Non mi hai detto quando: dimmi 'ricordami di {label[:40]} tra 10 minuti'."
+        if kind == "reminder":
+            return "Cosa devo ricordarti, e quando?"
+        return "Quanto deve durare il timer? Per esempio 'timer 10 minuti'."
+    _timer_seq["n"] += 1
+    tid = _timer_seq["n"]
+    fire_at = when.timestamp()
+    with _timers_lock:
+        _TIMERS[tid] = {"id": tid, "kind": kind, "fire_at": fire_at,
+                        "label": label, "dur_s": dur_s or 0}
+    _timers_save()
+    _t = threading.Timer(max(0.1, fire_at - time.time()), _timer_fire, args=(tid,))
+    _t.daemon = True  # i timer NON devono tenere vivo il processo
+    _t.start()
+    when_txt = _fmt_when(fire_at)
+    if kind == "alarm":
+        return f"Sveglia impostata per {when_txt}."
+    if kind == "reminder":
+        return f"Promemoria impostato per {when_txt}: {label or 'te lo dico io'}."
+    h, rem = divmod(int(dur_s or 0), 3600)
+    m_ = rem // 60
+    dur_txt = (f"{h} ore e {m_} minuti" if h and m_ else f"{h} ora" if h == 1
+               else f"{h} ore" if h else f"{m_} minuti" if m_
+               else f"{int(dur_s or 0)} secondi")
+    return f"Timer di {dur_txt} impostato: scatta alle {when_txt}."
+
+
 def run_command(text: str, intent: str) -> str:
     """Esegue il comando e ritorna la frase da dire alla voce."""
     t = _strip_wake(text.lower())  # wake-residue FUORI dai parametri: senza
     # questa strip 'apri discord' detto 'Ugo apri discord' cercava un'app
     # chiamata 'ugo apri discord' (via keyword la pipeline completa non
     # passava dal fastlane e non faceva la strip)
+    t = _strip_lead(t)  # 'ciao, apri discord' -> 'apri discord'
+
+    # timer, sveglie e promemoria: creazione/annullamento/elenco
+    if intent == "timer":
+        return _timer_command(t)
 
     # 'quali app/giochi ho' -> lista indicizzata, mostrata in modale dalla UI
     if intent == "list_apps":
@@ -2280,6 +2606,72 @@ _NO = {"no", "nope", "annulla", "annullare", "cancella", "sbagliato",
        "non", "niente", "mica"}
 
 
+# ---------------------------------------------------------------------------
+# Memoria conversazionale: l'ultimo comando apri/chiudi permette i follow-up
+# ("Ugo apri Spotify" ... "Ugo e anche Discord" -> apre Discord). Non serve
+# stubare l'LLM: la risoluzione e' locale, con la libreria app gia' indicizzata.
+# ---------------------------------------------------------------------------
+_LAST_CMD = {"text": "", "intent": ""}
+_FOLLOWUP_NO_LAST = {"confirm", "guard-scelta", "dictate_toggle", "multi",
+                     "routine", "routine_created", "-", "error"}
+
+
+def _followup_command(text: str) -> str | None:
+    """Se il testo e' un follow-up dell'ultimo comando apri/chiudi, ritorna il
+    comando completo da eseguire, altrimenti None. Forme accettate:
+    'e anche Discord', 'anche Discord', 'apri anche Code', o il nome nudo
+    dell'app ('Discord') subito dopo un apri/chiudi."""
+    last = _LAST_CMD
+    if not last.get("text") or last.get("intent") not in ("open_app", "close_app"):
+        return None
+    with _log_lock:  # un menu o una conferma in attesa vincono sul follow-up
+        awaiting = bool(_pending_choices["menu"] or _pending.get("app")
+                        or _pending.get("text"))
+    if awaiting:
+        return None
+    t = _strip_lead(_strip_wake((text or "").strip()))
+    tl = t.lower().strip(" .!?")
+    verb = "chiudi" if last["intent"] == "close_app" else "apri"
+    target = None
+    m = re.match(r"^(?:e|ed)?\s*anche\s+(.{2,40})$", tl)
+    if m:
+        # 'e anche apri steam': il verbo esplicito vince su quello ereditato
+        target = re.sub(r"^(apri|lancia|avvia|chiudi|ferma|termina)\s+", "",
+                        m.group(1).strip(), count=1).strip()
+        if not target:
+            return None
+    else:
+        m = re.match(r"^(apri|chiudi|lancia|avvia|ferma|termina)\s+anche\s+(.{2,40})$", tl)
+        if m:
+            verb = "chiudi" if m.group(1) in ("chiudi", "ferma", "termina") else "apri"
+            target = m.group(1)
+    if target is None:
+        # nome nudo ('Discord'): SOLO match esatto in libreria e testo corto,
+        # per non dirottare frasi normali verso l'apertura di un'app
+        if t and len(t.split()) <= 3 and not any(
+                w in tl for w in ("apri", "chiudi", "crea", "elimina", "cerca",
+                                  "volume", "che ", "quanto", "come ", "quale ",
+                                  "timer", "svegl", "ricordami", "promemoria")):
+            hits = appindex.search(t, limit=1)
+            if hits and appindex._norm(hits[0]["name"]) == appindex._norm(t):
+                return f"{verb} {hits[0]['name']}"
+        return None
+    target = _strip_wake(target).strip(" .!?")
+    target = re.sub(r"^(il|lo|la|l'|un|una|mi)\s+", "", target)
+    if not target or _FAST_TAIL_NOISE.search(target):
+        return None
+    target = _learned_token_fix(target)
+    hits = appindex.search(target, limit=1)
+    if hits:
+        return f"{verb} {hits[0]['name']}"
+    close = difflib.get_close_matches(
+        appindex._norm(target),
+        [appindex._norm(a["name"]) for a in appindex.get_apps()], n=1, cutoff=0.72)
+    if close:
+        return f"{verb} {close[0]}"
+    return None
+
+
 def _yes_no(text: str):
     """True (affermazione), False (negazione) o None (non e' una risposta).
     Tollerante ai near-miss dello STT ('confirmo' -> 'confermo').
@@ -2358,7 +2750,7 @@ def qwen_app_suggest(name: str) -> dict | None:
         _track("qwen_suggest", time.time() - _q0)
         _track_tps("qwen_suggest", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
-        out = (data.get("response") or "").strip().strip('"').strip()
+        out = _llm_clean((data.get("response") or "")).strip().strip('"').strip()
         if not out or "\n" in out or len(out) > 60:
             return None
         low = out.lower()
@@ -2409,7 +2801,7 @@ def _translate_reply_it_en(reply: str) -> str:
         _track("qwen_translate", time.time() - _q0)
         _track_tps("qwen_translate", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
-        out = (data.get("response") or "").strip().strip('"').strip()
+        out = _llm_clean((data.get("response") or "")).strip().strip('"').strip()
         if out and "\n" not in out and len(out) <= len(reply) * 3 + 80:
             return out
     except Exception as exc:
@@ -2420,6 +2812,9 @@ def _translate_reply_it_en(reply: str) -> str:
 def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
           raw: str | None = None, show_list: bool = False) -> dict:
     """Costruisce l'entry di risposta: history, log, voce e ritorno API."""
+    if intent not in _FOLLOWUP_NO_LAST and not intent.startswith("error"):
+        # memoria conversazionale: l'ultimo apri/chiudi abilita i follow-up
+        _LAST_CMD["text"], _LAST_CMD["intent"] = user, intent
     spoken = _translate_reply_it_en(reply)   # lingua EN: parla/traduce in inglese
     entry = {
         "user": user, "assistant": spoken, "intent": intent,
@@ -2437,7 +2832,7 @@ def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
     _reqlog(f"CMD  {source:5s} intent={intent:<12s} via {src:<12s} {dt:5d} ms  "
             f"{user!r} -> {spoken!r}")
     try:
-        speak(spoken)
+        speak(spoken, two_part=True)   # catena N frasi: la prima parte subito
     except Exception as exc:
         print(f"[tts] errore: {exc}")
     return entry
@@ -2449,6 +2844,13 @@ def process(text: str, source: str) -> dict:
     d = _dictation_toggle(text)
     if d is not None:
         return _emit(text, d, "dictate_toggle", "keyword", source, 0)
+    # follow-up conversazionale: dopo 'apri Spotify', 'e anche Discord' (o
+    # anche solo 'Discord') apre l'altra app ereditando il verbo precedente
+    fu = _followup_command(text)
+    if fu:
+        intent_fu = "close_app" if fu.startswith("chiudi") else "open_app"
+        reply = run_command(fu, intent_fu)
+        return _emit(fu, reply, intent_fu, "followup", source, 0)
     raw_stt, corrected = text, None
     # --- scelta numerata in attesa ('primo', 'la seconda', 'numero 3') ---
     # prima del si/no: 'sì' non è un numero e viceversa, ma l'ordine conta
@@ -2608,7 +3010,7 @@ def process(text: str, source: str) -> dict:
         # fase -1: alias-app gia' confermati in passato -> apre SUBITO, senza
         # neppure chiedere a Qwen ('stimolo' -> Steam in ~40 ms, zero LLM)
         m = re.match(r"^(apri|lancia|avvia|chiudi)\s+(.{2,40})$",
-                     _strip_wake((text or "").lower().strip()))
+                     _strip_lead(_strip_wake((text or "").lower().strip())))
         if m:
             target = re.sub(r"^(il|lo|la|l'|un|una|mi)\s+",
                             "", m.group(2).strip(" .!"))
@@ -2752,18 +3154,18 @@ async def api_dictate(request: Request):
         _t0 = time.time()
         text = nemotron_stt.transcribe_wav(out)
         engine = "nemotron"
-        if not text and not nemotron_stt.ready():
-            text = _whisper_transcribe(wav)   # fallback (o Nemotron assente)
-            engine = "whisper"
-        elif not text:
-            # Nemotron pronto ma ha detto '': riprova col fallback prima di
-            # arrendersi (frasi brevi/corrotte capitano nella dettatura)
+        if not text:
+            qt = quick_stt.transcribe_wav(out)   # sherpa-onnx (senza NeMo)
+            if qt:
+                text, engine = qt, "quick"
+        if not text:
             alt = _whisper_transcribe(wav)
             if alt:
                 text, engine = alt, "whisper"
-            else:
-                text = _vosk_transcribe(wav)
-                engine = "vosk" if text else engine
+        if not text:
+            vt = _vosk_transcribe(wav)
+            if vt:
+                text, engine = vt, "vosk"
         ms = int((time.time() - _t0) * 1000)
         _reqlog(f"HTTP  /api/dictate  {len(data)} B  engine={engine}  "
                 f"{ms} ms  -> {text!r}")
@@ -2852,6 +3254,26 @@ _WAKE_RESIDUE = re.compile(
                      # punteggiatura: Vosk scrive 'ugo.' e senza il punto il
                      # fastlane non matchava -> Whisper CPU (14 s invece di 1)
 
+# Riempitivi di CORTESIA a inizio frase ('Ugo ciao, apri discord': la wake
+# strip toglie 'Ugo' ma 'ciao,' resta e open_app lo scambia per il nome
+# dell'app -> 'Non ho nessuna app chiamata Ciao'). Stessa forma della wake
+# residue: token ammessi + punteggiatura di coda, ripetuti.
+_LEAD_NOISE = re.compile(
+    r"^[\s,\"'\u201c\u201d]*(?:ciao|salve|ehi|ehila|hey|oh|allora|su|dai|"
+    r"scusa|scusami|per\s+favore|perfavore|please)\b[\s,.:;!?\"'\u201c\u201d]*",
+    re.IGNORECASE)
+
+
+def _strip_lead(text: str) -> str:
+    """Toglie i riempitivi di cortesia in testa ('ciao, apri discord' ->
+    'apri discord'), ripetendo finche' pulisce (max 5 giri per sicurezza)."""
+    for _ in range(5):
+        new = _LEAD_NOISE.sub("", text, count=1).strip()
+        if new == text.strip():
+            break
+        text = new
+    return text.strip()
+
 
 def _strip_wake(text: str) -> str:
     """Toglie i residui di wake word all'inizio: 'chicco apri spotify' ->
@@ -2874,6 +3296,7 @@ def _fast_command(text: str) -> dict | None:
     """
     t = (text or "").lower().strip()
     t = _strip_wake(t)  # 'chicco apri spotify' -> 'apri spotify' (residuo di wake)
+    t = _strip_lead(t)  # 'ciao, apri spotify' -> 'apri spotify' (cortesia)
     # 'apri (il) browser' -> browser predefinito: subito, senza Whisper
     if re.fullmatch(r"(?:apri|lancia|avvia)\s+(?:il\s+|la\s+|il\s+mio\s+)?"
                     r"(?:browser|navigatore)(?:\s+predefinito)?", t):
@@ -3003,6 +3426,8 @@ def _dictation_toggle(text: str) -> str | None:
     if any(k in t for k in _DICT_ON):
         if nemotron_stt.available() and not nemotron_stt.ready():
             nemotron_stt.download_async()   # primo uso: scarica in background
+        if quick_stt.available() and not quick_stt.ready():
+            quick_stt.download_async()      # idem per il runtime ONNX
         return "Detatura attiva: parla e il testo appare dove stai scrivendo. " \
                "Dimmi Ugo stop dettatura per finire."
     if any(k in t for k in _DICT_OFF):
@@ -3025,6 +3450,23 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
             g = min(0.2 / rms, 20.0)
             pcm = (np.clip(a * g, -1, 1) * 32767).astype("<i2").tobytes()
             _reqlog(f"livello  audio debole: gain {g:.1f}x applicato")
+    # WHISPER/NEMOTRON IN PARALLELO (solo SENZA testo speculativo): nella
+    # registrazione manuale/web la fastlane deve prima trascrivere con Vosk
+    # (~0,3 s): in quel tempo Whisper/Nemotron decoding gia' l'audio, cosi'
+    # la pipeline completa li recupera. Con pre_text (widget passivo) la
+    # fastlane e' istantanea: il thread non parte e i comandi banali non
+    # sprecano MAI un decode Whisper in background.
+    wbox: dict = {"t": None, "err": None}
+    wth = None
+    if not pre_text:
+        def _whisper_job():
+            try:
+                wbox["t"] = (_premium_transcribe(pcm)
+                             or (_whisper_transcribe(pcm) if whisper_available() else ""))
+            except Exception as exc:
+                wbox["err"] = exc
+        wth = threading.Thread(target=_whisper_job, daemon=True)
+        wth.start()
     # corsia veloce: Vosk e' gia' pronto, per i comandi banali non aspetta Whisper
     # (con verifica attiva la corsia vale solo se la wake e' visibile nel testo)
     _tcmd = time.time()
@@ -3039,10 +3481,21 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
             return fast
     except Exception as exc:
         print(f"[fastlane] scartata ({exc}); passo alla pipeline completa")
-    # Vosk sente la wake word SEMPRE (streaming nel widget); dopo la wake la
-    # trascrizione va a Nemotron se disponibile, altrimenti Whisper. Il
-    # wake-guard fuzzy accetta le storie di Nemotron ('Hugo', 'Ugo'...).
-    text = _wake_transcribe(pcm)
+    if wth is not None:
+        # la fastlane non ha eseguito: raccogli la trascrizione avviata in parallelo
+        wth.join()
+        if wbox["err"] is not None:
+            print(f"[stt] errore Whisper/Nemotron ({wbox['err']}); fallback Vosk")
+            text = _vosk_transcribe(pcm)
+        elif wbox["t"]:
+            text = wbox["t"]
+        else:
+            text = _vosk_transcribe(pcm)   # Whisper assente o risposta vuota
+    else:
+        # Vosk sente la wake word SEMPRE (streaming nel widget); dopo la wake la
+        # trascrizione va a Nemotron se disponibile, altrimenti Whisper. Il
+        # wake-guard fuzzy accetta le storie di Nemotron ('Hugo', 'Ugo'...).
+        text = _wake_transcribe(pcm)
     if require_wake and not _text_has_wake(text or ""):
         # se c'e' una domanda in attesa (menu scelta o conferma sì/no) la
         # risposta breve ('primo', 'si') non deve contenere la wake word
@@ -3319,6 +3772,12 @@ def api_routines_edit(payload: dict):
 @app.get("/api/stt")
 def api_stt():
     """Quale trascrittore e' attivo (Whisper modello scelto, o fallback Vosk)."""
+    if nemotron_stt.ready():
+        return {"engine": "nemotron", "model": nemotron_stt.MODEL_ID,
+                "device": "cpu"}
+    if quick_stt.ready():
+        return {"engine": "quick", "model": quick_stt.MODEL_NAME,
+                "device": "cpu (onnx)"}
     if whisper_available():
         try:
             import ctranslate2 as ct
@@ -3526,7 +3985,11 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"Assistente vocale locale su http://127.0.0.1:{PORT}")
+    _timers_reload()  # riarma timer/sveglie/promemoria pendenti (timers.json)
     get_stt()  # pre-carica Vosk
+    if quick_stt.available() and not quick_stt.ready():
+        # runtime sherpa-onnx installato ma modello assente: scaricalo ora
+        quick_stt.download_async()
     if nemotron_stt.available() and not nemotron_stt.ready():
         # NeMo installato (extra [nemotron]) ma modello non ancora scaricato:
         # lo scarichiamo all'avvio, cosi' e' pronto al primo comando.
@@ -3542,16 +4005,20 @@ if __name__ == "__main__":
             except Exception as exc:
                 print(f"[whisper] warm-up saltato: {exc}")
         threading.Thread(target=_warm, daemon=True).start()
-    if nemotron_stt.ready():
+    if nemotron_stt.ready() or quick_stt.ready():
         # modello gia' scaricato: pre-caricarlo costa secondi alla prima
         # trascrizione -> meglio pagarseli ora, a server freddo
         def _warm_nemo():
             try:
                 t0 = time.time()
-                nemotron_stt.transcribe_pcm(b"\x00\x00" * 1600)
-                print(f"[nemotron] pronto in {time.time() - t0:.1f}s")
+                if nemotron_stt.ready():
+                    nemotron_stt.transcribe_pcm(b"\x00\x00" * 1600)
+                    print(f"[nemotron] pronto in {time.time() - t0:.1f}s")
+                else:
+                    quick_stt.transcribe_pcm(b"\x00\x00" * 1600)
+                    print(f"[quick-stt] pronto in {time.time() - t0:.1f}s")
             except Exception as exc:
-                print(f"[nemotron] warm-up saltato: {exc}")
+                print(f"[stt premium] warm-up saltato: {exc}")
         threading.Thread(target=_warm_nemo, daemon=True).start()
     webbrowser.open(f"http://127.0.0.1:{PORT}")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
