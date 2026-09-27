@@ -1298,20 +1298,42 @@ micBtn.onclick = async () => {
 };
 
 async function playReply() {
-  // parte 1 della risposta, poi (se esiste) la parte 2 a catena:
-  // il server sintetizza il resto MENTRE la prima frase e' gia' in riproduzione
-  try {
-    const a = new Audio('/_tts_reply.wav?t=' + Date.now());
-    a.play();
-    a.onended = () => {
-      fetch('/_tts_reply2.wav').then(r => r.ok ? r.blob() : null).then(b => {
-        if (b && b.size > 1000) {
-          const a2 = new Audio(URL.createObjectURL(b));
-          a2.play().catch(() => {});
-        }
-      }).catch(() => {});
-    };
-  } catch {}
+  // catena N parti: la prima frase parte subito, le successive (che il server
+  // sintetizza in parallelo) quando la precedente e' finita; una parte mancate
+  // chiude la catena. fetch post-finale per il cache-busting della PARTE 1:
+  // la seconda risposta puo' scrivere _tts_reply.wav mentre la prima gira.
+  const playBlob = async (blob) => new Promise(res => {
+    const a = new Audio(URL.createObjectURL(blob));
+    a.onended = res;
+    a.onerror = res;
+    a.play().catch(res);
+  });
+  const fetchPart = async (name) => {
+    try {
+      const r = await fetch(name + '?t=' + Date.now());
+      if (!r.ok) return null;
+      const b = await r.blob();
+      if (b && b.size >= 1000) return b;
+      // parte non (ancora) pronta: la sintesi server puo' perdere la corsa
+      // alla riproduzione: riprovo fino a ~2 s prima di chiudere la catena
+      for (let k = 0; k < 8; k++) {
+        await new Promise(res => setTimeout(res, 250));
+        const r2 = await fetch(name + '?t=' + Date.now());
+        if (!r2.ok) return null;
+        const b2 = await r2.blob();
+        if (b2 && b2.size >= 1000) return b2;
+      }
+      return null;
+    } catch { return null; }
+  };
+  const first = await fetchPart('/_tts_reply.wav');
+  if (!first || first.size < 1000) return;
+  await playBlob(first);
+  for (let i = 1; i < 11; i++) {
+    const b = await fetchPart('/_tts_reply' + (i + 1) + '.wav');
+    if (!b || b.size < 1000) return;
+    await playBlob(b);
+  }
 }
 
 // etichetta del modello attivo sul pulsante delle impostazioni

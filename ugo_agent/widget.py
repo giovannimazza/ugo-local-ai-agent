@@ -1983,15 +1983,41 @@ threading.Thread(target=_lang_poller, daemon=True).start()
 
 
 def stop_tts():
-    """Interrompe subito l'eventuale riproduzione vocale in corso."""
+    """Interrompe subito l'eventuale riproduzione vocale in corso: ferma la
+    parte corrente E chiude la catena (le parti successive non partono)."""
+    _tts_chain["gen"] += 1
     pu.tts_stop()
+
+
+_tts_chain = {"gen": 0}   # generazione catena: stop_tts la incrementa e la catena muore
 
 
 def _show_entry(e):
     bubble.show(e.get("assistant") or e.get("error") or "errore", raw=e.get("raw"))
     if tts_muted["on"]:
         return  # muto: la risposta resta solo scritta nella bolla
-    pu.tts_play_file(BASE / "_tts_reply.wav")
+    _tts_chain["gen"] += 1
+    gen = _tts_chain["gen"]
+
+    def _chain():
+        # catena N parti: la prima parte subito, le successive quando la
+        # precedente e' FINITA (il server le sintetizza in parallelo mentre
+        # questa gira: risposte lunghe parlano senza mai bloccarsi). Se una
+        # parte manca potrebbe semplicemente non essere ANCORA sintetizzata:
+        # breve attesa attiva prima di chiudere la catena.
+        if not pu.tts_play_file_blocking(BASE / "_tts_reply.wav"):
+            return  # motore audio assente: la risposta resta scritta
+        for i in range(1, 11):             # parti successive: _tts_reply2..11.wav
+            if gen != _tts_chain["gen"] or not pu._tts_playing:
+                return  # stop_tts e' passato di qui: catena chiusa
+            p = BASE / f"_tts_reply{i + 1}.wav"
+            for _att in range(8):          # fino a ~2 s: la parte e' in sintesi?
+                if p.exists() and p.stat().st_size > 1000:
+                    break
+                time.sleep(0.25)
+            if not p.exists() or not pu.tts_play_file_blocking(p):
+                break
+    threading.Thread(target=_chain, daemon=True).start()
 
 
 def send_text_cmd():

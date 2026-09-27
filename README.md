@@ -11,6 +11,17 @@ non-autoregressive decision engine used here for intent classification.
 
 ![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-Nemotron%203.5%20%7C%20faster--whisper-purple)
 
+> **v0.5.0 highlights** — **conversation memory** ("Ugo apri Spotify" …
+> "e anche Discord"), voice **timers, alarms and reminders** ("timer 10
+> minuti", "sveglia alle 7 e mezza", "ricordami di chiamare Maria") with
+> spoken announcement and server-restart persistence, resident audio worker
+> (volume commands ~10 ms instead of ~300), **N-part chained TTS** (no more
+> 2-part cap on long replies), Whisper started **in parallel** with the
+> fastlane, **politeness fillers stripped** ("Ugo ciao, apri discord" no
+> longer hunts an app named "Ciao"), and the new **[quick] STT engine**:
+> sherpa-onnx + Cohere Transcribe 14 languages (~1.7 GB, ONNX) —
+> Nemotron-class quality on Python 3.13/3.14 where NeMo cannot be installed.
+>
 > **v0.4.0 highlights** — native voice **dictation** ("Ugo, comincia a dettare" →
 > text pasted where you type, no wake word) powered by **NVIDIA Nemotron 3.5
 > Streaming** (optional engine, faster-whisper fallback), post-wake transcription
@@ -44,6 +55,8 @@ command engine stays uniform.
 | *"Chiudi Spotify"* / *"chiudi il blocco note forza"* (Close Spotify / force-close Notepad) | closes the app if running (graceful → forced taskkill, with process verification); refuses system processes |
 | *"Apri youtube"* / *"Vai su gmail"* (Open YouTube / Go to Gmail) | **default** browser (ShellExecute) |
 | *"Apri youtube e discord"* (Open YouTube and Discord) | **multi-command**: both actions run in sequence with one spoken summary — also *"muto e apri spotify"*, *"metti il volume al 30 e apri steam"*, *"apri youtube, discord e steam"* (list form). Conservative splitter: file/search commands never split ("create a file called groceries and bread" stays one command) |
+| *"Apri Spotify"* … *"e anche Discord"* (Open Spotify … and Discord too) | **conversation memory**: after an open/close command, "e anche X", "anche X" or even the bare app name follows up on it ("chiudi Spotify" … "anche Steam" closes Steam too) |
+| *"Timer 10 minuti"* / *"Sveglia alle 7 e mezza"* / *"Ricordami di chiamare Maria tra 10 minuti"* | **timers, alarms and reminders** with a spoken announcement when they fire ("un'ora e mezza", "alle 9 di sera", "domani alle 6" all work; "che timer attivi" lists them, "annulla la sveglia" cancels; they survive server restarts) |
 | *"Cerca gatti buffi su youtube"* (Search funny cats on YouTube) | direct YouTube/Google search |
 | *"Quali giochi ho su steam?"* / *"Quali app ho installato?"* (What games do I have on Steam? / What apps are installed?) | spoken list + **on-screen modal** with the full list |
 | *"Che ore sono?"* (What time is it?) | time and date by voice |
@@ -245,6 +258,20 @@ Vosk, Piper voice) and starts the server + widget. The steps below get you to th
 >
 > The ~1.2 GB model downloads automatically at first use; without it Ugo uses
 > faster-whisper everywhere (identical behaviour).
+>
+> **Optional: quick STT engine (no NeMo needed)** — same idea for Pythons where
+> **NeMo cannot be installed (3.13/3.14 included)**: [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+> runs the **Cohere Transcribe 14-language** model (~1.7 GB, int8, ONNX,
+> punctuation included; Italian and English among the 14). Same cascade as
+> Nemotron: post-wake transcription and dictation first, faster-whisper fallback:
+>
+> ```bat
+> pip install "ugo-agent[quick]"
+> ```
+>
+> The model is downloaded once on first use (or at server start); `UGO_QUICKSTT=0`
+> disables it. If both extras are installed, Nemotron wins and quick-stt is the
+> second choice — Whisper remains the last resort either way.
 
 ### Optional: winget (Windows)
 
@@ -437,8 +464,10 @@ single one remains.
   say is transcribed and **pasted where you are typing** (no wake word needed, per-
   sentence endpointing, blocks up to 14 s). Say **"Ugo, stop dettatura"** (or just
   "stop" while dictating) to go back to normal listening. Transcription runs on
-  **Nemotron 3.5 Streaming** when the `[nemotron]` extra is installed, otherwise on
-  faster-whisper; the mode survives widget restarts (prefs `dictation`)
+  **Nemotron 3.5 Streaming** (`[nemotron]` extra) or on the **Cohere Transcribe
+  14-language** ONNX model (`[quick]` extra, works on every Python) when
+  installed, otherwise on faster-whisper; the mode survives widget restarts
+  (prefs `dictation`)
 - **Passive listening** 🎙️: say **"Ugo"** (or *ehi/oh/a Ugo*) and immediately the
   command — *"Ugo apri Spotify"* — without touching anything. Streaming Vosk, near
   zero CPU; it pauses during manual recording and for a few seconds after every

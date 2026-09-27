@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ugo-agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "Assistente vocale locale: Whisper (GPU) + Laya + Qwen/Ollama, comandi reali sul PC con widget desktop"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,6 +37,7 @@ chicco = "ugo_agent.cli:main"   # alias legacy
 
 [project.optional-dependencies]
 nemotron = ["nemo_toolkit[asr]>=2.0", "huggingface_hub>=0.23"]
+quick = ["sherpa-onnx>=1.12"]   # STT ONNX senza NeMo: gira anche su Python 3.13+
 
 [tool.setuptools]
 packages = ["ugo_agent"]
