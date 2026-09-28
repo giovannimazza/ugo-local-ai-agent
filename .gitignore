@@ -47,3 +47,6 @@ passive_log.txt
 
 # backup locali di lavoro (es. uiBackup.html, widgetBackup.py)
 *Backup.*
+
+# venv locali di sviluppo (es. .venv-nemo per NeMo su Python 3.12)
+.venv*/

@@ -20,6 +20,72 @@ import threading
 
 from . import platform_utils as _pu
 
+# Quirk Windows + NeMo: transcribe() scrive un manifest.json in una
+# TemporaryDirectory che non riesce poi a cancellare (un oggetto del
+# dataloader tiene ancora aperto il file in-process) -> PermissionError
+# WinError 32 DOPO aver prodotto la trascrizione corretta. Durante le
+# nostre chiamate alziamo un TemporaryDirectory che ignora gli errori
+# di pulizia: il risultato non cambia e la cartella avanzata la rimuove
+# il sistema operativo. Solo su Windows e solo durante transcribe().
+import re
+import sys
+import tempfile
+from contextlib import contextmanager
+
+_TD_ORIGINALE = tempfile.TemporaryDirectory
+_tx_lock = threading.Lock()  # una trascrizione NeMo per volta (gia' pesante)
+
+
+@contextmanager
+def _tempdir_tollerante():
+    if not sys.platform.startswith("win"):
+        yield
+        return
+
+    class _TD(_TD_ORIGINALE):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("ignore_cleanup_errors", True)
+            super().__init__(*args, **kwargs)
+
+    tempfile.TemporaryDirectory = _TD
+    try:
+        yield
+    finally:
+        tempfile.TemporaryDirectory = _TD_ORIGINALE
+
+
+# Quirk NeMo 3.x (modelli prompt-based come Nemotron ASR): in inferenza il
+# dataset Lhotse legge la lingua da cut.supervisions[0].language, che per i
+# manifest generati da transcribe() e' None -> "Unknown prompt key: 'None'".
+# I manifest di Ugo non hanno marcatura lingua: rimappiamo None al prompt
+# 'auto' (language-agnostic, quello che il modello si aspetta di default).
+_nemo_patched = False
+
+
+def _patch_prompt_auto():
+    """Rendi tollerante a supervision.language=None il dataset prompt-index.
+    Idempotente e innocuo se NeMo cambia API (try/except ampio)."""
+    global _nemo_patched
+    if _nemo_patched:
+        return
+    _nemo_patched = True
+    try:
+        from nemo.collections.asr.data import audio_to_text_lhotse_prompt_index as _m
+        orig = _m.LhotseSpeechToTextBpeDatasetWithPromptIndex._get_prompt_index
+        if getattr(orig, "_ugo_patch", False):
+            return
+
+        def _fixed(self, prompt_key):
+            if prompt_key is None:
+                return self.auto_index  # prompt 'auto' = lingua non forzata
+            return orig(self, prompt_key)
+
+        _fixed._ugo_patch = True
+        _m.LhotseSpeechToTextBpeDatasetWithPromptIndex._get_prompt_index = _fixed
+        print("[nemotron] patch supervision.language=None -> prompt 'auto'")
+    except Exception as exc:
+        print(f"[nemotron] patch prompt-auto non applicata ({exc})")
+
 BASE = _pu.data_dir()
 
 # Il modello puo' essere cambiato via env (es. una variante fine-tuned it-IT)
@@ -104,9 +170,25 @@ def _get_model():
             from nemo.collections.asr.models import ASRModel
             nemo_file = next(MODEL_DIR.glob("*.nemo"))
             print(f"[nemotron] carico {nemo_file.name}...")
+            _patch_prompt_auto()
             _model = ASRModel.restore_from(str(nemo_file), map_location="cpu")
             _model.eval()
     return _model
+
+
+_LANG_TAG = re.compile(r"<[a-zA-Z]{2}(?:-[a-zA-Z0-9]{2,5})?>")  # es. <en-US>, <it-IT>
+
+
+def _norm_text(x) -> str:
+    """NeMo puo' ritornare stringhe o oggetti Hypothesis (NeMo 3.x sui modelli
+    prompt-based): normalizza sempre a testo pulito, senza tag lingua."""
+    if isinstance(x, str):
+        t = x
+    else:
+        t = getattr(x, "text", None)
+        if not isinstance(t, str):
+            t = str(x)
+    return _LANG_TAG.sub(" ", t).strip()
 
 
 def transcribe_wav(wav_path) -> str:
@@ -118,10 +200,11 @@ def transcribe_wav(wav_path) -> str:
         m = _get_model()
         if m is None:
             return ""
-        out = m.transcribe([str(wav_path)], batch_size=1)
+        with _tx_lock, _tempdir_tollerante():
+            out = m.transcribe([str(wav_path)], batch_size=1)
         if out and isinstance(out[0], (list, tuple)):
-            return " ".join(str(x) for x in out[0]).strip()
-        return (str(out[0]) if out else "").strip()
+            return " ".join(_norm_text(x) for x in out[0]).strip()
+        return _norm_text(out[0]) if out else ""
     except Exception as exc:
         print(f"[nemotron] trascrizione non riuscita ({exc}); fallback Whisper")
         return ""

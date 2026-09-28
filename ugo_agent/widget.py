@@ -30,6 +30,7 @@ import threading
 import time
 import urllib.request
 import wave
+import webbrowser
 from pathlib import Path
 
 import numpy as np
@@ -162,7 +163,6 @@ def _save_prefs(**changes) -> None:
     except Exception:
         pass
     prefs["v"] = 3
-    prefs["dictation"] = bool(dict_flag.is_set())  # la dettatura sopravvive al riavvio
     try:
         POS_FILE.write_text(json.dumps(prefs))
     except Exception:
@@ -180,10 +180,36 @@ def server_up() -> bool:
         return False
 
 
+def _venv_python() -> str | None:
+    """Python del venv 3.12 accanto al progetto, se c'e' (li' vive NeMo:
+    la preferenza engine 'nemotron' richiede quel runtime)."""
+    base = Path(PKG_DIR).parent / ".venv-nemo"
+    for rel in (("Scripts", "python.exe"), ("bin", "python")):
+        p = base.joinpath(*rel)
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def _server_cmd() -> list:
+    """Comando per avviare il server: se l'utente ha scelto Nemotron come
+    motore, il server deve girare col venv 3.12 (NeMo non si installa su
+    3.13+); altrimenti l'interprete del widget."""
+    try:
+        eng = (json.loads((BASE / "stt.json").read_text()).get("engine") or "")
+    except Exception:
+        eng = ""
+    if eng == "nemotron":
+        venv = _venv_python()
+        if venv:
+            return [venv, "-u", str(PKG_DIR / "server.py")]
+    return [sys.executable, str(PKG_DIR / "server.py")]
+
+
 def ensure_server() -> None:
     if server_up():
         return
-    pu.popen_hidden([sys.executable, str(PKG_DIR / "server.py")],
+    pu.popen_hidden(_server_cmd(),
                     cwd=str(PKG_DIR.parent))
     for _ in range(60):
         time.sleep(1)
@@ -1533,6 +1559,15 @@ def _is_excluded(name: str, excl: list = None) -> bool:
     return any(name == e or _is_trunc(name, e) for e in excl)
 
 
+def _mic_reset_choice() -> None:
+    """Torna alla scelta automatica del microfono (cancella le preferenze)."""
+    _save_prefs(mic_passive=None, mic_manual=None)
+    bubble.show(W("mic_auto_saved"))
+    if _passive["on"]:
+        _passive["on"] = False          # il loop esce entro ~0.1 s
+        ui(lambda: root.after(500, _ensure_passive))
+
+
 def _mic_exclude(name: str) -> None:
     """Esclude un microfono: barrato nel menu, ignorato dalla scelta auto."""
     ex = _mic_excluded()
@@ -1699,8 +1734,74 @@ def _show_menu_card(sections, right_x: int, top_y: int, anchor_right: bool = Tru
     win.wm_geometry(f"+{px}+{py}")
 
 
+def _set_stt_engine(engine: str) -> None:
+    """Cambia il motore di trascrizione via server e conferma nella bolla.
+    'nemotron' senza NeMo nel server attivo: il server si riavvia DA SOLO
+    col venv Python 3.12 (dove vive NeMo) e scarica il modello."""
+    def run():
+        try:
+            d = _post_json("/api/stt/engine", {"engine": engine})
+            st = d.get("status", "attivo")
+            if st == "restart":
+                ui(lambda: bubble.show(W("eng_restart"), sticky=True))
+            elif st == "downloading":
+                ui(lambda: bubble.show(W("eng_dl"), sticky=True))
+            else:
+                ui(lambda: bubble.show(W("eng_saved", m=engine)))
+            threading.Thread(target=_wait_engine_ready,
+                             args=(st == "restart", engine == "nemotron"),
+                             daemon=True).start()
+        except Exception as exc:
+            ui(lambda: bubble.show(W("eng_err", e=exc)))
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _qwen_stt_state() -> bool:
+    """Stato attuale della correzione AI (Qwen) sulla trascrizione."""
+    try:
+        return bool(_fetch_json("/api/qwen_stt").get("on"))
+    except Exception:
+        return True
+
+
+def _toggle_qwen_stt() -> None:
+    """Attiva/disattiva la rilettura Qwen della trascrizione (via server)."""
+    def run():
+        try:
+            d = _post_json("/api/qwen_stt", {"on": not _qwen_stt_state()})
+            on = bool(d.get("on"))
+            ui(lambda: bubble.show(
+                W("qwen_stt_saved", m=W("on_lbl") if on else W("off_lbl"))))
+        except Exception as exc:
+            ui(lambda: bubble.show(W("eng_err", e=exc)))
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _wait_engine_ready(restart: bool, want_nemotron: bool):
+    """Dopo un cambio motore: aspetta che il server sia di nuovo raggiungibile
+    (eventualmente dopo il restart col venv) e che il motore scelto sia
+    attivo, poi annuncia il risultato nella bolla."""
+    if restart:
+        for _ in range(15):
+            if not server_up():
+                break
+            time.sleep(1)
+    for _ in range(150):                 # fino a ~5 min (download incluso)
+        time.sleep(2)
+        try:
+            info = _fetch_json("/api/stt")
+        except Exception:
+            continue                     # il server sta (ri)partendo
+        if not want_nemotron or info.get("engine") == "nemotron":
+            nm = {"nemotron": "Nemotron 3.5", "quick": "quick-stt",
+                  "whisper": "Whisper", "vosk": "Vosk"}.get(info.get("engine", ""), "?")
+            ui(lambda: bubble.show(W("eng_saved", m=nm)))
+            return
+
+
 def show_stt_popup():
     """Menu impostazioni: info trascrittore, microfono, voce, modello AI."""
+    _wlog("menu: apro le impostazioni")   # breadcrumb: il menu e' stato richiesto
     on_release._n = -1  # annulla un eventuale toggle in attesa dal primo click
 
     def work():
@@ -1708,15 +1809,21 @@ def show_stt_popup():
         try:
             info = _fetch_json("/api/stt")
             eng = info.get("engine", "?")
-            name = {"whisper": "Whisper", "vosk": "Vosk"}.get(eng, eng)
+            name = {"whisper": "Whisper", "vosk": "Vosk",
+                    "nemotron": "Nemotron 3.5", "quick": "quick-stt"}.get(eng, eng)
             stt_text = f"{W('stt')}: {name} · {info.get('model', '?')} · {W('device')}: {info.get('device', '?')}"
         except Exception:
-            pass
+            _wlog("menu: /api/stt non raggiungibile")
         try:
             mod = _fetch_json("/api/model")
             current, available = mod.get("active", ""), mod.get("available", [])
         except Exception:
             current, available = "", []
+        try:
+            engines = _fetch_json("/api/stt/engine").get("engines", [])
+        except Exception:
+            engines = []   # server vecchio o irraggiungibile: sezione nascosta
+        qwen_on = _qwen_stt_state()
         # micro disponibili: soundcard + riserva PortAudio (driver che soundcard
         # non apre, es. Shure MV6); i nomi doppi compaiono una volta sola
         seen, mics = set(), []
@@ -1740,6 +1847,7 @@ def show_stt_popup():
         barrati = [n for n in mics if _is_excluded(n, excl)]
 
         def build():
+            _wlog("menu: costruisco la card")   # breadcrumb: i dati sono pronti
             mic_items = [{"icon": "🎙️", "text": W("micro"), "enabled": False}]
             if attivi:
                 if cur:
@@ -1770,8 +1878,34 @@ def show_stt_popup():
                 else:
                     model_items.append({"text": label, "enabled": True,
                                         "cmd": lambda n=name: _set_model(n)})
+            # sezione MOTORE DI TRASCRIZIONE: Whisper / Nemotron (se il server
+            # li propone). Nemotron assente -> il server riavvia se stesso col
+            # venv 3.12; durante il download/restato la voce e' disabilitata.
+            stt_items = [{"icon": "🧠", "text": W("stt_engine"), "enabled": False}]
+            for einfo in engines:
+                eid = einfo.get("id", "")
+                busy = einfo.get("downloading", False)
+                if einfo.get("active"):
+                    stt_items.append({"text": einfo.get("label", eid),
+                                      "enabled": False, "mark": True})
+                elif busy:
+                    stt_items.append({"text": einfo.get("label", eid) + " — " + W("eng_dl"),
+                                      "enabled": False})
+                else:
+                    stt_items.append({"text": einfo.get("label", eid),
+                                      "enabled": True,
+                                      "cmd": lambda n=eid: _set_stt_engine(n)})
+            # correzione AI della trascrizione (Qwen): toggle on/off
+            stt_items.append({"sep": True})
+            stt_items.append({"icon": "✨",
+                              "text": f"{W('qwen_ai')}: {W('on_lbl') if qwen_on else W('off_lbl')}",
+                              "enabled": True, "mark": qwen_on,
+                              "cmd": lambda: _toggle_and_refresh(_toggle_qwen_stt)})
             _show_menu_card(
                 [[{"icon": "🎤", "text": stt_text, "enabled": False}],
+                 stt_items,
+                 [{"icon": "📜", "text": W("open_dash"), "enabled": True,
+                   "cmd": _open_dashboard}],
                  [{"icon": "🔇" if tts_muted["on"] else "🔊",
                    "text": W("voice_on") if tts_muted["on"] else W("voice_off"),
                    "enabled": True, "cmd": lambda: _toggle_and_refresh(toggle_mute)},
@@ -1827,47 +1961,6 @@ def _post_wav(wav: bytes, wake: int = 0, pre_text: str = ""):
         return json.loads(r.read().decode())
 
 
-def _post_dictate(wav: bytes) -> dict:
-    """Invia un blocco di dettatura al server (Nemotron o Whisper lato server)."""
-    req = urllib.request.Request(ROOT_URL + "/api/dictate", data=wav,
-                                 headers={"Content-Type": "audio/wav"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode())
-
-
-def _dict_send(pcm: bytes):
-    """Trascrive un blocco di dettatura e lo incolla nel campo attivo."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        w.writeframes(pcm)
-    try:
-        res = _post_dictate(buf.getvalue())
-        text = (res.get("text") or "").strip()
-        eng = res.get("engine", "-")
-        if text:
-            ok = pu.paste_text(text)
-            _plog(f"DITTATURA: incollato={ok}: {text!r}")
-        else:
-            _plog("DITTATURA: blocco vuoto (silenzio?)")
-    except Exception as exc:
-        _plog(f"DITTATURA: ERRORE server: {exc}")
-
-
-def _dictate_stop():
-    """Termina la dettatura e riporta l'ascolto passivo normale."""
-    dict_flag.clear()
-    try:
-        _post_json("/api/text", {"text": "stop dettatura"})
-    except Exception:
-        pass
-    _plog("DICT: stop")
-    ui(lambda: (set_mic_color(ACCENT), bubble.show(W("dict_off"))))
-    threading.Thread(target=_ensure_passive, daemon=True).start()
-
-
 def _meta_of(e):
     if e.get("intent") and e["intent"] != "-":
         return f"{e['intent']} · {e.get('detector', '')} · {e.get('ms', 0)} ms"
@@ -1907,16 +2000,23 @@ _WSTR = {
         "ai_model": "Modello AI: {m}", "ai_model_err": "Non ho cambiato il modello: {e}",
         "micro": "Microfono", "mic_auto": "Automatico (sceglie Ugo)",
         "mic_saved": "Microfono: {m}", "mic_none": "Nessun microfono trovato.",
+        "mic_auto_saved": "Microfono: automatico.",
         "mic_excluded": "Esclusi — clicca per riattivarli:",
         "mic_excl": "Escluso: {m}", "mic_restored": "Riattivato: {m}",
         "vosk_missing": "Manca il modello Vosk: l'ascolto passivo non è disponibile.",
         "stt": "Trascrittore", "model": "Modello", "device": "Dispositivo",
         "stt_unavail": "Trascrittore non disponibile ({e})",
+        "stt_engine": "Motore di trascrizione",
+        "eng_saved": "✅ Motore di trascrizione: {m}",
+        "eng_restart": "🔄 Riavvio il server col venv Python 3.12 per Nemotron… un attimo.",
+        "eng_dl": "⬇️ Scarico il modello Nemotron (~1.2 GB): nel frattempo si usa Whisper.",
+        "eng_err": "Non ho cambiato il motore: {e}",
+        "qwen_ai": "Correzione AI (Qwen)",
+        "on_lbl": "attiva", "off_lbl": "disattivata",
+        "qwen_stt_saved": "Correzione AI: {m}",
+        "open_dash": "Apri la dashboard nel browser",
         "tip_type": "Scrivi a Ugo", "tip_settings": "Impostazioni",
         "tip_close": "Chiudi Ugo", "tip_listen": "Attiva o spegni l'ascolto passivo",
-        "dict_on": "\U0001F4DD Detatura attiva: parla, il testo appare dove stai scrivendo.\nDimmi “Ugo, stop dettatura” per finire.",
-        "dict_off": "Detatura fermata.",
-        "dict_chunk": "\U0001F4DD Sto scrivendo…",
     },
     "en": {
         "placeholder": "Type to Ugo…",
@@ -1938,16 +2038,23 @@ _WSTR = {
         "ai_model": "AI model: {m}", "ai_model_err": "Couldn't switch the model: {e}",
         "micro": "Microphone", "mic_auto": "Automatic (Ugo picks)",
         "mic_saved": "Microphone: {m}", "mic_none": "No microphone found.",
+        "mic_auto_saved": "Microphone: automatic.",
         "mic_excluded": "Excluded — click to re-enable:",
         "mic_excl": "Excluded: {m}", "mic_restored": "Re-enabled: {m}",
         "vosk_missing": "Vosk model missing: passive listening is unavailable.",
         "stt": "Transcriber", "model": "Model", "device": "Device",
         "stt_unavail": "Transcriber unavailable ({e})",
+        "stt_engine": "Transcription engine",
+        "eng_saved": "✅ Transcription engine: {m}",
+        "eng_restart": "🔄 Restarting the server with the Python 3.12 venv for Nemotron… one moment.",
+        "eng_dl": "⬇️ Downloading the Nemotron model (~1.2 GB): dictation keeps working with Whisper meanwhile.",
+        "eng_err": "Couldn't switch the engine: {e}",
+        "qwen_ai": "AI correction (Qwen)",
+        "on_lbl": "on", "off_lbl": "off",
+        "qwen_stt_saved": "AI correction: {m}",
+        "open_dash": "Open the dashboard in the browser",
         "tip_type": "Type to Ugo", "tip_settings": "Settings",
         "tip_close": "Close Ugo", "tip_listen": "Turn passive listening on or off",
-        "dict_on": "\U0001F4DD Dictation on: speak, text appears where you type.\nSay “Ugo, stop dictation” to finish.",
-        "dict_off": "Dictation stopped.",
-        "dict_chunk": "\U0001F4DD Writing…",
     },
 }
 
@@ -1959,7 +2066,6 @@ def W(key: str, **kw) -> str:
 
 
 _lang_state = {"lang": "it"}
-dict_started = {"on": False}   # la bolla d'istruzioni dettatura si mostra una volta per sessione
 
 
 def _lang_poller():
@@ -2078,7 +2184,7 @@ root.bind("<FocusOut>", _on_focus_out)
 
 # --- registrazione microfono ---------------------------------------------------
 rec_flag = threading.Event()
-dict_flag = threading.Event()   # modalita' DITTATURA: trascrive e incolla,
+
                                 # niente wake word, finche' non si dice 'stop'
 
 
@@ -2350,6 +2456,15 @@ def _plog(msg: str) -> None:
         pass
 
 
+def _open_dashboard():
+    """Apre la web UI (chat + dashboard 📊 + log 📜) nel browser predefinito."""
+    try:
+        webbrowser.open(ROOT_URL)
+        _plog(f"dashboard aperta: {ROOT_URL}")
+    except Exception as exc:
+        _plog(f"dashboard NON aperta: {exc}")
+
+
 _plog(f"--- sessione widget {time.strftime('%Y-%m-%d %H:%M:%S')} "
       f"pid={os.getpid()} ---")
 
@@ -2408,9 +2523,7 @@ def _spec_text(pcm: bytes) -> str:
 
 
 def _passive_send_wav(pcm: bytes):
-    """Invia l'audio del comando catturato al server e mostra la risposta.
-    Se la risposta server e' l'attivazione della dettatura, entra in modalita'
-    dettatura (dict_flag): il loop passivo trascrive e incolla senza wake."""
+    """Invia l'audio del comando catturato al server e mostra la risposta."""
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
@@ -2420,7 +2533,7 @@ def _passive_send_wav(pcm: bytes):
     # STT speculativo: Vosk ha GIA' sentito il comando durante la grazia ->
     # la sua trascrizione viaggia nell'header e alimenta la fastlane del
     # server (volume/ora/data/file) senza aspettare nulla. Nemotron (o
-    # Whisper) sul server resta la trascrizione ufficiale (wake-guard + qualita').
+    # Whisper) sul server resta la trascrizione ufficiale.
     pre = _spec_text(pcm)
     try:
         res = _post_wav(buf.getvalue(), wake=1, pre_text=pre)   # il server verifica 'Ugo' con Whisper
@@ -2435,12 +2548,6 @@ def _passive_send_wav(pcm: bytes):
         _plog(f"PASSIVO: detto={(res.get('user') or '')!r} -> "
               f"{(res.get('assistant') or res.get('error') or '?')!r} "
               f"[{res.get('intent', '-')} / {res.get('ms', 0)} ms]")
-        if res.get("intent") == "dictate_toggle":
-            if "fermata" in (res.get("assistant") or "").lower() or \
-               "stopped" in (res.get("assistant") or "").lower():
-                dict_flag.clear()   # stop: il loop riparte come passivo normale
-            else:
-                dict_flag.set()     # attiva: il loop passivo diventa dettatura
     except Exception as exc:
         msg = W("server_error", e=exc)
         ui(lambda: bubble.show(msg))
@@ -2514,7 +2621,6 @@ def _passive_loop():
 
         rec = KaldiRecognizer(model, SR)
         chunks = []          # coda d'anello: ultimi ~3 s prima della wake word
-        dchunks = []         # buffer della modalita' dettatura (frase in corso)
         armed = False
         armed_t = 0.0        # istante della wake: grazia prima della chiusura
         since_voice = 0.0
@@ -2559,11 +2665,6 @@ def _passive_loop():
                 if rec_flag.is_set():
                     time.sleep(0.3)  # registrazione manuale attiva: riparto dopo
                     continue
-                if dict_flag.is_set() and not dict_started["on"]:
-                    dict_started["on"] = True   # primo giro in dettatura:
-                    dchunks = []                # buffer pulito + bolla d'istruzioni
-                    rec = KaldiRecognizer(model, SR)
-                    ui(lambda: bubble.show(W("dict_on"), sticky=True))
                 audio = mic.record(numframes=SR // 10).copy()
                 audio = np.clip(audio * agc_gain, -1, 1)   # guadagno AGC
                 pcm = _pcm16_of(audio)
@@ -2593,39 +2694,6 @@ def _passive_loop():
                     if noise * g > NOISE_CEIL * max(agc_gain, 1.0):
                         g = min(g, NOISE_CEIL * max(agc_gain, 1.0) / max(noise, 1.0))
                     agc_gain = 0.85 * agc_gain + 0.15 * g
-                # --- modalita' DITTATURA: niente wake word, niente grazia ---
-                # Accumula fino alla pausa (Vosk endpointing): a fine frase
-                # trascrive via /api/dictate (Nemotron se installato, altrimenti
-                # Whisper) e incolla nel campo attivo. 'stop' detto singolarmente
-                # chiude la dettatura.
-                if dict_flag.is_set():
-                    dchunks.append(pcm)
-                    dtxt = rtxt(rec, "FinalResult") if rec.AcceptWaveform(pcm) else ""
-                    if dtxt.strip() == "stop" or dtxt.lower().endswith(" stop"):
-                        # lo stop vocale NON deve finire incollato: sentito da
-                        # solo (o in coda) chiude la dettatura subito
-                        _dictate_stop()
-                        dchunks = []
-                        rec = KaldiRecognizer(model, SR)
-                        continue
-                    if dtxt.lower().startswith("stop ") and len(dtxt.split()) <= 4:
-                        # 'stop dettatura' / 'stop dictation' detto in frasi
-                        # divise: se Vosk lo vede aprire un blocco breve, ferma
-                        _dictate_stop()
-                        dchunks = []
-                        rec = KaldiRecognizer(model, SR)
-                        continue
-                    if dtxt.strip():
-                        ui(lambda: bubble.show(W("dict_chunk"), sticky=True))
-                    if dtxt.strip() or (dchunks and
-                                        sum(len(c) for c in dchunks) / 2 / SR >= 14.0):
-                        buf = b"".join(dchunks)
-                        dchunks = []
-                        rec = KaldiRecognizer(model, SR)
-                        threading.Thread(target=_dict_send, args=(buf,),
-                                         daemon=True).start()
-                    continue
-
                 oww_s = 0.0
                 if oww_model is not None:
                     try:
@@ -2862,18 +2930,9 @@ def _boot():
     ui(lambda: bubble.show(W("ready") if ok else W("srv_down")))
 
 
-def _dict_autostart():
-    """Riapre la dettatura all'avvio del widget se era attiva quando si e'
-    chiuso (persistita in widget_pos.json): evita di ri-dire il toggle ogni volta."""
-    try:
-        if json.loads(POS_FILE.read_text()).get("dictation"):
-            dict_flag.set()
-    except Exception:
-        pass
-
-
 root.after(30, _pump_ui)
 root.after(200, lambda: threading.Thread(target=_boot, daemon=True).start())
-root.after(400, _dict_autostart)
 threading.Thread(target=_server_watchdog, daemon=True).start()
+
+
 root.mainloop()

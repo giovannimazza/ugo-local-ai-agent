@@ -14,6 +14,9 @@ Comandi supportati:
   - "elenca i file sul desktop" / "riavvia il riconoscimento"
 
 Avvio:  python voice_assistant_server.py   ->  http://127.0.0.1:8123
+
+La dashboard statistiche/log (registri latenze, token/s, log catturati e
+le API /api/stats + /api/logs) vive nel modulo dedicato ugo_agent.stats.
 """
 
 try:  # pacchetto (pip install / -m / uvicorn) O script diretto (python ugo_agent/server.py)
@@ -22,6 +25,14 @@ try:  # pacchetto (pip install / -m / uvicorn) O script diretto (python ugo_agen
 except ImportError:
     import games
     import appindex
+try:  # pacchetto (pip install / -m) o script diretto (python ugo_agent/server.py)
+    from . import stats as _stats_mod
+    from .stats import (router as stats_router, init as stats_init,
+                        capture_prints, _track, _track_tps)
+except ImportError:
+    import stats as _stats_mod
+    from stats import (router as stats_router, init as stats_init,
+                       capture_prints, _track, _track_tps)
 import difflib
 import io
 import json
@@ -218,6 +229,7 @@ def _find_shortcut(target: str) -> Path | None:
 # Stato globale
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Assistente Vocale Locale")
+app.include_router(stats_router)   # /api/stats + /api/logs (ugo_agent.stats)
 _log_lock = threading.Lock()
 _tts_lock = threading.Lock()
 _history = []           # chat per la UI
@@ -230,10 +242,6 @@ _laya_router = None
 # tts, fastlane, wakeup-guard, comando) misuriamo durate e teniamo gli
 # ultimi 50 campi. La UI li mostra con media/p95 e modelli attivi.
 # ---------------------------------------------------------------------------
-_stats_lock = threading.Lock()
-_stats: dict[str, list[float]] = {}
-_stats_enabled = {"on": True}   # la UI puo' sospendere la raccolta
-
 # log delle chiamate API e risposte (per 'ugo server log'): righeleggibile,
 # con rotazione a ~1 MB per non crescere all'infinito
 _REQLOG = BASE / "server_log.txt"
@@ -250,32 +258,6 @@ def _reqlog(msg: str) -> None:
     except Exception:
         pass  # il logging non deve mai rompere la pipeline
 
-
-def _track(stage: str, dt: float) -> None:
-    """Registra la durata (secondi) di una fase; i contatori globali di
-    processo (rss, cpu) vengono campionati al momento della richiesta stats."""
-    if not _stats_enabled["on"]:
-        return
-    with _stats_lock:
-        buf = _stats.setdefault(stage, [])
-        buf.append(dt)
-        if len(buf) > 50:
-            del buf[:-50]
-
-
-_tps: dict[str, list] = {}   # token/s delle fasi LLM (da eval_count/eval_duration)
-
-
-def _track_tps(stage: str, eval_count: int, eval_duration_ns: int) -> None:
-    """Token/s reali riportati da Ollama per la chiamata appena conclusa."""
-    if not _stats_enabled["on"] or not eval_count or not eval_duration_ns:
-        return
-    tps = eval_count / (eval_duration_ns / 1e9)
-    with _stats_lock:
-        buf = _tps.setdefault(stage, [])
-        buf.append(tps)
-        if len(buf) > 50:
-            del buf[:-50]
 
 # ---------------------------------------------------------------------------
 # Whisper via faster-whisper (CTranslate2): CUDA/CPU su Windows, Metal/CPU su
@@ -310,6 +292,30 @@ try:
         _n = json.loads(STT_FILE.read_text()).get("whisper")
         if _n in WHISPER_CATALOG:
             _whisper_choice["name"] = _n
+except Exception:
+    pass
+
+# Preferenza utente sul MOTORE di trascrizione ('' = automatico: Nemotron ->
+# quick -> Whisper -> Vosk). 'whisper' salta i motori premium, 'nemotron' non
+# ricade su quick. Cambiabile a caldo da widget/UI web (/api/stt/engine).
+_stt_engine = {"name": ""}
+try:
+    if STT_FILE.exists():
+        _stt_engine["name"] = json.loads(STT_FILE.read_text()).get("engine") or ""
+except Exception:
+    pass
+
+# Correzione AI della trascrizione (Qwen rilegge il testo STT prima
+# dell'intento, e traduce i comandi EN->IT): disattivabile dall'utente
+# (stt.json 'qwen_stt': false) per una pipeline piu' prevedibile/rapida.
+# Restano SEMPRE attive le correzioni apprese in memoria (istantanee e
+# confermate dall'utente): quelle non passano da Qwen.
+_qwen_stt = {"on": True}
+try:
+    if STT_FILE.exists():
+        _v = json.loads(STT_FILE.read_text()).get("qwen_stt")
+        if _v is not None:
+            _qwen_stt["on"] = bool(_v)
 except Exception:
     pass
 
@@ -543,15 +549,24 @@ def _vosk_transcribe(pcm: bytes) -> str:
 def _premium_transcribe(pcm: bytes) -> str:
     """Motori STT 'leggeri' della cascata: Nemotron 3.5 (NeMo) se disponibile,
     altrimenti quick-stt ONNX (sherpa-onnx, gira anche su Python 3.13+),
-    altrimenti ''. Il chiamante ricade su Whisper/Vosk."""
-    nt = nemotron_stt.transcribe_pcm(pcm)
-    if nt:
-        _track("nemotron", 0.0)
-        return nt
-    qt = quick_stt.transcribe_pcm(pcm)
-    if qt:
-        _track("quick", 0.0)
-        return qt
+    altrimenti ''. Il chiamante ricade su Whisper/Vosk.
+    La preferenza utente (stt.json 'engine') vince: 'whisper' salta questi
+    motori, 'nemotron'/'quick' provano SOLO quello scelto."""
+    eng = _stt_engine["name"]
+    if eng in ("", "nemotron"):
+        _t0 = time.time()
+        nt = nemotron_stt.transcribe_pcm(pcm)
+        if nt:
+            _track("nemotron", time.time() - _t0)
+            return nt
+        if eng == "nemotron":
+            return ""          # scelta esplicita: niente ricaduta su quick
+    if eng in ("", "quick"):
+        _t0 = time.time()
+        qt = quick_stt.transcribe_pcm(pcm)
+        if qt:
+            _track("quick", time.time() - _t0)
+            return qt
     return ""
 
 
@@ -751,6 +766,30 @@ def _learned_examples(limit: int = 8) -> str:
             f'(apply them exactly): {exs}.')
 
 
+def _ollama_call(payload, timeout: float, retries: int = 1) -> dict | None:
+    """Chiamata POST a Ollama /api/generate con UNA ritenta sui guasti
+    transitori (connessione rifiutata mentre il runner carica, read timeout,
+    reset improvviso). `payload` e' il dict delle opzioni (o una stringa JSON
+    gia' serializzata). Comandi e chat non devono fallire
+    solo per un singolo singhiozzo del demone: il costo di un retry e' una
+    manciata di ms, il beneficio e' una correzione che non sparisce."""
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            raw = payload if isinstance(payload, (str, bytes)) else json.dumps(payload)
+            body = raw.encode() if isinstance(raw, str) else raw
+            req = urllib.request.Request(
+                OLLAMA_URL, data=body,
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(0.3 * (attempt + 1))   # breve backoff, poi riprova
+    raise last_exc  # il chiamante ha il suo except: degrada come sempre
+
+
 def normalize_stt(text: str) -> str | None:
     """Ritorna la trascrizione corretta da Qwen, o None se non disponibile.
     La pipeline usa il risultato solo se effettivamente diverso dall'originale.
@@ -771,12 +810,9 @@ def normalize_stt(text: str) -> str | None:
             "stream": False,
             "keep_alive": "30m",
             "options": {"temperature": 0, "num_predict": 120},
-        }).encode()
-        req = urllib.request.Request(OLLAMA_URL, data=payload,
-                                     headers={"Content-Type": "application/json"})
+        })
         _q0 = time.time()
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read().decode())
+        data = _ollama_call(payload, timeout=20)
         _track("qwen_normalize", time.time() - _q0)
         _track_tps("qwen_normalize", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
@@ -1086,7 +1122,9 @@ def safe_normalize(text: str) -> str | None:
             print(f"[learn] applicata correzione memorizzata: {text!r} -> {remembered!r}")
             return remembered
         print(f"[learn] scartata dalla guardia: {remembered!r}")
-    # 2) Qwen come fallback
+    # 2) Qwen come fallback (l'utente puo' disattivarlo: 'qwen_stt': false)
+    if not _qwen_stt["on"]:
+        return None
     cand = normalize_stt(text)
     if not cand or cand.lower() == text.strip().lower():
         return None
@@ -1108,12 +1146,9 @@ def ollama_parse(text: str) -> dict | None:
             "stream": False,
             "keep_alive": "30m",
             "options": {"temperature": 0, "num_predict": 150},
-        }).encode()
-        req = urllib.request.Request(OLLAMA_URL, data=payload,
-                                     headers={"Content-Type": "application/json"})
+        })
         _q0 = time.time()
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode())
+        data = _ollama_call(payload, timeout=30, retries=2)
         _track("qwen_intent", time.time() - _q0)
         _track_tps("qwen_intent", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
@@ -1169,12 +1204,9 @@ def ollama_chat(text: str) -> str | None:
             "stream": False,
             "keep_alive": "30m",
             "options": {"temperature": 0.6, "num_predict": 160},
-        }).encode()
-        req = urllib.request.Request(OLLAMA_URL, data=payload,
-                                     headers={"Content-Type": "application/json"})
+        })
         _q0 = time.time()
-        with urllib.request.urlopen(req, timeout=40) as r:
-            data = json.loads(r.read().decode())
+        data = _ollama_call(payload, timeout=40)
         _track("qwen_chat", time.time() - _q0)
         _track_tps("qwen_chat", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
@@ -2612,7 +2644,7 @@ _NO = {"no", "nope", "annulla", "annullare", "cancella", "sbagliato",
 # stubare l'LLM: la risoluzione e' locale, con la libreria app gia' indicizzata.
 # ---------------------------------------------------------------------------
 _LAST_CMD = {"text": "", "intent": ""}
-_FOLLOWUP_NO_LAST = {"confirm", "guard-scelta", "dictate_toggle", "multi",
+_FOLLOWUP_NO_LAST = {"confirm", "guard-scelta", "multi",
                      "routine", "routine_created", "-", "error"}
 
 
@@ -2741,12 +2773,9 @@ def qwen_app_suggest(name: str) -> dict | None:
             "prompt": "open",
             "stream": False, "keep_alive": "30m",
             "options": {"temperature": 0, "num_predict": 40},
-        }).encode()
-        req = urllib.request.Request(OLLAMA_URL, data=payload,
-                                     headers={"Content-Type": "application/json"})
+        })
         _q0 = time.time()
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read().decode())
+        data = _ollama_call(payload, timeout=15)
         _track("qwen_suggest", time.time() - _q0)
         _track_tps("qwen_suggest", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
@@ -2792,12 +2821,9 @@ def _translate_reply_it_en(reply: str) -> str:
             "stream": False,
             "keep_alive": "30m",
             "options": {"temperature": 0, "num_predict": 120},
-        }).encode()
-        req = urllib.request.Request(OLLAMA_URL, data=payload,
-                                     headers={"Content-Type": "application/json"})
+        })
         _q0 = time.time()
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read().decode())
+        data = _ollama_call(payload, timeout=10)
         _track("qwen_translate", time.time() - _q0)
         _track_tps("qwen_translate", data.get("eval_count", 0),
                    data.get("eval_duration", 0))
@@ -2807,6 +2833,19 @@ def _translate_reply_it_en(reply: str) -> str:
     except Exception as exc:
         print(f"[lang] traduzione risposta fallita ({exc}); resta l'italiano")
     return reply
+
+
+def _tts_model_name() -> str:
+    """Voce TTS in uso per la dashboard (piper-* o sistema)."""
+    return (f"piper-{piper_tts.voice_key_for(piper_tts.current_lang()).split('-')[1]}"
+            if piper_tts.is_ready() else "sistema")
+
+
+# il modulo stats non conosce la pipeline: le passiamo le funzioni che servono
+# (lambda differite: alcune funzioni sono definite piu' avanti nel modulo e
+# vengono risolte solo alla prima richiesta /api/stats)
+stats_init(lambda: bool(_qwen_stt["on"]), lambda: api_stt(), _llm_model,
+           _tts_model_name, lambda: _tool_memory_mb())
 
 
 def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
@@ -2839,11 +2878,6 @@ def _emit(user: str, reply: str, intent: str, src: str, source: str, dt: int,
 
 
 def process(text: str, source: str) -> dict:
-    # Toggle dettatura PRIMA di tutto (guardie, ordinali, laya): da testo vale
-    # come da voce, e 'stop dettatura' non deve finire in una conferma pending.
-    d = _dictation_toggle(text)
-    if d is not None:
-        return _emit(text, d, "dictate_toggle", "keyword", source, 0)
     # follow-up conversazionale: dopo 'apri Spotify', 'e anche Discord' (o
     # anche solo 'Discord') apre l'altra app ereditando il verbo precedente
     fu = _followup_command(text)
@@ -2976,6 +3010,8 @@ def process(text: str, source: str) -> dict:
                          f"{len(steps)} passi. La attivi dicendo '{trig}'.")
                 return _emit(text, reply, "routine_created", "macro", source, 0)
         # fase -2: esecuzione routine (macro vocali): 'modo gaming', 'serata film'...
+        # provata PRIMA della fastlane: i trigger delle routine dell'utente sono
+        # frasi arbitrarie che nessuna regex generale puo' anticipare
         try:
             rout = _find_routine(text)
         except Exception:
@@ -3134,45 +3170,6 @@ async def api_listen(audio: UploadFile):
         return JSONResponse({"error": "ffmpeg non trovato: installalo per lo STT dal browser"},
                             status_code=500)
     return _handle_pcm(proc.stdout)
-
-
-@app.post("/api/dictate")
-async def api_dictate(request: Request):
-    """Dettatura: il widget invia WAV di frasi da trascrivere e incollare.
-    Motore: Nemotron 3.5 Streaming se installato+scaricato, altrimenti
-    faster-whisper (sempre disponibile). Al primo toggle 'comincia a
-    dettare' il download del modello Nemotron parte in background."""
-    data = await request.body()
-    try:
-        wav = _wav_to_pcm16k(data)
-        out = BASE / "_dict_chunk.wav"
-        with wave.open(str(out), "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(wav)
-        _t0 = time.time()
-        text = nemotron_stt.transcribe_wav(out)
-        engine = "nemotron"
-        if not text:
-            qt = quick_stt.transcribe_wav(out)   # sherpa-onnx (senza NeMo)
-            if qt:
-                text, engine = qt, "quick"
-        if not text:
-            alt = _whisper_transcribe(wav)
-            if alt:
-                text, engine = alt, "whisper"
-        if not text:
-            vt = _vosk_transcribe(wav)
-            if vt:
-                text, engine = vt, "vosk"
-        ms = int((time.time() - _t0) * 1000)
-        _reqlog(f"HTTP  /api/dictate  {len(data)} B  engine={engine}  "
-                f"{ms} ms  -> {text!r}")
-        return {"text": text, "engine": engine, "ms": ms}
-    except Exception as exc:
-        _reqlog(f"HTTP  /api/dictate  ERRORE: {exc}")
-        return JSONResponse({"error": f"audio non valido: {exc}"}, status_code=400)
 
 
 @app.post("/api/listen_wav")
@@ -3410,29 +3407,7 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
-_DICT_ON = ("comincia a dettare", "inizia a dettare", "inizia la dettatura",
-            "comincia la dettatura", "avvia la dettatura", "start dictation",
-            "start dictating")
-_DICT_OFF = ("stop dettatura", "ferma la dettatura", "termina la dettatura",
-             "basta dettare", "stop dictation", "stop dictating")
 
-
-def _dictation_toggle(text: str) -> str | None:
-    """Gestisce i comandi di dettatura dentro _handle_pcm (PRIMA di tutto):
-    ritorna la frase di risposta se il testo era un toggle, None altrimenti.
-    Il VERO ciclo di dettatura vive nel widget (microfono locale, senza wake
-    word); il server fa da registro di stato e dice al widget cosa fare."""
-    t = (text or "").lower().strip(" .!?")
-    if any(k in t for k in _DICT_ON):
-        if nemotron_stt.available() and not nemotron_stt.ready():
-            nemotron_stt.download_async()   # primo uso: scarica in background
-        if quick_stt.available() and not quick_stt.ready():
-            quick_stt.download_async()      # idem per il runtime ONNX
-        return "Detatura attiva: parla e il testo appare dove stai scrivendo. " \
-               "Dimmi Ugo stop dettatura per finire."
-    if any(k in t for k in _DICT_OFF):
-        return "Detatura fermata."
-    return None
 
 
 def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
@@ -3468,12 +3443,35 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
         wth = threading.Thread(target=_whisper_job, daemon=True)
         wth.start()
     # corsia veloce: Vosk e' gia' pronto, per i comandi banali non aspetta Whisper
-    # (con verifica attiva la corsia vale solo se la wake e' visibile nel testo)
+    # (con verifica attiva la corsia vale solo se la wake e' visibile nel testo).
+    # Le routine dell'utente vengono provate PRIMA: i loro trigger sono frasi
+    # arbitrarie che nessuna regex generale puo' anticipare, e la fastlane
+    # tornerebbe None per poi pagare Whisper+Qwen senza motivo.
     _tcmd = time.time()
     try:
         vtxt = pre_text or _vosk_transcribe(pcm)
         _f0 = time.time()
-        fast = _fast_command(vtxt) if (not require_wake or _text_has_wake(vtxt)) else None
+        if require_wake and not _text_has_wake(vtxt):
+            fast = None
+        else:
+            rout = None
+            try:
+                rout = _find_routine(vtxt)
+            except Exception:
+                rout = None
+            if rout:
+                # trigger di routine: esegui la macro SUBITO, senza Whisper+Qwen
+                _track("fastlane", time.time() - _f0)
+                replies = _routine_execute(rout)
+                _routine_bump(rout.get("id", ""))
+                name = rout.get("name") or "routine"
+                summary = " ".join(replies)[:220]
+                reply = (f"Eseguo {name}. {summary}" if replies
+                         else f"{name}: nessun passo eseguibile.")
+                _track("command", time.time() - _tcmd)
+                return _emit(vtxt, reply, "routine", "macro", "voce",
+                             int((time.time() - _tcmd) * 1000))
+            fast = _fast_command(vtxt)
         _track("fastlane", time.time() - _f0)
         if fast is not None:
             print("[fastlane] comando semplice eseguito senza Whisper")
@@ -3520,8 +3518,6 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
         speak(entry["assistant"])
         _track("command", time.time() - _tcmd)
         return entry
-    # il toggle dettatura e' gestito dentro process() (dopo il wake-guard:
-    # un falso positivo del rilevatore passivo non puo' attivarla)
     res = process(text, "voce")
     _track("command", time.time() - _tcmd)
     return res
@@ -3769,16 +3765,37 @@ def api_routines_edit(payload: dict):
     return {"ok": True}
 
 
+@app.get("/api/qwen_stt")
+def api_qwen_stt_get():
+    """Stato della correzione AI (Qwen) sulla trascrizione."""
+    return {"on": _qwen_stt["on"]}
+
+
+@app.post("/api/qwen_stt")
+def api_qwen_stt_set(payload: dict):
+    """Attiva/disattiva la rilettura Qwen della trascrizione (a caldo)."""
+    _qwen_stt["on"] = bool(payload.get("on", True))
+    try:
+        cur = json.loads(STT_FILE.read_text()) if STT_FILE.exists() else {}
+        cur["qwen_stt"] = _qwen_stt["on"]
+        STT_FILE.write_text(json.dumps(cur))
+    except Exception:
+        pass
+    print(f"[normalize] correzione AI Qwen: {'ON' if _qwen_stt['on'] else 'OFF'}")
+    return {"ok": True, "on": _qwen_stt["on"]}
+
+
 @app.get("/api/stt")
 def api_stt():
-    """Quale trascrittore e' attivo (Whisper modello scelto, o fallback Vosk)."""
-    if nemotron_stt.ready():
+    """Quale trascrittore e' attivo (rispetta la preferenza in stt.json)."""
+    eng = _stt_engine["name"]
+    if eng in ("", "nemotron") and nemotron_stt.ready():
         return {"engine": "nemotron", "model": nemotron_stt.MODEL_ID,
                 "device": "cpu"}
-    if quick_stt.ready():
+    if eng in ("", "quick") and quick_stt.ready():
         return {"engine": "quick", "model": quick_stt.MODEL_NAME,
                 "device": "cpu (onnx)"}
-    if whisper_available():
+    if eng in ("", "whisper") and whisper_available():
         try:
             import ctranslate2 as ct
             gpu = ct.get_cuda_device_count() > 0
@@ -3791,14 +3808,22 @@ def api_stt():
 
 @app.get("/api/stt/models")
 def api_stt_models():
-    """Catalogo modelli Whisper per la dropdown web (installato/attivo/download)."""
+    """Catalogo modelli Whisper per la dropdown web (installato/attivo/download).
+    'active' = questo modello e' DAVVERO il trascrittore in uso: solo se il
+    motore attivo e' whisper (altrimenti il check va al motore, es. Nemotron,
+    e sui modelli whisper non compare nessuna spunta)."""
+    eff = _stt_engine["name"] or (
+        "nemotron" if nemotron_stt.ready()
+        else "quick" if quick_stt.ready() else "whisper")
     out = []
     for name, info in WHISPER_CATALOG.items():
         out.append({
             "id": name,
             "label": info["label"],
             "installed": _fw_installed(name),
-            "active": name == _whisper_choice["name"] and whisper_available(),
+            "active": eff == "whisper" and name == _whisper_choice["name"]
+                      and whisper_available(),
+            "selected": name == _whisper_choice["name"],
             "downloading": name in _whisper_dl["busy"],
         })
     return {"models": out, "fallback": "vosk"}
@@ -3812,8 +3837,13 @@ def api_stt_model_set(payload: dict):
     if name not in WHISPER_CATALOG:
         return JSONResponse({"error": f"modello sconosciuto: {name}"}, status_code=400)
     _whisper_choice["name"] = name
+    _stt_engine["name"] = "whisper"   # scegliere un modello whisper = scegliere whisper
     try:
-        STT_FILE.write_text(json.dumps({"whisper": name}))
+        # read-modify-write: il file porta anche le altre preferenze
+        # (engine, qwen_stt...) che NON vanno perse cambiando modello
+        cur = json.loads(STT_FILE.read_text()) if STT_FILE.exists() else {}
+        cur.update({"whisper": name, "engine": "whisper"})
+        STT_FILE.write_text(json.dumps(cur))
     except Exception:
         pass
     if _fw_installed(name):
@@ -3824,6 +3854,104 @@ def api_stt_model_set(payload: dict):
         _whisper_dl["busy"].add(name)
         threading.Thread(target=_fw_download, args=(name,), daemon=True).start()
     return {"ok": True, "status": "downloading"}
+
+
+def _venv_python():
+    """Python del venv 3.12 accanto al progetto, se c'e' (li' vive NeMo)."""
+    base = Path(__file__).resolve().parent.parent / ".venv-nemo"
+    for rel in (("Scripts", "python.exe"), ("bin", "python")):
+        p = base.joinpath(*rel)
+        if p.is_file():
+            return str(p)
+    return None
+
+
+_relaunching = {"on": False}   # un solo restart per volta (auto-heal + API)
+
+
+def _relaunch_on_venv() -> None:
+    """Riavvia QUESTO server col venv Python 3.12 (dove c'e' NeMo/Nemotron).
+    Chiamato da un thread: prima risponde al client, poi spawn del nuovo
+    processo e uscita (la porta si libera subito, il nuovo server la prende).
+    Il nuovo processo nasce SENZA finestra console (CREATE_NO_WINDOW): senza,
+    da un server senza console Windows ne aprirebbe una visibile a ogni
+    restart (e i doppioni che perdono la gara della porta la chiudono
+    subito: le finestre nere che si aprono e chiudono)."""
+    if _relaunching["on"]:
+        return
+    _relaunching["on"] = True
+    py = _venv_python()
+    if py is None:
+        print("[stt] restart annullato: venv 3.12 non trovato")
+        return
+    print(f"[stt] riavvio del server su {py} (per Nemotron)...")
+    me = Path(__file__).resolve()
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen([py, "-u", str(me)], cwd=str(me.parent.parent),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=flags)
+    except Exception as exc:
+        print(f"[stt] spawn del nuovo server fallito ({exc}); resto qui")
+        return
+    time.sleep(1.5)   # al client arriva la risposta HTTP, poi libero la porta
+    os._exit(0)
+
+
+@app.get("/api/stt/engine")
+def api_stt_engine_list():
+    """Catalogo motori STT per widget/web: attivo, installato, stato download."""
+    nemo = nemotron_stt.available()
+    return {"engines": [
+        {"id": "whisper", "label": "Whisper",
+         "subtitle": f"faster-whisper · {_whisper_choice['name']}",
+         "active": _stt_engine["name"] == "whisper"
+                   or (not _stt_engine["name"]
+                       and not (nemotron_stt.ready() or quick_stt.ready())),
+         "installed": whisper_available()},
+        {"id": "nemotron", "label": "Nemotron 3.5",
+         "subtitle": ("NVIDIA · 40 lingue · locale" if nemo
+                      else "richiede il venv Python 3.12 (.venv-nemo)"),
+         "active": _stt_engine["name"] == "nemotron"
+                   or (not _stt_engine["name"] and nemotron_stt.ready()),
+         "installed": nemo, "ready": nemotron_stt.ready(),
+         "downloading": nemotron_stt.status().get("downloading", False)},
+    ], "fallback": "vosk"}
+
+
+@app.post("/api/stt/engine")
+def api_stt_engine_set(payload: dict):
+    """Sceglie il motore di trascrizione. Nemotron senza NeMo nel processo
+    attivo: riavvia il server col venv 3.12 (se esiste) e scarica il modello."""
+    eng = (payload.get("engine") or "").strip().lower()
+    if eng not in ("", "whisper", "nemotron", "quick"):
+        return JSONResponse({"error": f"engine sconosciuto: {eng}"}, status_code=400)
+    _stt_engine["name"] = eng
+    try:
+        cur = json.loads(STT_FILE.read_text()) if STT_FILE.exists() else {}
+        cur["engine"] = eng
+        STT_FILE.write_text(json.dumps(cur))
+    except Exception:
+        pass
+    if eng == "nemotron" and not nemotron_stt.available():
+        if _venv_python() is None:
+            return JSONResponse(
+                {"error": "NeMo non e' installato e non trovo il venv 3.12 "
+                          "(.venv-nemo): installa l'extra [nemotron] su Python 3.10-3.12"},
+                status_code=409)
+        threading.Thread(target=_relaunch_on_venv, daemon=True).start()
+        return {"ok": True, "status": "restart"}
+    if eng == "nemotron" and not nemotron_stt.ready():
+        nemotron_stt.download_async()
+        return {"ok": True, "status": "downloading"}
+    return {"ok": True, "status": "attivo"}
+
+
+@app.post("/api/shutdown")
+def api_shutdown():
+    """Spegnimento controllato: il widget lo usa per cambiare runtime."""
+    threading.Timer(0.3, os._exit, args=(0,)).start()
+    return {"ok": True}
 
 
 @app.get("/_tts_reply.wav")
@@ -3921,58 +4049,6 @@ def _tool_memory_mb() -> list:
     return tools
 
 
-@app.get("/api/stats")
-def api_stats():
-    """Dashboard latenze: medie/p95 per fase (ultimi 50 campi ciascuna),
-    modelli attivi e stato del processo. Leggero: nessun lavoro pesante."""
-    import os as _os
-    with _stats_lock:
-        snap = {k: list(v) for k, v in _stats.items()}
-    out = {}
-    for k, v in snap.items():
-        s = sorted(v)
-        p95 = s[min(len(s) - 1, int(round(0.95 * len(s))) - 1)] if s else 0.0
-        out[k] = {"n": len(v), "avg": round(sum(v) / len(v), 3),
-                  "p95": round(p95, 3), "max": round(max(v), 3),
-                  "last": round(v[-1], 3)}
-    # ordinamento di pipeline: prima la voce in ingresso, poi l'interpretazione,
-    # poi la voce in uscita e il totale
-    order = ["vosk", "fastlane", "whisper", "qwen_normalize", "qwen_intent",
-             "qwen_chat", "qwen_suggest", "tts_piper", "tts_sapi", "command"]
-    stages = [{"stage": k, **out[k]} for k in order if k in out]
-    stages += [{"stage": k, **v} for k, v in out.items() if k not in order]
-    with _stats_lock:
-        tps = {k: list(v) for k, v in _tps.items()}
-    for st in stages:
-        v = tps.get(st["stage"])
-        if v:
-            st["tps_avg"] = round(sum(v) / len(v), 1)
-    proc = {}
-    try:
-        import psutil
-        p = psutil.Process()
-        mem = p.memory_info().rss
-        cpu = p.cpu_percent(interval=None)   # dall'ultimo campione
-        proc = {"rss_mb": round(mem / 1048576, 1), "cpu_pct": round(cpu, 1),
-                "threads": p.num_threads()}
-    except Exception:
-        proc = {}
-    return {"stages": stages, "process": proc, "tools": _tool_memory_mb(),
-            "models": {"stt": _whisper_choice["name"],
-                       "llm": _llm_model(),
-                       "tts": (f"piper-{piper_tts.voice_key_for(piper_tts.current_lang()).split('-')[1]}"
-                               if piper_tts.is_ready() else "sistema")},
-            "enabled": _stats_enabled["on"],
-            "ts": datetime.now().isoformat(timespec="seconds")}
-
-
-@app.post("/api/stats")
-def api_stats_toggle(payload: dict):
-    """Attiva/sospende la raccolta (la UI la mette in pausa quando vuole)."""
-    _stats_enabled["on"] = bool(payload.get("enabled", True))
-    return {"ok": True, "enabled": _stats_enabled["on"]}
-
-
 @app.post("/api/reload_stt")
 def api_reload_stt():
     _stt["model"] = None
@@ -3986,7 +4062,13 @@ if __name__ == "__main__":
 
     print(f"Assistente vocale locale su http://127.0.0.1:{PORT}")
     _timers_reload()  # riarma timer/sveglie/promemoria pendenti (timers.json)
+    capture_prints()  # tee stdout -> coda circolare per /api/logs (pannello 📜)
     get_stt()  # pre-carica Vosk
+    if (_stt_engine["name"] == "nemotron" and not nemotron_stt.available()
+            and _venv_python() is not None):
+        # preferenza Nemotron ma questo runtime non ha NeMo (es. 3.13/3.14):
+        # il server si riavvia DA SOLO col venv 3.12 dove NeMo c'e'.
+        threading.Thread(target=_relaunch_on_venv, daemon=True).start()
     if quick_stt.available() and not quick_stt.ready():
         # runtime sherpa-onnx installato ma modello assente: scaricalo ora
         quick_stt.download_async()
@@ -3994,20 +4076,11 @@ if __name__ == "__main__":
         # NeMo installato (extra [nemotron]) ma modello non ancora scaricato:
         # lo scarichiamo all'avvio, cosi' e' pronto al primo comando.
         nemotron_stt.download_async()
-    if whisper_available():
-        # pre-carica anche Whisper: senza, il PRIMO comando vocale pagava
-        # 2-6 s di caricamento modello oltre alla trascrizione
-        def _warm():
-            try:
-                t0 = time.time()
-                _whisper_transcribe(b"\x00\x00" * 1600)  # 0.1 s di silenzio
-                print(f"[whisper] pronto in {time.time() - t0:.1f}s")
-            except Exception as exc:
-                print(f"[whisper] warm-up saltato: {exc}")
-        threading.Thread(target=_warm, daemon=True).start()
     if nemotron_stt.ready() or quick_stt.ready():
         # modello gia' scaricato: pre-caricarlo costa secondi alla prima
-        # trascrizione -> meglio pagarseli ora, a server freddo
+        # trascrizione -> meglio pagarseli ora, a server freddo. Il warm-up
+        # NON entra nelle statistiche: riparte da qui il riferimento del
+        # cold-start, cosi' la dashboard mostra solo campioni a regime.
         def _warm_nemo():
             try:
                 t0 = time.time()
@@ -4017,8 +4090,10 @@ if __name__ == "__main__":
                 else:
                     quick_stt.transcribe_pcm(b"\x00\x00" * 1600)
                     print(f"[quick-stt] pronto in {time.time() - t0:.1f}s")
+                _stats_mod._boot_ts = time.time()
             except Exception as exc:
                 print(f"[stt premium] warm-up saltato: {exc}")
+                _stats_mod._boot_ts = time.time()
         threading.Thread(target=_warm_nemo, daemon=True).start()
     webbrowser.open(f"http://127.0.0.1:{PORT}")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

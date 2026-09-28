@@ -195,13 +195,14 @@
 <body>
 <div class="topbar">
 <button class="appsbtn small" id="modelbtn" title="Modello AI per correzione e interpretazione">⚙️ <span id="modelname">…</span></button>
-<button class="appsbtn small" id="sttbtn" title="Modello di trascrizione vocale (Whisper)">🎤 <span id="sttname">…</span></button>
+<button class="appsbtn small" id="sttbtn" title="Motore e modello di trascrizione vocale (Whisper / Nemotron)">🎤 <span id="sttname">…</span></button>
 <button class="appsbtn small" id="ttsbtn" title="Voce di risposta (TTS)">🔊 <span id="ttsname">…</span></button>
 <button class="appsbtn small" id="micbtn" title="Microfono di input">🎙️ <span id="micname">…</span></button>
 <button class="appsbtn small" id="membtn" title="Memoria appresa: refusi corretti e alias-app">🧠 <span id="memcount">…</span></button>
 <button class="appsbtn" id="appsbtn" title="App e giochi installati sul PC">🗂️ App e giochi</button>
 <button class="appsbtn" id="routbtn" title="Routine: una frase attiva una sequenza di comandi">⚡ Routine <span id="routcount"></span></button>
 <button class="appsbtn small" id="statsbtn" title="Dashboard latenze: whisper, qwen, tts, comandi">📊 <span id="statscmd">Dashboard latenze</span></button>
+<button class="appsbtn small" id="logbtn" title="Log del server: comandi, fastlane, STT e TTS in tempo reale">📜 <span id="logname">Log</span></button>
 <button class="appsbtn small" id="langbtn" title="Lingua / Language">🌐 <span id="langname">IT</span></button>
 </div>
 <div class="app">
@@ -285,7 +286,19 @@ it: {
   search_ph: 'Cerca per nome…', voci: ' voci',
   m_model: 'Modello AI', m_model_sub: 'correzione, interpretazione e suggerimenti',
   err_model: 'cambio modello fallito',
-  m_stt: 'Trascrittore vocale', m_stt_sub: 'whisper: massima qualità — vosk sempre come riserva',
+  m_stt: 'Trascrittore vocale', m_stt_sub: 'motore e modello: whisper di qualità, nemotron rapido — vosk come riserva',
+  stt_models_hdr: 'Modelli Whisper — solo se il motore attivo è Whisper',
+  eng_whisper_sub: 'faster-whisper · massima qualità, modello scaricabile',
+  eng_nemo_sub: 'NVIDIA Nemotron 3.5 · 40 lingue · avvio automatico dal venv Python 3.12',
+  msg_eng_restart: '🔄 Riavvio il server con il venv Python 3.12 per Nemotron: la pagina si ricarica da sola…',
+  msg_eng_dl: '⬇️ Scarico il modello Nemotron (~1.2 GB). Whisper resta attivo nel frattempo.',
+  msg_eng_ok: '✅ Motore di trascrizione: ',
+  qwen_ai: 'Correzione AI della trascrizione (Qwen)',
+  qwen_ai_on: ' ✨ attiva — clicca per disattivarla',
+  qwen_ai_off: ' — disattivata — clicca per attivarla',
+  qwen_ai_sub: 'Qwen rilegge e sistema il testo riconosciuto prima dei comandi (e traduce dall’inglese)',
+  msg_qwen_on: '✅ Correzione AI della trascrizione attivata.',
+  msg_qwen_off: '⛔ Correzione AI della trascrizione disattivata.',
   dl: ' ⏳ in download…', notinst: '  ⬇ non installato',
   msg_stt_dl: '⬇️ Scarico il modello ', msg_stt_dl2: ' (in background). Finché non è pronto si usa Vosk.',
   msg_stt_ok: '✅ Trascrittore pronto: ', err_change: 'non ho riusato a cambiare il modello',
@@ -367,7 +380,19 @@ en: {
   search_ph: 'Search by name…', voci: ' items',
   m_model: 'AI model', m_model_sub: 'correction, intent parsing and app suggestions',
   err_model: 'model switch failed',
-  m_stt: 'Speech transcriber', m_stt_sub: 'whisper: best quality — vosk always as a fallback',
+  m_stt: 'Speech transcriber', m_stt_sub: 'engine and model: whisper for quality, fast nemotron — vosk as a fallback',
+  stt_models_hdr: 'Whisper models — only when the Whisper engine is active',
+  eng_whisper_sub: 'faster-whisper · best quality, downloadable model',
+  eng_nemo_sub: 'NVIDIA Nemotron 3.5 · 40 languages · auto-start from the Python 3.12 venv',
+  msg_eng_restart: '🔄 Restarting the server with the Python 3.12 venv for Nemotron: the page reloads on its own…',
+  msg_eng_dl: '⬇️ Downloading the Nemotron model (~1.2 GB). Whisper keeps working meanwhile.',
+  msg_eng_ok: '✅ Transcription engine: ',
+  qwen_ai: 'AI transcription correction (Qwen)',
+  qwen_ai_on: ' ✨ on — click to disable',
+  qwen_ai_off: ' — off — click to enable',
+  qwen_ai_sub: 'Qwen re-reads and fixes the recognized text before intent parsing (and translates from English)',
+  msg_qwen_on: '✅ AI transcription correction enabled.',
+  msg_qwen_off: '⛔ AI transcription correction disabled.',
   dl: ' ⏳ downloading…', notinst: '  ⬇ not installed',
   msg_stt_dl: '⬇️ Downloading model ', msg_stt_dl2: ' (in background). Vosk is used until it is ready.',
   msg_stt_ok: '✅ Transcriber ready: ', err_change: 'couldn\u2019t switch the model',
@@ -689,6 +714,75 @@ async function openSttMenu() {
     mcount.textContent = t('m_stt_sub');
     msearch.style.display = 'none';
     mlist.innerHTML = '';
+    // MOTORI di trascrizione: Whisper / Nemotron (sopra i modelli whisper)
+    try {
+      const de = await (await fetch('/api/stt/engine')).json();
+      for (const e of de.engines) {
+        const sub = e.id === 'nemotron' ? t('eng_nemo_sub') : t('eng_whisper_sub');
+        const tag = e.downloading ? t('dl') : '';
+        const it = {title: e.label + tag, subtitle: sub, kind: 'appx'};
+        const rowEl = row(it);
+        rowEl.classList.add('click');
+        if (e.active) {
+          const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713';
+          rowEl.appendChild(c);
+        }
+        rowEl.onclick = async () => {
+          if (e.downloading || e.active) return;
+          const rr = await fetch('/api/stt/engine', {method:'POST',
+            headers:{'Content-Type':'application/json'}, body:JSON.stringify({engine: e.id})});
+          const dd = await rr.json();
+          if (!dd.ok) { add('bot', 'Errore: ' + (dd.error || t('err_change'))); return; }
+          ovl.classList.remove('open');
+          if (dd.status === 'restart') {
+            add('bot', t('msg_eng_restart'));
+            const poll = setInterval(async () => {
+              try { await fetch('/', {cache:'no-store'}); clearInterval(poll); location.reload(); }
+              catch {}
+            }, 2000);
+          } else if (dd.status === 'downloading') {
+            add('bot', t('msg_eng_dl'));
+            const poll = setInterval(async () => {
+              try {
+                const s = await (await fetch('/api/stt')).json();
+                if (s.engine === 'nemotron') { clearInterval(poll);
+                  add('bot', t('msg_eng_ok') + 'Nemotron 3.5'); }
+              } catch { clearInterval(poll); }
+            }, 4000);
+          } else {
+            add('bot', t('msg_eng_ok') + e.label);
+          }
+        };
+        mlist.appendChild(rowEl);
+      }
+      // correzione AI (Qwen) della trascrizione: riga on/off
+      try {
+        const dq = await (await fetch('/api/qwen_stt')).json();
+        const on = !!dq.on;
+        const it = {title: t('qwen_ai') + (on ? t('qwen_ai_on') : t('qwen_ai_off')),
+                    subtitle: t('qwen_ai_sub'), kind: 'appx'};
+        const rowEl = row(it);
+        rowEl.classList.add('click');
+        if (on) {
+          const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713';
+          rowEl.appendChild(c);
+        }
+        rowEl.onclick = async () => {
+          const rr = await fetch('/api/qwen_stt', {method:'POST',
+            headers:{'Content-Type':'application/json'}, body:JSON.stringify({on: !on})});
+          const dd = await rr.json();
+          ovl.classList.remove('open');
+          add('bot', dd.on ? t('msg_qwen_on') : t('msg_qwen_off'));
+        };
+        mlist.appendChild(rowEl);
+      } catch {}
+    } catch {}
+    // i modelli whisper sono la RISERVA: usati solo se il motore attivo e'
+    // Whisper. L'intestazione esplicita evita il "perche' vedo ancora whisper?"
+    // quando il motore in uso e' Nemotron.
+    const hdr = document.createElement('div'); hdr.className = 'mcat';
+    hdr.innerHTML = '<span class="chev">\u25be</span>' + t('stt_models_hdr');
+    mlist.appendChild(hdr);
     for (const m of d.models) {
       const short = m.id.replace('large-v3-turbo', 'large-v3-turbo');
       const tag = m.downloading ? t('dl') : (m.installed ? '' : t('notinst'));
@@ -697,6 +791,12 @@ async function openSttMenu() {
       rowEl.classList.add('click');
       if (m.active) {
         const c = document.createElement('span'); c.className = 'check'; c.textContent = '\u2713';
+        rowEl.appendChild(c);
+      } else if (m.selected) {
+        // modello whisper scelto ma non attivo (il motore e' un altro, es.
+        // Nemotron): puntino discreto al posto della spunta
+        const c = document.createElement('span'); c.className = 'check';
+        c.style.opacity = '.35'; c.textContent = '\u2022';
         rowEl.appendChild(c);
       }
       rowEl.onclick = async () => {
@@ -725,9 +825,11 @@ async function openSttMenu() {
   } catch {}
 }
 document.getElementById('sttbtn').onclick = openSttMenu;
-(async () => { try { const s = await (await fetch('/api/stt/models')).json();
-  const a = s.models.find(m => m.active);
-  document.getElementById('sttname').textContent = a ? a.id : s.fallback; } catch {} })();
+(async () => { try { const s = await (await fetch('/api/stt')).json();
+  const nm = s.engine === 'nemotron' ? 'Nemotron'
+           : s.engine === 'quick' ? 'quick-stt'
+           : s.engine === 'whisper' ? s.model : s.engine;
+  document.getElementById('sttname').textContent = nm; } catch {} })();
 
 // --- menu voce di risposta (TTS): Piper naturale (Paola) / voce di sistema ---
 async function openTtsMenu() {
@@ -1011,9 +1113,15 @@ const STAGE_LABEL = {
   vosk: {it: 'Vosk (fastlane pre-lettura)', en: 'Vosk (pre-read fastlane)'},
   fastlane: {it: 'Fastlane (match comandi)', en: 'Fastlane (command match)'},
   whisper: {it: 'Whisper (trascrizione)', en: 'Whisper (transcription)'},
+  nemotron: {it: 'Nemotron (trascrizione)', en: 'Nemotron (transcription)'},
+  quick: {it: 'Cohere quick (trascrizione)', en: 'Cohere quick (transcription)'},
   qwen_normalize: {it: 'Qwen (correzione STT)', en: 'Qwen (STT correction)'},   qwen_intent: {it: 'Qwen (interpretazione intent)', en: 'Qwen (intent parsing)'},
    qwen_chat: {it: 'Qwen (risposta conversazionale)', en: 'Qwen (conversational reply)'},
   qwen_suggest: {it: 'Qwen (suggerimento app)', en: 'Qwen (app suggestion)'},
+  qwen_state: {it: 'Correzione AI (Qwen)', en: 'AI correction (Qwen)'},
+  qwen_state_on: {it: 'attiva', en: 'on'},
+  qwen_state_off: {it: 'disattivata — il testo va dritto ai comandi, zero costi LLM (intent e chat restano attivi)',
+                   en: 'off — text goes straight to commands, zero LLM cost (intent & chat stay on)'},
   qwen_translate: {it: 'Qwen (traduzione risposta)', en: 'Qwen (reply translation)'},
   tts_piper: {it: ' - Piper TTS', en: ' - Piper TTS'},
   tts_sapi: {it: 'TTS di sistema', en: 'System TTS'},
@@ -1053,10 +1161,38 @@ async function refreshStats() {
       return;
     }
     mtitle.textContent = t('m_stats');
-    mcount.textContent = t('stats_sub') + d.models.stt +
+    // il modello STT DAVVERO in uso (es. nemotron-3.5-…, large-v3-turbo,
+    // cohere-transcribe-…, small-it): il server ora riporta l'engine attivo,
+    // non la sola preferenza whisper
+    const sttInUso = (d.models.stt || '').split('/').pop();
+    mcount.textContent = t('stats_sub') + sttInUso +
       ' · AI ' + d.models.llm + ' · TTS ' + (d.models.tts || '').replace('piper-', '');
     msearch.style.display = 'none';
     mlist.innerHTML = '';
+    // stato della correzione AI: con Qwen disattivato le fasi 'qwen_normalize'
+    // spariscono dai dati; esplicitarlo qui evita il "dov'e' finita quella voce?".
+    // La riga e' cliccabile per riattivarlo al volo (stesso endpoint del menu 🎤)
+    if (d.qwen_stt !== undefined) {
+      const qs = document.createElement('div');
+      if (d.qwen_stt) {
+        qs.className = 'mitem';
+        qs.innerHTML = '<div class="tx"><b>' + stageLabel('qwen_state') +
+          '</b><small>' + stageLabel('qwen_state_on') + '</small></div>';
+      } else {
+        qs.className = 'mitem click';
+        qs.innerHTML = '<div class="ic">\u2728</div><div class="tx"><b>' +
+          stageLabel('qwen_state') +
+          '</b><small>' + stageLabel('qwen_state_off') + '</small></div>';
+        qs.title = t('qwen_ai') + t('qwen_ai_off');
+        qs.onclick = async () => {
+          await fetch('/api/qwen_stt', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({on: true})});
+          add('bot', t('msg_qwen_on'));
+          refreshStats();
+        };
+      }
+      mlist.appendChild(qs);
+    }
     if (!(d.stages || []).length) {
       const e = document.createElement('div'); e.className = 'mitem';
       e.innerHTML = '<div class="tx"><small>Nessun dato ancora: dai un comando a Ugo ' +
@@ -1073,9 +1209,11 @@ async function refreshStats() {
       const b = document.createElement('b'); b.textContent = stageLabel(s.stage);
       const sm = document.createElement('small');
       const tps = s.tps_avg ? ' · ' + s.tps_avg + ' tok/s' : '';
+      const cold = s.cold_n ? (' · ' + s.cold_n +
+        (LANG === 'en' ? ' cold-start sample(s) excluded' : ' campione(i) a freddo esclusi')) : '';
       sm.textContent = (LANG === 'en' ? 'avg ' : 'media ') + s.avg.toFixed(2) + 's · p95 ' +
         s.p95.toFixed(2) + 's · max ' + s.max.toFixed(2) + 's · ' + s.n +
-        (s.n === 1 ? (LANG === 'en' ? ' sample' : ' campione') : (LANG === 'en' ? ' samples' : ' campioni')) + tps;
+        (s.n === 1 ? (LANG === 'en' ? ' sample' : ' campione') : (LANG === 'en' ? ' samples' : ' campioni')) + tps + cold;
       const bar = document.createElement('div');
       bar.style.cssText = 'height:6px;background:var(--border);border-radius:3px;margin-top:5px;overflow:hidden';
       const fill = document.createElement('div');
@@ -1114,11 +1252,48 @@ async function refreshStats() {
 
 function openStats() {
   ovl.classList.add('open');
+  if (statsTimer) clearInterval(statsTimer);   // ferma SUBITO il pannello precedente
   refreshStats();
-  if (!statsTimer) statsTimer = setInterval(refreshStats, 3000);
+  statsTimer = setInterval(refreshStats, 3000);
 }
 document.getElementById('statsbtn').onclick = openStats;
 refreshStats();  // aggiorna il badge della topbar subito, senza aprire il pannello
+
+// --- pannello log del server (📜) ------------------------------------------
+function escHtml(s) {
+  return (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+async function refreshLogs() {
+  try {
+    const q = (document.getElementById('msearch').value || '').trim();
+    const d = await (await fetch('/api/logs?limit=120' + (q ? '&q=' + encodeURIComponent(q) : ''))).json();
+    if (!ovl.classList.contains('open')) return;
+    mtitle.textContent = LANG === 'en' ? 'Server log' : 'Log del server';
+    mcount.textContent = LANG === 'en' ? 'what Ugo is doing right now' : 'cosa sta facendo Ugo in tempo reale';
+    msearch.style.display = '';
+    mlist.innerHTML = '';
+    if (!(d.lines || []).length) {
+      const e = document.createElement('div'); e.className = 'mitem';
+      e.innerHTML = '<div class="tx"><small>' + (LANG === 'en' ?
+        'No lines yet (or none matching the filter).' :
+        'Nessuna riga (o nessuna corrisponde al filtro).') + '</small></div>';
+      mlist.appendChild(e);
+    }
+    for (const ln of d.lines || []) {
+      const el = document.createElement('div'); el.className = 'mitem';
+      el.innerHTML = '<div class="tx"><small style="font-family:ui-monospace,Consolas,monospace;display:block;white-space:pre-wrap;word-break:break-word">' +
+        escHtml(ln) + '</small></div>';
+      mlist.appendChild(el);
+    }
+  } catch {}
+}
+function openLogs() {
+  ovl.classList.add('open');
+  if (statsTimer) clearInterval(statsTimer);   // ferma SUBITO il pannello precedente
+  refreshLogs();
+  statsTimer = setInterval(refreshLogs, 2500);
+}
+document.getElementById('logbtn').onclick = openLogs;
 
 async function openMem() {
   try {

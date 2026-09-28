@@ -35,6 +35,12 @@ jobs:
       - name: Test della pipeline audio E2E (TTS -> STT -> intent)
         run: python tests/test_e2e_audio.py
 
+      - name: Test del modulo stats (registri, cold-start, log)
+        run: python tests/test_stats.py
+
+      - name: Test multicommand (splitter, senza server)
+        run: python tests/test_multicommand.py
+
       - name: Import dei moduli cross-platform (senza avviare server/GUI)
         run: python -c "import ugo_agent.platform_utils as pu; import ugo_agent.appindex; import ugo_agent.games; import ugo_agent.cli; print('OS:', pu.OS_NAME, '| dati:', pu.data_dir())"
 
@@ -97,3 +103,37 @@ jobs:
           srv.should_exit = True
           t.join(timeout=10)
           print(f"server boot OK su {sys.platform}")
+
+      # ---------------------------------------------------------------------
+      # Suite API completa contro il server reale (in-process, porta fissa).
+      # In CI niente Ollama: i test LLM si saltano da soli (LLM_UP=False);
+      # UGO_TEST_HEAVY=0 salta i test che toccano volume/browser/desktop,
+      # che su un runner Linux/macOS non hanno senso.
+      # ---------------------------------------------------------------------
+      - name: Suite API completa (mode leggiera, LLM skip automatico)
+        shell: python
+        run: |
+          import os, subprocess, sys, threading, time, urllib.request
+          import uvicorn
+          from ugo_agent.server import app
+
+          port = 8123
+          cfg = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+          srv = uvicorn.Server(cfg)
+          t = threading.Thread(target=srv.run, daemon=True)
+          t.start()
+
+          up = False
+          for _ in range(60):
+              try:
+                  urllib.request.urlopen(f"http://127.0.0.1:{port}/api/stt", timeout=2)
+                  up = True
+                  break
+              except Exception:
+                  time.sleep(0.2)
+          assert up, "server non raggiungibile sulla porta di test"
+
+          env = dict(os.environ, UGO_TEST_BASE=f"http://127.0.0.1:{port}",
+                     UGO_TEST_HEAVY="0")
+          r = subprocess.run([sys.executable, "tests/test_api.py"], env=env)
+          sys.exit(r.returncode)

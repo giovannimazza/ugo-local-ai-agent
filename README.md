@@ -11,6 +11,39 @@ non-autoregressive decision engine used here for intent classification.
 
 ![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-Nemotron%203.5%20%7C%20faster--whisper-purple)
 
+> **Unreleased (in sviluppo)** — **STT engine picker** in the widget settings
+> and web UI (Whisper / Nemotron) with **automatic server restart on the
+> Python 3.12 venv** when NeMo lives there, persistent engine choice, **AI
+> transcription correction toggle** (Qwen re-read on/off), widget settings
+> menu fixed (a missing `_mic_reset_choice` killed the ••• menu silently for
+> anyone with a saved microphone), NeMo-on-Windows fixes (WinError 32 on the
+> transcribe temp dir, prompt `auto` language mapping, Hypothesis text
+> normalization) and no more flashing console windows on engine restarts, plus a
+> latency dashboard that reflects the AI-correction OFF state (the Qwen STT
+> stage vanishes from the "uses & latencies" panel and an explicit status row
+> appears — clickable to re-enable it on the spot) and reports the STT model
+> actually in use (Nemotron / Cohere / Whisper / Vosk) instead of the Whisper
+> preference only.
+>
+> **Quality & robustness pack**: the first STT sample after a server boot is
+> tagged *cold* and excluded from dashboard averages (no more 29 s Nemotron
+> outliers), every Ollama call
+> retries once on transient failures so the AI correction doesn't silently
+> vanish, user **routines trigger in the fastlane** (voice macros run without
+> waiting for Whisper+Qwen), and `server.py` hands the whole stats/logging
+> layer to the new `ugo_agent.stats` module. New **📜 server-log panel** in
+> the web UI (live captured stdout, searchable, `GET /api/logs`),
+> **voice dictation REMOVED** together with the experimental F9 push-to-talk
+> (unreliable paste target across apps and weak-mic hallucinations; the
+> widget keeps all other features: engine picker, AI-correction toggle,
+> dashboard shortcut), a
+> widget menu entry opens the dashboard in the browser, and CI now runs the
+> full HTTP suite (light mode: LLM tests auto-skip without Ollama, heavy
+> tests skip with `UGO_TEST_HEAVY=0`). Dashboard honesty pass: only the STT
+> stage of the engine actually in use is shown (stale Whisper samples are
+> hidden when Nemotron runs), STT registers reset on resume after a pause,
+> and the Qwen OFF row states explicitly that intent & chat stay active.
+>
 > **v0.5.0 highlights** — **conversation memory** ("Ugo apri Spotify" …
 > "e anche Discord"), voice **timers, alarms and reminders** ("timer 10
 > minuti", "sveglia alle 7 e mezza", "ricordami di chiamare Maria") with
@@ -22,9 +55,7 @@ non-autoregressive decision engine used here for intent classification.
 > sherpa-onnx + Cohere Transcribe 14 languages (~1.7 GB, ONNX) —
 > Nemotron-class quality on Python 3.13/3.14 where NeMo cannot be installed.
 >
-> **v0.4.0 highlights** — native voice **dictation** ("Ugo, comincia a dettare" →
-> text pasted where you type, no wake word) powered by **NVIDIA Nemotron 3.5
-> Streaming** (optional engine, faster-whisper fallback), post-wake transcription
+> **v0.4.0 highlights** — post-wake transcription
 > migrates to Nemotron when installed, audio COM/pycaw moved to a crash-isolated
 > subprocess worker, server auto-restart watchdog, wake-residue stripping fixed
 > everywhere, "apri browser" opens the real system default browser, unified
@@ -248,22 +279,33 @@ Vosk, Piper voice) and starts the server + widget. The steps below get you to th
 > `powershell.exe` denied, TLS 1.2 issues, `curl` alias confusion in PowerShell).
 > The three steps above are the supported install.
 
-> **Optional: Nemotron STT engine** — dictation and post-wake transcription run on
+> **Optional: Nemotron STT engine** — post-wake transcription runs on
 > NVIDIA **Nemotron 3.5 Streaming** (40 languages, Italian included) when the extra
-> is installed on a Python where NeMo is available (3.10–3.12):
+> is installed on a Python where NeMo is available (3.10–3.12). On machines whose
+> default Python is 3.13/3.14 the clean way is a dedicated **Python 3.12 venv**
+> next to the project:
 >
 > ```bat
-> pip install "ugo-agent[nemotron]"
+> winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+> py -3.12 -m venv .venv-nemo
+> .venv-nemo\Scripts\pip install -e ".[nemotron]"
 > ```
 >
-> The ~1.2 GB model downloads automatically at first use; without it Ugo uses
-> faster-whisper everywhere (identical behaviour).
+> The ~1.2 GB model downloads automatically at first use. **You don't have to
+> remember which Python runs what**: pick the engine in the widget settings
+> menu (••• → transcription engine) or in the web 🎤 menu — if the running
+> server has no NeMo it **restarts itself on the `.venv-nemo` venv** and comes
+> back with Nemotron active (the widget watchdog preserves this choice across
+> restarts). Without NeMo anywhere, Ugo uses faster-whisper everywhere
+> (identical behaviour). The Windows quirks of NeMo 3.x (WinError 32 on the
+> temp-dir cleanup, `supervision.language=None` on prompt models, Hypothesis
+> results instead of strings) are handled inside `nemotron_stt.py`.
 >
 > **Optional: quick STT engine (no NeMo needed)** — same idea for Pythons where
 > **NeMo cannot be installed (3.13/3.14 included)**: [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
 > runs the **Cohere Transcribe 14-language** model (~1.7 GB, int8, ONNX,
 > punctuation included; Italian and English among the 14). Same cascade as
-> Nemotron: post-wake transcription and dictation first, faster-whisper fallback:
+> Nemotron: post-wake transcription first, faster-whisper fallback:
 >
 > ```bat
 > pip install "ugo-agent[quick]"
@@ -271,7 +313,14 @@ Vosk, Piper voice) and starts the server + widget. The steps below get you to th
 >
 > The model is downloaded once on first use (or at server start); `UGO_QUICKSTT=0`
 > disables it. If both extras are installed, Nemotron wins and quick-stt is the
-> second choice — Whisper remains the last resort either way.
+> second choice — unless you pick an engine **explicitly** in the widget/web menus
+> (the choice persists in `stt.json` and overrides the cascade). Whisper remains
+> the last resort either way.
+>
+> In the same menus you can also toggle the **AI transcription correction**
+> (Qwen re-reads and fixes the recognized text before intent parsing, and
+> translates English commands): off = the STT text goes straight to the intent
+> engine (`POST /api/qwen_stt {"on": false}`, persisted in `stt.json`).
 
 ### Optional: winget (Windows)
 
@@ -460,14 +509,6 @@ single one remains.
 
 ### Using the widget
 - **Click** on the circle → record; **second click** → send
-- **Dictation** 📝: say **"Ugo, comincia a dettare"** and from then on everything you
-  say is transcribed and **pasted where you are typing** (no wake word needed, per-
-  sentence endpointing, blocks up to 14 s). Say **"Ugo, stop dettatura"** (or just
-  "stop" while dictating) to go back to normal listening. Transcription runs on
-  **Nemotron 3.5 Streaming** (`[nemotron]` extra) or on the **Cohere Transcribe
-  14-language** ONNX model (`[quick]` extra, works on every Python) when
-  installed, otherwise on faster-whisper; the mode survives widget restarts
-  (prefs `dictation`)
 - **Passive listening** 🎙️: say **"Ugo"** (or *ehi/oh/a Ugo*) and immediately the
   command — *"Ugo apri Spotify"* — without touching anything. Streaming Vosk, near
   zero CPU; it pauses during manual recording and for a few seconds after every
@@ -478,7 +519,7 @@ single one remains.
   large-v3-turbo** that "Ugo" (or one of its garblings: *uga, oga, u go, sugo…*) is
   really in the phrase **before executing**; false positives are silently discarded
   (no bubble, no voice). Only active on passive-listening submissions (`?wake=1`):
-  dictation and manual microphone are unaffected
+  the manual microphone is unaffected
 - **Neural wake word (experimental)**: `python -m ugo_agent.ww_collect` records ~40
   "Ugo" + ~40 negative phrases with your voice (every positive is verified with
   Whisper, fuzzy edit distance ≤ 2); `python -m ugo_agent.ww_train` trains a custom
@@ -561,6 +602,7 @@ curl -X POST http://127.0.0.1:8123/api/text -H "Content-Type: application/json" 
 | `GET/POST /api/lang` | active language (it/en) / switch language: voice, Whisper and UI follow |
 | `GET/POST /api/routines` | routines (voice macros): list / create·update·delete·run |
 | `GET/POST /api/stats` | latency dashboard (avg/p95 per stage, active models, process) / pause-resume collection |
+| `GET /api/logs` | last captured server-log lines (`?q=` substring filter, `?limit=` 1-400) |
 | `GET /_tts_reply.wav` | last spoken reply |
 
 ## 📁 Project structure

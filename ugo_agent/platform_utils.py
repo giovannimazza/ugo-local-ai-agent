@@ -294,10 +294,11 @@ def paste_text(text: str) -> bool:
                     u32.CloseClipboard()
 
             def _set_clip(s: str) -> bool:
-                for _ in range(5):   # la clipboard puo' essere occupata da altri
+                for _ in range(12):  # i clipboard manager (Ditto, Win+V) la
+                                     # tengono occupata: serve insistenza
                     if OpenClipboard(None):
                         break
-                    _t.sleep(0.05)
+                    _t.sleep(0.06)
                 else:
                     return False
                 try:
