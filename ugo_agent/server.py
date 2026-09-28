@@ -33,6 +33,10 @@ except ImportError:
     import stats as _stats_mod
     from stats import (router as stats_router, init as stats_init,
                        capture_prints, _track, _track_tps)
+# il tee stdout parte ALL'IMPORT, non solo con __main__: cosi' /api/logs ha
+# le righe anche quando il server viene montato in-process (uvicorn di CI,
+# test), non solo quando e' lanciato come script
+capture_prints()
 import difflib
 import io
 import json
@@ -4062,7 +4066,6 @@ if __name__ == "__main__":
 
     print(f"Assistente vocale locale su http://127.0.0.1:{PORT}")
     _timers_reload()  # riarma timer/sveglie/promemoria pendenti (timers.json)
-    capture_prints()  # tee stdout -> coda circolare per /api/logs (pannello 📜)
     get_stt()  # pre-carica Vosk
     if (_stt_engine["name"] == "nemotron" and not nemotron_stt.available()
             and _venv_python() is not None):
