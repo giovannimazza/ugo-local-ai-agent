@@ -11,38 +11,38 @@ non-autoregressive decision engine used here for intent classification.
 
 ![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-Nemotron%203.5%20%7C%20faster--whisper-purple)
 
-> **Unreleased (in sviluppo)** — **STT engine picker** in the widget settings
+> **v0.6.0 highlights** — **STT engine picker** in the widget settings
 > and web UI (Whisper / Nemotron) with **automatic server restart on the
 > Python 3.12 venv** when NeMo lives there, persistent engine choice, **AI
 > transcription correction toggle** (Qwen re-read on/off), widget settings
 > menu fixed (a missing `_mic_reset_choice` killed the ••• menu silently for
 > anyone with a saved microphone), NeMo-on-Windows fixes (WinError 32 on the
 > transcribe temp dir, prompt `auto` language mapping, Hypothesis text
-> normalization) and no more flashing console windows on engine restarts, plus a
-> latency dashboard that reflects the AI-correction OFF state (the Qwen STT
-> stage vanishes from the "uses & latencies" panel and an explicit status row
-> appears — clickable to re-enable it on the spot) and reports the STT model
-> actually in use (Nemotron / Cohere / Whisper / Vosk) instead of the Whisper
-> preference only.
+> normalization) and no more flashing console windows on engine restarts.
 >
-> **Quality & robustness pack**: the first STT sample after a server boot is
-> tagged *cold* and excluded from dashboard averages (no more 29 s Nemotron
-> outliers), every Ollama call
-> retries once on transient failures so the AI correction doesn't silently
-> vanish, user **routines trigger in the fastlane** (voice macros run without
-> waiting for Whisper+Qwen), and `server.py` hands the whole stats/logging
-> layer to the new `ugo_agent.stats` module. New **📜 server-log panel** in
-> the web UI (live captured stdout, searchable, `GET /api/logs`),
-> **voice dictation REMOVED** together with the experimental F9 push-to-talk
-> (unreliable paste target across apps and weak-mic hallucinations; the
-> widget keeps all other features: engine picker, AI-correction toggle,
-> dashboard shortcut), a
-> widget menu entry opens the dashboard in the browser, and CI now runs the
-> full HTTP suite (light mode: LLM tests auto-skip without Ollama, heavy
-> tests skip with `UGO_TEST_HEAVY=0`). Dashboard honesty pass: only the STT
-> stage of the engine actually in use is shown (stale Whisper samples are
-> hidden when Nemotron runs), STT registers reset on resume after a pause,
-> and the Qwen OFF row states explicitly that intent & chat stay active.
+> The latency dashboard now reports the STT model **actually in use**
+> (Nemotron / Cohere / Whisper / Vosk) instead of the Whisper preference only,
+> shows **only the stage of the engine actually running** (stale Whisper
+> samples are hidden when Nemotron runs, STT registers reset on resume after
+> a pause), keeps the first post-boot sample tagged *cold* and **out of the
+> averages** (no more 29 s Nemotron outliers), and its Qwen OFF row states
+> explicitly that intent & chat stay active — clickable to re-enable the
+> correction on the spot.
+>
+> **Quality & robustness pack**: every Ollama call retries once on transient
+> failures so the AI correction doesn't silently vanish, user **routines
+> trigger in the fastlane** (voice macros run without waiting for
+> Whisper+Qwen), `server.py` hands the whole stats/logging layer to the new
+> `ugo_agent.stats` module, a new **📜 server-log panel** in the web UI shows
+> live captured stdout (searchable, `GET /api/logs`), a widget menu entry
+> opens the dashboard in the browser, and CI runs the full HTTP suite (light
+> mode: LLM tests auto-skip without Ollama, heavy tests skip with
+> `UGO_TEST_HEAVY=0`).
+>
+> **Voice dictation and the experimental F9 push-to-talk were removed**:
+> unreliable paste targets across apps and weak-mic hallucinations made them
+> more trouble than they were worth (the widget keeps everything else:
+> engine picker, AI-correction toggle, dashboard shortcut).
 >
 > **v0.5.0 highlights** — **conversation memory** ("Ugo apri Spotify" …
 > "e anche Discord"), voice **timers, alarms and reminders** ("timer 10
