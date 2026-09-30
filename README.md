@@ -11,7 +11,7 @@ non-autoregressive decision engine used here for intent classification.
 
 ![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-Nemotron%203.5%20%7C%20faster--whisper-purple)
 
-> **Unreleased (in sviluppo)** — hardening from a full **22-command user test**:
+> **v0.7.0 highlights** — hardening from a full **22-command user test**:
 > volume queries no longer **change** the volume ("che volume c'è" reads it
 > now), multi-commands via text open every app ("apri il blocco note **e** la
 > calcolatrice"), file commands stay in the folder the user named (and Ugo
