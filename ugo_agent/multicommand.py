@@ -55,13 +55,18 @@ _NOISE_RE = re.compile(
     r"^(?:per\s+favore|grazie|dai|su|adesso|ora|subito|un\s+attimo)\W*$",
     re.IGNORECASE)
 
-# frammenti che iniziano con verbi/pronomi: NON ereditano il verbo precedente
-# ('apri youtube e leggilo' -> 'apri leggilo' sarebbe una mostruosita')
+# frammenti che iniziano con un VERBO (eventualmente preceduto da
+# articolo/pronome): NON ereditano il verbo precedente. NB: solo l'articolo
+# SEGUIDO da un verbo conta ('lo chiudi'); un articolo + nome ('la
+# calcolatrice') eredita regolarmente il verbo ('apri youtube e la
+# calcolatrice' -> 'apri la calcolatrice', prima l'articolo faceva
+# scartare lo split e la frase apriva un'app sola).
 _VERBISH_RE = re.compile(
-    r"^(?:leggi|apri|crea|cerca|scrivi|elimina|chiudi|metti|alza|abbassa|"
+    r"^(?:(?:il|lo|la|li|l'|un|una|mi|ti|ci|vi|si|ne|gli)\s*)?"
+    r"(?:leggi|apri|crea|cerca|scrivi|elimina|chiudi|metti|alza|abbassa|"
     r"dimmi|aggiungi|segna|mostra|elenca|esci|lancia|avvia|termina|prendi|"
-    r"controlla|guarda|rimuovi|cancella|appunta|annota|"
-    r"mi|ti|ci|vi|si|ne|gli|lo|la|li|l'|il|lo)", re.IGNORECASE)
+    r"controlla|guarda|rimuovi|cancella|appunta|annota)"
+    r"(?:lo|la|li|le|ne|ci|vi|mi|ti)?\b", re.IGNORECASE)
 
 # congiunzioni e virgole: 'e', 'ed', 'poi', 'e poi', ','
 _SPLIT_RE = re.compile(

@@ -1368,13 +1368,30 @@ def sanitize_filename(name: str) -> str:
     return name[:80].strip(" .")
 
 
+def _find_existing(name: str, loc: Path) -> Path | None:
+    """Cerca un file nella posizione dichiarata (o default) e, se non c'e',
+    nelle altre cartelle comuni + Home: 'leggi il file X' deve trovare X anche
+    se X era stato creato 'sul desktop' senza ripetere la posizione (prima la
+    posizione arrivava dalla spec del modello, che a memoria la trascinava in
+    Documenti e il file sembrava sparito)."""
+    for base in dict.fromkeys((loc, HOME / "Documents", HOME / "Desktop",
+                               HOME / "Downloads", HOME)):
+        p = base / name
+        if p.is_file():
+            return p
+    return None
+
+
 def execute_spec(spec: dict, text: str) -> str:
     """Esegue la specifica JSON prodotta dal piccolo modello (file e altro)."""
     tl = text.lower()
     action = str(spec.get("action") or "unknown")
-    loc = FOLDER_MAP.get(str(spec.get("location") or "").lower())
-    if loc is None:
-        loc = extract_location(text)
+    # posizione SOLO dal testo utente ('sul desktop', 'in documenti'...): la
+    # spec del modello NON decide piu' la cartella (a memoria spostava i file
+    # in Documenti mentre l'utente li aveva sul Desktop); senza indicazioni
+    # nel testo vale il default (Desktop), e _find_existing cerca comunque
+    # nelle altre cartelle per lettura/append/eliminazione.
+    loc = extract_location(text)
     name = sanitize_filename(str(spec.get("name") or ""))
     content = str(spec.get("content") or "").strip()
 
@@ -1395,8 +1412,20 @@ def execute_spec(spec: dict, text: str) -> str:
     if action in FILE_INTENTS and name and "." not in name:
         name += ".txt"  # di default i file creati a voce sono di testo
 
+    # nome non citato nel testo = quasi sicuro allucinato dal modello: lo
+    # scarto ('crea un file di testo con dentro qualcosa' -> il 1.5B inventa
+    # 'cibo.txt' e nasce un file che nessuno chiedera' mai). I nomi estratti
+    # dai regex deterministici sono nel testo e sopravvivono al controllo.
+    if action in FILE_INTENTS and name:
+        base = name[:-4] if name.lower().endswith(".txt") else name
+        if base.lower() not in tl:
+            name = ""
+
     if action == "create_file":
         if not name:
+            # 'crea un file' senza nome: il 1.5B a volte allucina
+            # 'document.txt'/'nota.txt' -> meglio chiedere che creare un file
+            # col nome inventato (che poi 'leggi il file' non troverebbe)
             return "Come vuoi chiamare il file?"
         target = loc / name
         if target.exists():
@@ -1410,30 +1439,33 @@ def execute_spec(spec: dict, text: str) -> str:
             return "Su quale file devo scrivere?"
         if not content:
             return "Cosa devo scrivere nel file?"
-        target = loc / name
-        if target.exists():
+        target = _find_existing(name, loc)
+        if target:
             body = target.read_text(encoding="utf-8", errors="ignore")
             if body and not body.endswith("\n"):
                 body += "\n"  # la nuova riga non deve incollarsi alla precedente
             target.write_text(body + content + "\n", encoding="utf-8")
             return f"Aggiunta una riga al file {name}."
+        target = loc / name
         target.write_text(content + "\n", encoding="utf-8")
         return f"Il file {name} non c'era: l'ho creato in {loc} con la riga dentro."
 
     if action == "delete_file":
         if not name:
             return "Quale file devo eliminare?"
-        target = loc / name
-        if not target.exists():
+        target = _find_existing(name, loc)
+        if not target:
             return f"Non trovo il file {name} in {loc}."
         send2trash.send2trash(str(target))
+        if target.parent != loc:
+            return f"Il file {name} (era in {target.parent.name}) e' nel cestino."
         return f"Il file {name} e' nel cestino."
 
     if action == "read_file":
         if not name:
             return "Quale file devo leggere?"
-        target = loc / name
-        if not target.exists():
+        target = _find_existing(name, loc)
+        if not target:
             return f"Non trovo il file {name} in {loc}."
         try:
             body = target.read_text(encoding="utf-8", errors="ignore").strip()
@@ -1529,6 +1561,28 @@ _IT_NUMBERS = {
     "cinquanta": 50, "sessanta": 60, "settanta": 70, "ottanta": 80,
     "novanta": 90, "cento": 100,
 }
+
+
+def _fallback_file_spec(text: str) -> dict | None:
+    """Spec minima SENZA Ollama: nome e contenuto estratti con regex dal testo
+    ('crea un file chiamato spesa con dentro latte e pane', 'leggi il file
+    spesa'). Ritorna None per i create_file senza nome ricavabile: execute_spec
+    chiedera' all'utente invece di inventarsi un file."""
+    t = _strip_lead(_strip_wake((text or "").lower()))
+    spec: dict = {}
+    m = (re.search(r"\b(?:chiamat[oa]|di nome|nome)\s+(?:un\s+|una\s+|il\s+|la\s+)?"
+                   r"([a-z0-9_.\-]+(?:\s+[a-z0-9_.\-]+){0,3}?)"
+                   r"(?=\s+(?:sul|sulla|nel|nella|in|con|dentro|e\b)|\s*$)", t)
+         or re.search(r"\b(?:file|documento|nota)\s+([a-z0-9_.\-]+)\b"
+                      r"(?!\s+(?:di\b|testo\b))", t))
+    if m:
+        spec["name"] = m.group(1)
+    m = re.search(r"\bcon\s+(?:dentro|scritto|il testo)\s+(.+?)\s*$", t)
+    if m:
+        spec["content"] = m.group(1)
+    if not spec.get("name"):
+        return {}   # nome non ricavabile: execute_spec fara' la domanda giusta
+    return spec
 
 
 def _parse_volume(t: str):
@@ -2276,7 +2330,12 @@ def run_command(text: str, intent: str) -> str:
     if intent in FILE_INTENTS:
         spec = ollama_parse(text)
         if spec is None:
-            return "Per gestire i file mi serve Ollama ma non risponde: e' avviato?"
+            # senza Ollama: fallback deterministico (nome/contenuto dal testo,
+            # posizione gia' gestita da execute_spec); copre crea/leggi/elimina
+            # semplici invece del secco rifiuto
+            spec = _fallback_file_spec(text)
+            if spec is None:
+                return "Per gestire i file mi serve Ollama ma non risponde: e' avviato?"
         spec["action"] = intent  # la categoria e' gia' certa dalle parole chiave
         return execute_spec(spec, text)
 
@@ -2503,6 +2562,25 @@ def run_command(text: str, intent: str) -> str:
         return _set_app_volume(app, mode, level)
 
     if intent == "volume":
+        # DOMANDA sul volume ('che volume c'e'', 'qual e' il volume'): solo
+        # LETTURA. Prima la frase finiva in _parse_volume che trovava un
+        # numero finto e IMPOSTAVA il volume a valori arbitrari (visto:
+        # 'che volume c'e'' -> volume al 30!).
+        if re.search(r"\b(?:che|qual(?:\s+e')?|quanto|come)\b[^.?!]{0,20}\bvolume\b"
+                     r"|\bvolume\b[^.?!]{0,15}\b(?:c'e'|ce\s+ne|e'|attuale)\b", t):
+            w = audio_worker.worker_master_get()
+            if w:
+                lvl = int(w["volume"])
+                mute = " (muto)" if w.get("mute") else ""
+                return f"Il volume e' al {lvl} per cento{mute}."
+            try:
+                vol = _endpoint_volume()
+                lvl = int(round(vol.GetMasterVolumeLevelScalar() * 100))
+                mute = " (muto)" if vol.GetMute() else ""
+                return f"Il volume e' al {lvl} per cento{mute}."
+            except Exception as exc:
+                print(f"[volume] errore lettura: {exc}")
+                return "Non riesco a leggere il volume adesso."
         # muto: toggle istantaneo (prima di qualsiasi altra interpretazione)
         if "muto" in t or "mute" in t:
             w = audio_worker.worker_master_get()
@@ -2641,6 +2719,24 @@ _NO = {"no", "nope", "annulla", "annullare", "cancella", "sbagliato",
        "sbagliata", "falso", "falsa", "riprova", "stop", "negativo",
        "non", "niente", "mica"}
 
+# comandi che toccano il disco: via ASCOLTO PASSIVO vogliono la conferma vocale
+# (il microfono raccoglie TV e conversazioni: un falso positivo che crea o
+# elimina file reali non deve mai eseguirsi). Via testo/voce attiva l'utente
+# ha compiuto un'azione deliberata: nessuna conferma.
+_PASSIVE_DISK_RE = re.compile(
+    r"\b(?:crea|creami|elimina|cancella|rimuovi|sposta|rinomina|appunta|"
+    r"annota|scrivi)\b[^.?!]{0,40}?\b(?:file|documento|cartella|directory|"
+    r"nota|note|documento di testo|txt)\b", re.IGNORECASE)
+
+
+def _passive_needs_confirm(text: str) -> bool:
+    """True se il comando passivo crea/modifica/elimina qualcosa sul disco
+    ('crea un file chiamato spesa con dentro latte', 'elimina la cartella
+    prova'). Domande ed elenchi ('leggi il file', 'elenca i file') sono
+    letture: non toccano nulla, passano senza conferma."""
+    t = (text or "").lower()
+    return bool(_PASSIVE_DISK_RE.search(t))
+
 
 # ---------------------------------------------------------------------------
 # Memoria conversazionale: l'ultimo comando apri/chiudi permette i follow-up
@@ -2648,7 +2744,7 @@ _NO = {"no", "nope", "annulla", "annullare", "cancella", "sbagliato",
 # stubare l'LLM: la risoluzione e' locale, con la libreria app gia' indicizzata.
 # ---------------------------------------------------------------------------
 _LAST_CMD = {"text": "", "intent": ""}
-_FOLLOWUP_NO_LAST = {"confirm", "guard-scelta", "multi",
+_FOLLOWUP_NO_LAST = {"confirm", "confirm-passivo", "guard-scelta", "multi",
                      "routine", "routine_created", "-", "error"}
 
 
@@ -2718,11 +2814,15 @@ def _yes_no(text: str):
         return None
     tset = set(tokens)
     # il comando contiene un verbo d'azione? non e' una risposta, e' un comando
-    # ('vai e apri spotify' prima veniva mangiato come conferma da 'vai')
-    if any(re.search(rf"\b{re.escape(w)}\b", (text or "").lower())
-           for w in ("apri", "lancia", "avvia", "chiudi", "ferma", "crea",
-                     "elimina", "cancella", "cerca", "trova", "scrivi",
-                     "imposta", "metti", "dimmi", "che")):
+    # ('vai e apri spotify' prima veniva mangiato come conferma da 'vai';
+    # 'annulla il timer' veniva mangiato dalla negazione 'annulla'). Solo per
+    # frasi di 2+ token: 'annulla' da solo resta una risposta (declino).
+    if len(tokens) >= 2 and any(re.search(rf"\b{re.escape(w)}\b", (text or "").lower())
+                                for w in ("apri", "lancia", "avvia", "chiudi", "ferma",
+                                          "crea", "elimina", "cancella", "annulla",
+                                          "rimuovi", "azzera", "cerca", "trova",
+                                          "scrivi", "imposta", "metti", "dimmi",
+                                          "spegni", "riavvia", "che")):
         return None
     if tset & _NO:
         return False
@@ -2889,6 +2989,20 @@ def process(text: str, source: str) -> dict:
         intent_fu = "close_app" if fu.startswith("chiudi") else "open_app"
         reply = run_command(fu, intent_fu)
         return _emit(fu, reply, intent_fu, "followup", source, 0)
+    # conferma vocale per i comandi che TOCCANO il disco arrivati dall'ascolto
+    # passivo (wake=1): il microfono raccoglie TV e conversazioni e un falso
+    # positivo che crea o elimina file reali e' inaccettabile (visto dal vivo:
+    # 'prova.txt' creato in Documenti da voce in background). Via testo e voce
+    # attiva l'utente ha compiuto un'azione deliberata: nessuna conferma.
+    if source == "passivo" and _passive_needs_confirm(text):
+        with _log_lock:
+            _pending["text"] = text
+            _pending["app"] = None
+            _pending["raw"] = None
+            _pending["ts"] = time.time()
+        print(f"[confirm-passivo] chiedo conferma per: {text!r}")
+        return _emit(text, "Devo farlo davvero? Rispondi si' per confermare o no.",
+                     "confirm-passivo", "guard", source, 0)
     raw_stt, corrected = text, None
     # --- scelta numerata in attesa ('primo', 'la seconda', 'numero 3') ---
     # prima del si/no: 'sì' non è un numero e viceversa, ma l'ordine conta
@@ -3522,7 +3636,11 @@ def _handle_pcm(pcm: bytes, require_wake: bool = False, pre_text: str = ""):
         speak(entry["assistant"])
         _track("command", time.time() - _tcmd)
         return entry
-    res = process(text, "voce")
+    # sorgente 'passivo': il comando arriva dall'ascolto passivo (wake=1,
+    # microfono sempre acceso). I comandi che toccano il disco chiedono
+    # conferma vocale prima di eseguire (vedi process()); la dashboard
+    # continua a tracciare la fase 'command'.
+    res = process(text, "passivo" if require_wake else "voce")
     _track("command", time.time() - _tcmd)
     return res
 

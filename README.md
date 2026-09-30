@@ -11,6 +11,21 @@ non-autoregressive decision engine used here for intent classification.
 
 ![CI](https://github.com/giovannimazza/ugo-local-ai-agent/actions/workflows/ci.yml/badge.svg) ![stack](https://img.shields.io/badge/stack-Python%203.10%2B-blue) ![license](https://img.shields.io/badge/license-private-lightgrey) ![STT](https://img.shields.io/badge/STT-Nemotron%203.5%20%7C%20faster--whisper-purple)
 
+> **Unreleased (in sviluppo)** — hardening from a full **22-command user test**:
+> volume queries no longer **change** the volume ("che volume c'è" reads it
+> now), multi-commands via text open every app ("apri il blocco note **e** la
+> calcolatrice"), file commands stay in the folder the user named (and Ugo
+> asks for a missing file name instead of inventing one — no more phantom
+> `document.txt`), "annulla il timer" works again, and simple file commands
+> run without Ollama (deterministic fallback, LLM only as a reserve).
+>
+> **Voice confirmation for disk commands heard passively**: create/delete
+> file/folder commands arriving through always-on listening ask
+> "Devo farlo davvero?" and wait for a spoken yes/no before touching anything
+> (text and manual microphone unaffected); reads and listings need no
+> confirmation. Regression suites cover the fixes (`tests/test_passive_confirm.py`,
+> multicommand splitter, full HTTP suite in CI).
+>
 > **v0.6.0 highlights** — **STT engine picker** in the widget settings
 > and web UI (Whisper / Nemotron) with **automatic server restart on the
 > Python 3.12 venv** when NeMo lives there, persistent engine choice, **AI
@@ -520,6 +535,12 @@ single one remains.
   really in the phrase **before executing**; false positives are silently discarded
   (no bubble, no voice). Only active on passive-listening submissions (`?wake=1`):
   the manual microphone is unaffected
+- **Voice confirmation for disk commands heard passively**: create/delete file or
+  folder commands arriving through passive listening (`wake=1`) are **not executed
+  right away** — Ugo asks "Devo farlo davvero?" and waits for a spoken yes/no
+  (mechanism and 90 s TTL of the existing confirmation flow). Text and manual
+  microphone stay confirmation-free: there the action is deliberate. Reads and
+  listings ("leggi il file…", "elenca i file…") need no confirmation
 - **Neural wake word (experimental)**: `python -m ugo_agent.ww_collect` records ~40
   "Ugo" + ~40 negative phrases with your voice (every positive is verified with
   Whisper, fuzzy edit distance ≤ 2); `python -m ugo_agent.ww_train` trains a custom

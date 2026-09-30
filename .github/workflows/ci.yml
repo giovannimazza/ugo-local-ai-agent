@@ -41,6 +41,9 @@ jobs:
       - name: Test multicommand (splitter, senza server)
         run: python tests/test_multicommand.py
 
+      - name: Test conferma passiva (comandi disco dal microfono sempre attivo)
+        run: python tests/test_passive_confirm.py
+
       - name: Import dei moduli cross-platform (senza avviare server/GUI)
         run: python -c "import ugo_agent.platform_utils as pu; import ugo_agent.appindex; import ugo_agent.games; import ugo_agent.cli; print('OS:', pu.OS_NAME, '| dati:', pu.data_dir())"
 
